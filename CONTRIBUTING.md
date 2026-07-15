@@ -2,15 +2,15 @@
 
 ## Branch modeli
 
-    master   → üretim. Sadece develop'tan PR ile merge edilir. Korumalı.
+    main     → üretim. Sadece develop'tan PR ile merge edilir. Korumalı.
     develop  → entegrasyon. Feature branch'ler buraya PR açar.
     feat/*   → yeni özellik      feat/ledger-core
     fix/*    → hata düzeltme     fix/balance-rounding
     chore/*  → altyapı, bağımlılık
     docs/*   → dokümantasyon
 
-Doğrudan `master`'a push yasak. GitHub'da branch protection aç:
-Settings → Branches → Add rule → `master` → "Require a pull request before merging"
+Doğrudan `main`'e push yasak. GitHub'da branch protection aç:
+Settings → Branches → Add rule → `main` → "Require a pull request before merging"
 ve "Require status checks to pass" → `test`.
 
 ## Commit mesajları (Conventional Commits)
@@ -35,4 +35,4 @@ Kurallar:
 ## Merge
 
 Feature → develop: **Squash merge**. Geçmiş temiz kalır.
-develop → master: **Merge commit**. Sürüm sınırı görünür kalır.
+develop → main: **Merge commit**. Sürüm sınırı görünür kalır.
