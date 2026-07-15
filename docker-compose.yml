@@ -9,21 +9,17 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?parola gerekli}
       POSTGRES_DB: ${POSTGRES_DB:-hesaplik}
     ports:
-      # Sadece localhost'a acilir, disariya degil. Yerel gelistirme icin gerekli.
       - "127.0.0.1:5432:5432"
     volumes:
-      - ./data/pg:/var/lib/postgresql/data
-      # Ilk acilista otomatik calisir (sirayla). Veri dizini doluysa atlanir.
-      - ./db/init-test-db.sh:/docker-entrypoint-initdb.d/00-test-db.sh:ro
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init-test-db.sh:/docker-entrypoint-initdb.d/00-test-db.sh:ro,Z
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro,Z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hesaplik}"]
       interval: 5s
       timeout: 3s
       retries: 10
 
-  # Yerel gelistirmede kullanma: uvicorn'u host'ta --reload ile calistir.
-  # Sunucuya alirken:  docker compose --profile server up -d
   api:
     profiles: ["server"]
     build: .
@@ -42,11 +38,10 @@ services:
     restart: unless-stopped
     ports: ["80:80", "443:443"]
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./data/caddy:/data
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro,Z
+      - caddydata:/data
     depends_on: [api]
 
-  # GPU'yu sunucuya taktiginda:  docker compose --profile gpu up -d
   vllm:
     profiles: ["gpu"]
     image: vllm/vllm-openai:latest
@@ -55,8 +50,13 @@ services:
       --model Qwen/Qwen3-8B-AWQ --quantization awq
       --max-model-len 4096 --enable-prefix-caching --gpu-memory-utilization 0.85
     volumes:
-      - ./data/hf:/root/.cache/huggingface
+      - hfcache:/root/.cache/huggingface
     deploy:
       resources:
         reservations:
           devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+volumes:
+  pgdata:
+  caddydata:
+  hfcache:
