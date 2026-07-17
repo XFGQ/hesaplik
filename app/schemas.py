@@ -1,7 +1,13 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class PersonIn(BaseModel):
+    full_name: str = Field(min_length=2, max_length=120)
+    phone: str | None = None
+    note: str | None = None
 
 
 class PersonOut(BaseModel):
@@ -11,10 +17,22 @@ class PersonOut(BaseModel):
     phone: str | None = None
 
 
-class PersonIn(BaseModel):
-    full_name: str = Field(min_length=2, max_length=120)
-    phone: str | None = None
-    note: str | None = None
+class PersonWithBalanceOut(PersonOut):
+    balance_try: Decimal
+
+
+class ProductIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    base_unit: str = Field(min_length=1, max_length=20)
+    unit_price: Decimal = Field(ge=0)
+    valid_from: date | None = None
+
+
+class ProductOut(BaseModel):
+    id: int
+    name: str
+    base_unit: str
+    unit_price: Decimal | None = None
 
 
 class LineIn(BaseModel):
@@ -51,6 +69,28 @@ class TxOut(BaseModel):
     occurred_at: datetime
     status: str
     reverses_id: int | None = None
+
+
+class TxLineOut(BaseModel):
+    product_name: str
+    qty: Decimal
+    unit: str
+    unit_price: Decimal
+    line_total: Decimal
+
+
+class TxDetailOut(BaseModel):
+    id: int
+    person_id: int
+    kind: str
+    amount_try: Decimal
+    occurred_at: datetime
+    status: str
+    source: str
+    note: str | None = None
+    reverses_id: int | None = None
+    is_reversed: bool = False
+    lines: list[TxLineOut] = []
 
 
 class ItemOut(BaseModel):

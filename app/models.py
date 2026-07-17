@@ -182,6 +182,7 @@ class TransactionLine(Base):
     line_total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
 
     transaction: Mapped[Transaction] = relationship(back_populates="lines")
+    product: Mapped[Product] = relationship(lazy="joined")
 
 
 class RawMessage(Base):
