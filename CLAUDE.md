@@ -67,3 +67,90 @@ küçük harf başlangıç, nokta yok. Detay: `CONTRIBUTING.md`.
 - Telegram bot + kural parser — Faz 3.
 - LLM router + vLLM (Bosna) — Faz 4.
 - Sesli komut (Whisper) — Faz 5.
+
+## Arayüz tasarım kuralları (Faz 1 sonrası)
+
+- **Koyu mod statik.** Light mod yok. Zemin #0e1013, panel/kart #15181d,
+  girdi #1c2026, kenarlık #2a2f37, metin #f2f0ea, soluk metin #8b93a1.
+  Borç kırmızı #f0857d (koyu üzerinde), tahsilat mavi #6aa9f0. Tutarlar
+  monospace + tabular-nums.
+- **İki kolonlu düzen (masaüstü ≥720px):** solda sabit panel (230px),
+  sağda içerik. Panelde: "DUMAN HOLDING" başlık, altında metrik kartları
+  (Kişi sayısı, Toplam alacak, Toplam borç), en altta Yenile ve Ayarlar
+  butonları + "Güncellendi · saat" bilgisi. Dar ekranda panel üste taşınır,
+  metrikler yatay şerit, Yenile/Ayarlar ikon.
+- **Ana ekran tablosu:** sütunlar Ad Soyad / Borç-Alacak (eski "Kalemler")
+  / Bakiye / Son işlem. Her satır sonunda üç nokta (ti-dots) menüsü:
+  Düzenle, Sil. Alt buton tek: siyah "Kişi ekle". Borç/Tahsilat ana
+  ekranda YOK.
+- **Kişi defteri (detay):** Borç ekle + Tahsilat ekle butonları burada,
+  ikisi de modal (pop-up) açar — ayrı sayfaya gitmez. Modal koyu, ortalı,
+  X ile kapanır, arka plan koyu yarı saydam. Borç modalı: tarih, ürün,
+  adet+birim, tutar. Tahsilat modalı: tarih, ürün (opsiyonel — boşsa düz
+  para), adet+birim (ürün doluysa), tutar. Kaydedince modal kapanır.
+- **Bilgilendirme (toast):** her işlemden sonra üstte kısa şerit, birkaç
+  saniye sonra kaybolur. "Ahmet Yılmaz'a 20 balya saman borç eklendi",
+  "2.000 TL tahsilat eklendi", "Sistem güncellendi" gibi. Yeşil/nötr ton.
+- **Yenile butonu:** sunucudan tüm sorguları invalidate eder, bitince
+  "Güncellendi" toast'ı ve paneldeki saat güncellenir.
+- Toast ve modal için harici kütüphane kullanma, kendi basit
+  bileşenlerini yaz (React state + setTimeout). localStorage YOK.
+
+## Silme = arşive taşı (kullanıcı kararı, 2026-07)
+
+Kullanıcı "Sil" dediğinde kayıt YOK EDİLMEZ, ayrı arşiv tablosuna taşınır:
+
+- `archived_transactions` tablosu: transactions'ın tüm kolonları + kalemleri
+  (JSONB) + arşiv meta (archived_by, archived_at, archive_reason).
+- Silme akışı: (1) kaydı + kalemlerini archived_transactions'a kopyala,
+  (2) canlı transactions'tan gerçekten sil. Böylece canlı defter sade
+  kalır, bakiye silineni saymaz; silinen her şey arşivde kim/ne zaman
+  bilgisiyle durur.
+- Append-only tetikleyicisi hâlâ geçerli: rastgele DELETE yasak. Yalnızca
+  "arşivle-ve-sil" servis fonksiyonu, session-local bir işaret
+  (SET LOCAL app.archiving = 'on') ile tetikleyiciye izin verir; işaret
+  yoksa DELETE reddedilir. Böylece kod hatası defteri sessizce bozamaz,
+  ama kasıtlı arşiv silmesi çalışır.
+- "Düzelt": eskiyi arşive taşı (sil) + yeni değerle yeni kayıt aç. Kullanıcıya
+  tek işlem gibi görünür.
+- Ayrıca 5 dakikada bir tüm veritabanının otomatik yedeği alınır (Faz 2,
+  pgBackRest/restic). Arşiv tablosu felaket kurtarma değil, günlük
+  "sildim/düzelttim" işlemlerinin izini tutar; ikisi farklı amaç.
+
+## Ayarlar menüsü (yapılacak)
+
+Sol paneldeki Ayarlar butonu bir ayarlar ekranı/modalı açar. İçinde
+(Faz 2'de doldurulacak): yedekleme durumu, "şimdi yedekle", "yedekten dön",
+arşivlenen kayıtları görüntüle. Şimdilik yerini aç, altını sonra doldur.
+
+## İşletme ayarları (settings tablosu)
+
+Sol paneldeki işletme adı sabit değil, Ayarlar'dan değiştirilebilir ve
+sunucuda saklanır (her cihazda aynı görünür, yenileyince kaybolmaz).
+
+- `settings` tablosu: key TEXT PRIMARY KEY, value TEXT, updated_at.
+  Basit anahtar-değer. İlk anahtar: business_name (varsayılan "Hesaplık").
+- API: GET /api/settings (tüm ayarları döner), PUT /api/settings/{key}.
+- Sol panel başlığı business_name'den okur. Ayarlar modalında düzenlenir,
+  kaydedilince "Ayarlar güncellendi" toast'ı ve panel başlığı yenilenir.
+- İleride buraya başka ayarlar da eklenebilir (para birimi, yedekleme
+  aralığı vb.) — key-value olduğu için şema değişmeden büyür.
+
+## Kişi defteri hareket tablosu (PersonDetail)
+
+Hareketler liste değil TABLO olarak gösterilir. Sütunlar:
+Tarih / Ürün / Adet / Birim fiyat / Tutar / (üç nokta menü).
+
+- Ürün sütunu: kalem varsa ürün adı (borçlu/alacaklı etiketi ile), yoksa
+  not veya "tahsilat"/"borç". Adet ve birim fiyat kalem yoksa boş (—).
+- Tutar: borç kırmızı +, tahsilat mavi −, tabular-nums monospace.
+- İptal edilmiş (arşive taşınmış zaten listede yok) veya ters kayıt satırı
+  görsel olarak ayırt edilsin.
+- Her satır sonunda üç nokta (ti-dots) menü: "Düzelt" ve "Sil".
+  - Sil: DELETE /api/transactions/{id} (arşive taşır), onay iste, "Kayıt
+    silindi" toast'ı.
+  - Düzelt: kaydın değerleriyle dolu bir düzenleme modalı açar; kaydedince
+    eskiyi sil (arşivle) + yeni değerle yeni kayıt aç, "Kayıt güncellendi"
+    toast'ı. Kullanıcıya tek işlem gibi görünür.
+- Dar ekranda (mobil) tablo yatay kaydırılabilir ya da satır düzenine
+  düşebilir, ama masaüstünde net sütun/satır tablo.
