@@ -74,6 +74,10 @@ class ReverseIn(BaseModel):
     reason: str = Field(min_length=3, max_length=200)
 
 
+class ArchiveIn(BaseModel):
+    reason: str = Field(min_length=3, max_length=200)
+
+
 class TxOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -117,3 +121,12 @@ class BalanceOut(BaseModel):
     balance_try: Decimal
     is_receivable: bool
     items: list[ItemOut]
+
+
+class SettingIn(BaseModel):
+    value: str = Field(min_length=1, max_length=500)
+
+
+class SettingOut(BaseModel):
+    key: str
+    value: str
