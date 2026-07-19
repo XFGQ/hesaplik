@@ -188,6 +188,45 @@ class TransactionLine(Base):
     product: Mapped[Product] = relationship(lazy="joined")
 
 
+class ArchivedTransaction(Base):
+    """Silinen kayıtların gittiği yer. `transactions`'tan gerçekten silinir,
+    burada kim/ne zaman/niçin bilgisiyle durur."""
+
+    __tablename__ = "archived_transactions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    person_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("persons.id"), nullable=False)
+    kind: Mapped[TxKind] = mapped_column(Enum(TxKind, name="tx_kind"), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    amount_try: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    note: Mapped[str | None] = mapped_column(Text)
+    source: Mapped[TxSource] = mapped_column(Enum(TxSource, name="tx_source"), nullable=False)
+    raw_text: Mapped[str | None] = mapped_column(Text)
+    llm_confidence: Mapped[Decimal | None] = mapped_column(Numeric(4, 3))
+    engine: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[TxStatus] = mapped_column(Enum(TxStatus, name="tx_status"), nullable=False)
+    reverses_id: Mapped[int | None] = mapped_column(BigInteger)
+    trace_id: Mapped[str | None] = mapped_column(String(64))
+    created_by: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lines_json: Mapped[list] = mapped_column(JSONB, nullable=False)
+    archived_by: Mapped[str] = mapped_column(Text, nullable=False)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    archive_reason: Mapped[str | None] = mapped_column(Text)
+
+
+class Setting(Base):
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class RawMessage(Base):
     __tablename__ = "raw_messages"
 

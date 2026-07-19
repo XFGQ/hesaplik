@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +12,7 @@ from app.models import (
     Person,
     PriceHistory,
     Product,
+    Setting,
     Transaction,
     TransactionLine,
     TxKind,
@@ -19,6 +20,7 @@ from app.models import (
     TxStatus,
 )
 from app.schemas import (
+    ArchiveIn,
     BalanceOut,
     DebtIn,
     ItemOut,
@@ -29,6 +31,8 @@ from app.schemas import (
     ProductIn,
     ProductOut,
     ReverseIn,
+    SettingIn,
+    SettingOut,
     TxDetailOut,
     TxLineOut,
     TxOut,
@@ -305,6 +309,18 @@ async def reverse_tx(tx_id: int, body: ReverseIn, session: AsyncSession = Depend
         raise HTTPException(422, str(e)) from e
 
 
+@router.delete("/transactions/{tx_id}", status_code=204)
+async def delete_transaction(
+    tx_id: int, body: ArchiveIn, session: AsyncSession = Depends(get_session)
+):
+    """Sil = arşive taşı. Kayıt yok edilmez, archived_transactions'a kopyalanıp
+    canlı defterden çıkarılır."""
+    try:
+        await ledger.archive_transaction(session, tx_id, actor=_actor(), reason=body.reason)
+    except LedgerError as e:
+        raise HTTPException(422, str(e)) from e
+
+
 @router.get("/persons/{person_id}/balance", response_model=BalanceOut)
 async def balance(person_id: int, session: AsyncSession = Depends(get_session)):
     if await session.get(Person, person_id) is None:
@@ -364,3 +380,27 @@ async def person_transactions(
         )
         for t in txs
     ]
+
+
+# --------------------------------------------------------------- ayarlar
+
+@router.get("/settings", response_model=dict[str, str])
+async def list_settings(session: AsyncSession = Depends(get_session)):
+    rows = (await session.execute(select(Setting))).scalars().all()
+    return {s.key: s.value for s in rows}
+
+
+@router.put("/settings/{key}", response_model=SettingOut)
+async def update_setting(
+    key: str, body: SettingIn, session: AsyncSession = Depends(get_session)
+):
+    """Yoksa oluşturur, varsa günceller."""
+    setting = await session.get(Setting, key)
+    if setting is None:
+        setting = Setting(key=key, value=body.value)
+        session.add(setting)
+    else:
+        setting.value = body.value
+        setting.updated_at = datetime.now(timezone.utc)
+    await session.flush()
+    return SettingOut(key=setting.key, value=setting.value)

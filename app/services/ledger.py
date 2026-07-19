@@ -13,10 +13,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    ArchivedTransaction,
     AuditLog,
     PriceHistory,
     Product,
@@ -316,6 +317,77 @@ async def reject(session: AsyncSession, transaction_id: int, actor: str) -> Tran
     await session.flush()
     await _audit(session, actor, "reject", tx, tx.trace_id)
     return tx
+
+
+async def archive_transaction(
+    session: AsyncSession, transaction_id: int, actor: str, reason: str
+) -> ArchivedTransaction:
+    """Kaydı canlı defterden arşive taşır ("Sil"). Yok etmez: kaydı + kalemlerini
+    archived_transactions'a kopyalar, sonra canlı transactions'tan gerçekten siler.
+    Bakiye artık bu kaydı saymaz; iz arşivde kim/ne zaman bilgisiyle durur."""
+    tx = await session.get(Transaction, transaction_id)
+    if tx is None:
+        raise LedgerError(f"Kayıt bulunamadı: {transaction_id}")
+
+    lines_json = [
+        {
+            "product_id": li.product_id,
+            "qty": str(li.qty),
+            "unit": li.unit,
+            "unit_price": str(li.unit_price),
+            "line_total": str(li.line_total),
+        }
+        for li in tx.lines
+    ]
+    audit_before = {
+        "id": tx.id,
+        "person_id": tx.person_id,
+        "kind": tx.kind.value,
+        "amount_try": str(tx.amount_try),
+        "status": tx.status.value,
+    }
+
+    archived = ArchivedTransaction(
+        id=tx.id,
+        person_id=tx.person_id,
+        kind=tx.kind,
+        occurred_at=tx.occurred_at,
+        amount_try=tx.amount_try,
+        note=tx.note,
+        source=tx.source,
+        raw_text=tx.raw_text,
+        llm_confidence=tx.llm_confidence,
+        engine=tx.engine,
+        status=tx.status,
+        reverses_id=tx.reverses_id,
+        trace_id=tx.trace_id,
+        created_by=tx.created_by,
+        created_at=tx.created_at,
+        lines_json=lines_json,
+        archived_by=actor,
+        archive_reason=reason,
+    )
+    session.add(archived)
+    await session.flush()
+
+    # Append-only tetikleyicisi bu isareti gorene kadar DELETE'i reddeder.
+    await session.execute(text("SET LOCAL app.archiving = 'on'"))
+    await session.delete(tx)
+    await session.flush()
+
+    session.add(
+        AuditLog(
+            actor=actor,
+            action="archive_transaction",
+            entity="transactions",
+            entity_id=str(transaction_id),
+            before=audit_before,
+            after={"archived": True, "reason": reason},
+            trace_id=archived.trace_id,
+        )
+    )
+    await session.flush()
+    return archived
 
 
 async def balance_of(session: AsyncSession, person_id: int) -> Balance:

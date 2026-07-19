@@ -316,3 +316,46 @@ async def test_tam_kapanan_hesap_kalem_birakmaz(session, ahmet, saman):
     bal = await ledger.balance_of(session, ahmet.id)
     assert bal.balance_try == Decimal("0.00")
     assert bal.items == []  # sıfırlanan kalem listede görünmez
+
+
+# ---------------------------------------------------------- arşiv (silme = arşive taşı)
+
+async def test_arsivleme_canli_tablodan_siler_ve_arsive_kopyalar(session, ahmet, saman):
+    tx = await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(20))], meta()
+    )
+    tx_id = tx.id
+
+    await ledger.archive_transaction(session, tx_id, actor="furkan", reason="yanlış kayıt")
+
+    live = (
+        await session.execute(text("SELECT id FROM transactions WHERE id = :i"), {"i": tx_id})
+    ).first()
+    assert live is None
+
+    archived = (
+        await session.execute(
+            text("SELECT archived_by, archive_reason FROM archived_transactions WHERE id = :i"),
+            {"i": tx_id},
+        )
+    ).first()
+    assert archived is not None
+    assert archived.archived_by == "furkan"
+    assert archived.archive_reason == "yanlış kayıt"
+
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("0.00")
+    assert bal.items == []
+
+
+async def test_arsivleme_isareti_olmadan_delete_hala_reddedilir(session, ahmet, saman):
+    """Append-only tetikleyicisi archive_transaction dışında hâlâ DELETE'i engeller."""
+    tx = await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(1))], meta()
+    )
+    await session.commit()
+
+    with pytest.raises(Exception, match="append-only"):
+        await session.execute(text("DELETE FROM transactions WHERE id = :i"), {"i": tx.id})
+        await session.commit()
+    await session.rollback()
