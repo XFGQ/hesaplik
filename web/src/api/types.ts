@@ -1,8 +1,19 @@
-export type PersonWithBalance = {
+export type Person = {
   id: number;
   full_name: string;
   phone: string | null;
+  city: string | null;
+  district: string | null;
+  address: string | null;
+  note: string | null;
+};
+
+export type Item = { product_name: string; qty: string; unit: string };
+
+export type PersonRow = Person & {
   balance_try: string;
+  items: Item[];
+  last_activity: string | null;
 };
 
 export type Product = {
@@ -38,5 +49,30 @@ export type Balance = {
   person_id: number;
   balance_try: string;
   is_receivable: boolean;
-  items: { product_name: string; qty: string; unit: string }[];
+  items: Item[];
+};
+
+export type PersonInput = {
+  full_name: string;
+  phone?: string | null;
+  city?: string | null;
+  district?: string | null;
+  address?: string | null;
+  note?: string | null;
+};
+
+export type EntryInput = {
+  person_id: number;
+  product_name?: string | null;
+  qty?: string | null;
+  unit?: string | null;
+  amount: string;
+  occurred_at?: string | null;
+  note?: string | null;
+};
+
+export type EntryResult = {
+  id: number;
+  product_name: string | null;
+  product_created: boolean;
 };

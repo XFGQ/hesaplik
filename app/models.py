@@ -51,6 +51,9 @@ class Person(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     full_name: Mapped[str] = mapped_column(Text, nullable=False)
     phone: Mapped[str | None] = mapped_column(Text)
+    city: Mapped[str | None] = mapped_column(Text)      # il
+    district: Mapped[str | None] = mapped_column(Text)  # ilçe
+    address: Mapped[str | None] = mapped_column(Text)
     note: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(

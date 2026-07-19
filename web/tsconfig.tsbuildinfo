@@ -1,0 +1,1 @@
+{"root":["./src/App.tsx","./src/main.tsx","./src/api/client.ts","./src/api/types.ts","./src/lib/format.ts","./src/pages/AddEntry.tsx","./src/pages/People.tsx","./src/pages/PersonDetail.tsx","./src/pages/PersonForm.tsx","./vite.config.ts"],"version":"5.9.3"}

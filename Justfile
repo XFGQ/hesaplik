@@ -39,3 +39,15 @@ seed:
 reset-db:
     docker compose down -v
     docker compose up -d db
+
+# API + PWA tek terminalde. Ctrl+C ikisini birden kapatir.
+dev: db
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT INT TERM
+    .venv/bin/uvicorn app.main:app --reload --reload-dir app 2>&1 | sed 's/^/[api] /' &
+    (cd web && npm run dev) 2>&1 | sed 's/^/[web] /' &
+    wait
+
+web-host:
+    cd web && npm run dev -- --host

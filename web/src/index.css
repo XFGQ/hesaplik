@@ -1,19 +1,21 @@
 /* Hesaplık — veresiye defteri
    Kâğıt ve mürekkep. Tutarlar mono ve tabular: alt alta hizalanmayan
-   rakam, defterde okunmaz. Renk yalnızca borç/tahsilat ayrımı için. */
+   rakam defterde okunmaz. Renk iki iş yapar: borç kırmızı, tahsilat mavi. */
 
 :root {
   --paper: #fbfaf7;
   --card: #ffffff;
+  --panel: #f4f2eb; /* form alanı: kağıttan bir ton koyu */
   --rule: #e6e4dd;
   --rule-strong: #cfccc2;
   --ink: #16181d;
   --ink-soft: #5c6470;
   --ink-faint: #8f96a1;
-  --borc: #b3261e;
+
+  --borc: #c0261d;
   --borc-bg: #fdf0ef;
-  --tahsilat: #0f6b3c;
-  --tahsilat-bg: #edf7f1;
+  --tahsilat: #1d4ed8;
+  --tahsilat-bg: #eef2ff;
   --stamp: #24387a;
   --stamp-bg: #eef1fa;
 
@@ -48,7 +50,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -65,7 +68,7 @@ button {
 /* ---------------------------------------------------------- iskelet */
 
 .app {
-  max-width: 560px;
+  max-width: 900px;
   margin: 0 auto;
   min-height: 100%;
   padding-bottom: calc(88px + env(safe-area-inset-bottom));
@@ -88,6 +91,10 @@ button {
   font-size: 19px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .back {
@@ -97,14 +104,14 @@ button {
   margin: -8px;
   color: var(--ink-soft);
   font-size: 15px;
+  white-space: nowrap;
 }
 
 .pad {
   padding: var(--pad);
 }
 
-/* ---------------------------------------------- defter satırı (imza) */
-/* Ad solda, noktalı çizgi, tutar sağda. Gerçek veresiye defteri böyle okunur. */
+/* ---------------------------------------------- defter satırı (dar ekran) */
 
 .ledger {
   list-style: none;
@@ -171,17 +178,77 @@ button {
   color: var(--ink-faint);
 }
 
+/* ---------------------------------------------------------- tablo (geniş ekran) */
+
+.table-wrap {
+  display: none;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+
+th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px var(--pad);
+  border-bottom: 1px solid var(--rule-strong);
+  white-space: nowrap;
+}
+
+td {
+  padding: 11px var(--pad);
+  border-bottom: 1px solid var(--rule);
+  vertical-align: middle;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:hover {
+  background: #f5f3ed;
+}
+
+.num {
+  text-align: right;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.id-cell {
+  font-family: var(--mono);
+  color: var(--ink-faint);
+  font-size: 13px;
+  width: 1%;
+}
+
+@media (min-width: 720px) {
+  .table-wrap {
+    display: block;
+  }
+  .ledger.only-narrow {
+    display: none;
+  }
+}
+
 /* ---------------------------------------------------------- bakiye başlığı */
 
 .balance {
-  padding: 24px var(--pad);
+  padding: 22px var(--pad);
   border-bottom: 1px solid var(--rule);
 }
 
 .balance-label {
   font-size: 13px;
   color: var(--ink-soft);
-  text-transform: none;
 }
 
 .balance-amount {
@@ -207,24 +274,69 @@ button {
   background: var(--stamp-bg);
   color: var(--stamp);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 12px var(--pad);
+  border-bottom: 1px solid var(--rule);
+  font-size: 14px;
+  color: var(--ink-soft);
 }
 
 /* ---------------------------------------------------------- form */
 
-.field {
-  display: block;
-  margin-bottom: 14px;
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 16px;
 }
 
-.field span {
+.panel-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 12px;
+}
+
+.field {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.field:last-child {
+  margin-bottom: 0;
+}
+
+.field > span {
   display: block;
   font-size: 13px;
   color: var(--ink-soft);
   margin-bottom: 5px;
 }
 
+.grid2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.qty-unit {
+  display: grid;
+  grid-template-columns: 1fr 116px;
+  gap: 8px;
+}
+
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-height: var(--tap);
   padding: 0 12px;
@@ -233,14 +345,34 @@ select {
   border-radius: 10px;
 }
 
+textarea {
+  padding: 12px;
+  min-height: 76px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
 input[type="search"] {
   border-radius: 999px;
+}
+
+input.amount {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 18px;
+}
+
+.hint {
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin: 5px 0 0;
 }
 
 .seg {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+  margin-bottom: 16px;
 }
 
 .seg button {
@@ -255,21 +387,23 @@ input[type="search"] {
   background: var(--borc-bg);
   border-color: var(--borc);
   color: var(--borc);
+  box-shadow: inset 0 0 0 1px var(--borc);
 }
 
 .seg button[aria-pressed="true"]:last-child {
   background: var(--tahsilat-bg);
   border-color: var(--tahsilat);
   color: var(--tahsilat);
+  box-shadow: inset 0 0 0 1px var(--tahsilat);
 }
 
 .total {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  padding: 14px 0;
-  margin-top: 4px;
+  padding: 14px 0 18px;
   border-top: 1px solid var(--rule);
+  margin-top: 4px;
 }
 
 .total strong {
@@ -297,11 +431,36 @@ input[type="search"] {
   color: var(--ink-faint);
 }
 
+.danger {
+  width: 100%;
+  min-height: 46px;
+  margin-top: 10px;
+  border: 1px solid var(--borc);
+  border-radius: 12px;
+  background: none;
+  color: var(--borc);
+  font-size: 15px;
+}
+
+.danger:disabled {
+  border-color: var(--rule-strong);
+  color: var(--ink-faint);
+}
+
 .ghost {
   background: none;
   border: 0;
   padding: 6px 0;
   color: var(--borc);
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.link {
+  background: none;
+  border: 0;
+  padding: 6px 0;
+  color: var(--stamp);
   font-size: 14px;
 }
 
@@ -310,7 +469,7 @@ input[type="search"] {
   left: 50%;
   transform: translateX(-50%);
   bottom: calc(20px + env(safe-area-inset-bottom));
-  width: min(528px, calc(100% - 32px));
+  width: min(868px, calc(100% - 32px));
   min-height: 56px;
   border: 0;
   border-radius: 14px;
@@ -342,6 +501,15 @@ input[type="search"] {
   font-size: 14px;
 }
 
+.notice {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--stamp-bg);
+  color: var(--stamp);
+  font-size: 13px;
+}
+
 .muted {
   color: var(--ink-faint);
   font-size: 13px;
@@ -358,4 +526,9 @@ input[type="search"] {
     animation: none !important;
     transition: none !important;
   }
+}
+
+.chip-owe {
+  background: var(--borc-bg);
+  color: var(--borc);
 }

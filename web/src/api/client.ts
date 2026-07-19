@@ -1,3 +1,14 @@
+import type {
+  Balance,
+  EntryInput,
+  EntryResult,
+  Person,
+  PersonInput,
+  PersonRow,
+  Product,
+  TxDetail,
+} from "./types";
+
 const BASE = import.meta.env.VITE_API_URL ?? "";
 
 export class ApiError extends Error {}
@@ -12,6 +23,7 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       const body = await res.json();
       if (typeof body.detail === "string") detail = body.detail;
+      else if (Array.isArray(body.detail) && body.detail[0]?.msg) detail = body.detail[0].msg;
     } catch {
       /* gövde JSON değilse varsayılan mesaj kalır */
     }
@@ -22,27 +34,22 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   persons: (q?: string) =>
-    req<import("./types").PersonWithBalance[]>(
-      `/persons${q ? `?q=${encodeURIComponent(q)}` : ""}`,
-    ),
-  createPerson: (full_name: string, phone?: string) =>
-    req<{ id: number }>("/persons", {
-      method: "POST",
-      body: JSON.stringify({ full_name, phone: phone || null }),
-    }),
-  balance: (id: number) => req<import("./types").Balance>(`/persons/${id}/balance`),
-  transactions: (id: number) => req<import("./types").TxDetail[]>(`/persons/${id}/transactions`),
-  products: () => req<import("./types").Product[]>("/products"),
-  addDebt: (person_id: number, product_id: number, qty: string) =>
-    req<{ id: number }>("/debts", {
-      method: "POST",
-      body: JSON.stringify({ person_id, lines: [{ product_id, qty }] }),
-    }),
-  addPayment: (person_id: number, amount: string) =>
-    req<{ id: number }>("/payments", {
-      method: "POST",
-      body: JSON.stringify({ person_id, amount }),
-    }),
+    req<PersonRow[]>(`/persons${q ? `?q=${encodeURIComponent(q)}` : ""}`),
+  person: (id: number) => req<Person>(`/persons/${id}`),
+  createPerson: (body: PersonInput) =>
+    req<Person>("/persons", { method: "POST", body: JSON.stringify(body) }),
+  updatePerson: (id: number, body: PersonInput) =>
+    req<Person>(`/persons/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deletePerson: (id: number) => req<void>(`/persons/${id}`, { method: "DELETE" }),
+
+  balance: (id: number) => req<Balance>(`/persons/${id}/balance`),
+  transactions: (id: number) => req<TxDetail[]>(`/persons/${id}/transactions`),
+  products: () => req<Product[]>("/products"),
+
+  addDebt: (body: EntryInput) =>
+    req<EntryResult>("/debts", { method: "POST", body: JSON.stringify(body) }),
+  addPayment: (body: EntryInput) =>
+    req<EntryResult>("/payments", { method: "POST", body: JSON.stringify(body) }),
   reverse: (tx_id: number, reason: string) =>
     req<{ id: number }>(`/transactions/${tx_id}/reverse`, {
       method: "POST",

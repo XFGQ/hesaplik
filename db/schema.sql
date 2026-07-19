@@ -14,6 +14,9 @@ CREATE TABLE persons (
     id         BIGSERIAL PRIMARY KEY,
     full_name  TEXT        NOT NULL,
     phone      TEXT,
+    city       TEXT,                          -- il
+    district   TEXT,                          -- ilce
+    address    TEXT,
     note       TEXT,
     is_active  BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()

@@ -174,3 +174,145 @@ async def test_kurus_kaybi_yok_rastgele_yuz_islem(session, ahmet, saman):
 
     bal = await ledger.balance_of(session, ahmet.id)
     assert bal.balance_try == beklenen, "kuruş farkı: Decimal yerine float sızmış"
+
+
+# ---------------------------------------------------------- kullanıcı tutarı
+
+async def test_kullanici_tutari_fiyat_listesini_yener(session, ahmet, saman):
+    """Pazarlık gerçeği: 20 balya listede 1500 TL ama 1200'e anlaşıldı."""
+    tx = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(20), line_total=Decimal("1200.00"))],
+        meta(),
+    )
+    assert tx.amount_try == Decimal("1200.00")
+    assert tx.lines[0].unit_price == Decimal("60.00")  # 1200/20, gösterim için türetildi
+    assert tx.lines[0].unit == "balya"  # üründen alındı
+
+
+async def test_bolunmeyen_tutar_kurusa_yuvarlanir(session, ahmet, saman):
+    tx = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(3), line_total=Decimal("1000.00"))],
+        meta(),
+    )
+    assert tx.amount_try == Decimal("1000.00")          # tutar bozulmadı
+    assert tx.lines[0].unit_price == Decimal("333.33")  # birim fiyat türev, yuvarlandı
+
+
+async def test_fiyatsiz_urun_tutar_verilirse_calisir(session, ahmet):
+    """Yeni ürün, fiyat listesi yok. Kullanıcı tutarı yazdıysa kayıt açılmalı."""
+    from app.models import Product
+
+    kepek = Product(name="Kepek", base_unit="çuval")
+    session.add(kepek)
+    await session.flush()
+
+    tx = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=kepek.id, qty=Decimal(5), line_total=Decimal("850.00"))],
+        meta(),
+    )
+    assert tx.amount_try == Decimal("850.00")
+    assert tx.lines[0].unit == "çuval"
+
+
+# ---------------------------------------------------- mal sayacı (tahsilatta ürün)
+
+async def test_aldigindan_fazlasinin_parasini_veren_mal_alacaklisi_olur(session, ahmet, saman):
+    """30 balya aldı, 50 balyanın parasını verdi → 20 balya alacaklı."""
+    await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(30), line_total=Decimal("2250.00"))],
+        meta(),
+    )
+    await ledger.add_payment(
+        session,
+        ahmet.id,
+        Decimal("3750.00"),
+        meta(),
+        lines=[LineInput(product_id=saman.id, qty=Decimal(50), line_total=Decimal("3750.00"))],
+    )
+
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("-1500.00")               # para: alacaklı
+    assert ("Saman", Decimal("-20.000"), "balya") in bal.items  # mal: 20 balya alacaklı
+
+
+async def test_urunsuz_tahsilat_mal_sayacina_dokunmaz(session, ahmet, saman):
+    """Nakit ödeme malı azaltmaz; iki defter ayrıdır."""
+    await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(30), line_total=Decimal("2250.00"))],
+        meta(),
+    )
+    await ledger.add_payment(session, ahmet.id, Decimal("1000.00"), meta())
+
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("1250.00")
+    assert ("Saman", Decimal("30.000"), "balya") in bal.items
+
+
+async def test_tahsilat_kalem_toplami_tutara_esit_olmali(session, ahmet, saman):
+    with pytest.raises(LedgerError, match="eşit değil"):
+        await ledger.add_payment(
+            session,
+            ahmet.id,
+            Decimal("1000.00"),
+            meta(),
+            lines=[LineInput(product_id=saman.id, qty=Decimal(10), line_total=Decimal("900.00"))],
+        )
+
+
+# ---------------------------------------------------------- kalemli tahsilat
+
+async def test_kalemsiz_tahsilat_mal_miktarini_degistirmez(session, ahmet, saman):
+    """Borcu varken düz para verdi: bakiye düşer, saman borcu durur."""
+    await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(30))], meta()
+    )
+    await ledger.add_payment(session, ahmet.id, Decimal("1000.00"), meta())
+
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("1250.00")  # 30*75 - 1000
+    assert ("Saman", Decimal("30.000"), "balya") in bal.items  # mal borcu duruyor
+
+
+async def test_fazla_odeme_mal_borcunu_ters_cevirir(session, ahmet, saman):
+    """30 balya borcu var, 50 balyalık ödeme yaptı: artık biz 20 balya borçluyuz."""
+    await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(30))], meta()
+    )
+    await ledger.add_payment(
+        session,
+        ahmet.id,
+        Decimal("3750.00"),
+        meta(),
+        lines=[LineInput(product_id=saman.id, qty=Decimal(50), line_total=Decimal("3750.00"))],
+    )
+
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("-1500.00")           # 2250 - 3750
+    assert bal.items == [("Saman", Decimal("-20.000"), "balya")]  # 30 - 50, biz borçluyuz
+    assert bal.is_receivable is False
+
+
+async def test_tam_kapanan_hesap_kalem_birakmaz(session, ahmet, saman):
+    await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(30))], meta()
+    )
+    await ledger.add_payment(
+        session,
+        ahmet.id,
+        Decimal("2250.00"),
+        meta(),
+        lines=[LineInput(product_id=saman.id, qty=Decimal(30), line_total=Decimal("2250.00"))],
+    )
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("0.00")
+    assert bal.items == []  # sıfırlanan kalem listede görünmez

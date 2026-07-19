@@ -1,11 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { money } from "../lib/format";
+import { money, parseNumber, toLocalInput } from "../lib/format";
 
 type Kind = "DEBIT" | "CREDIT";
+
+const BIRIMLER = ["balya", "kilo", "adet", "ton", "çuval", "litre"];
 
 export default function AddEntry() {
   const { id } = useParams();
@@ -14,35 +16,74 @@ export default function AddEntry() {
   const qc = useQueryClient();
 
   const [kind, setKind] = useState<Kind>("DEBIT");
-  const [productId, setProductId] = useState<number | "">("");
+  const [when, setWhen] = useState(() => toLocalInput(new Date()));
+  const [product, setProduct] = useState("");
+  const [qty, setQty] = useState("");
+  const [unit, setUnit] = useState("balya");
   const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
 
   const products = useQuery({ queryKey: ["products"], queryFn: api.products });
-  const product = products.data?.find((p) => p.id === productId);
 
-  const total = useMemo(() => {
-    if (kind === "CREDIT") return Number(amount.replace(",", ".")) || 0;
-    if (!product?.unit_price) return 0;
-    return (Number(amount.replace(",", ".")) || 0) * Number(product.unit_price);
-  }, [kind, amount, product]);
+  function onProductChange(value: string) {
+    setProduct(value);
+    const key = value.trim().toLocaleLowerCase("tr");
+    const hit = products.data?.find((p) => p.name.toLocaleLowerCase("tr") === key);
+    if (hit) setUnit(hit.base_unit);
+  }
 
   const save = useMutation({
     mutationFn: async () => {
-      const value = amount.replace(",", ".");
-      if (kind === "CREDIT") return api.addPayment(personId, value);
-      if (productId === "") throw new Error("Ürün seç");
-      return api.addDebt(personId, productId, value);
+      const occurred_at = new Date(when).toISOString();
+      const hasItem = product.trim() && qty.trim();
+      if (kind === "CREDIT") {
+        return api.addPayment({
+          person_id: personId,
+          amount: parseNumber(amount),
+          product_name: hasItem ? product.trim() : null,
+          qty: hasItem ? parseNumber(qty) : null,
+          unit: hasItem ? unit.trim() : null,
+          occurred_at,
+          note: note.trim() || null,
+        });
+      }
+      return api.addDebt({
+        person_id: personId,
+        product_name: product.trim(),
+        qty: parseNumber(qty),
+        unit: unit.trim() || null,
+        amount: parseNumber(amount),
+        occurred_at,
+        note: note.trim() || null,
+      });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["balance", personId] });
-      qc.invalidateQueries({ queryKey: ["transactions", personId] });
+      ["balance", "transactions", "persons", "products"].forEach((k) =>
+        qc.invalidateQueries({ queryKey: k === "products" ? ["products"] : [k, personId] }),
+      );
       qc.invalidateQueries({ queryKey: ["persons"] });
       nav(`/kisi/${personId}`);
     },
   });
 
+  const tutar = Number(parseNumber(amount)) || 0;
+  const adet = Number(parseNumber(qty)) || 0;
+  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
+
+  const showQtyUnit = product.trim().length > 0;
+
+  const yeniUrun =
+    product.trim().length > 1 &&
+    products.data !== undefined &&
+    !products.data.some(
+      (p) => p.name.toLocaleLowerCase("tr") === product.trim().toLocaleLowerCase("tr"),
+    );
+
   const valid =
-    Number(amount.replace(",", ".")) > 0 && (kind === "CREDIT" || productId !== "");
+    tutar > 0 &&
+    (kind === "CREDIT"
+      ? product.trim().length === 0 || adet > 0
+      : product.trim().length > 0 && adet > 0);
 
   return (
     <>
@@ -54,6 +95,16 @@ export default function AddEntry() {
       </div>
 
       <div className="pad">
+        {/* Tarih en üstte, göz önünde ama küçük */}
+        <label className="field" style={{ marginBottom: 16 }}>
+          <span>Tarih ve saat</span>
+          <input
+            type="datetime-local"
+            value={when}
+            onChange={(e) => setWhen(e.target.value)}
+          />
+        </label>
+
         <div className="seg" role="group" aria-label="Kayıt türü">
           <button aria-pressed={kind === "DEBIT"} onClick={() => setKind("DEBIT")}>
             Borç
@@ -63,50 +114,95 @@ export default function AddEntry() {
           </button>
         </div>
 
-        <div style={{ height: 18 }} />
+        <div className="panel">
+          <p className="panel-title">
+            {kind === "DEBIT" ? "Ne verildi" : "Ürün (isteğe bağlı)"}
+          </p>
 
-        {kind === "DEBIT" && (
           <label className="field">
             <span>Ürün</span>
-            <select
-              value={productId}
-              onChange={(e) => setProductId(e.target.value ? Number(e.target.value) : "")}
-            >
-              <option value="">Seç</option>
+            <input
+              list="urunler"
+              value={product}
+              onChange={(e) => onProductChange(e.target.value)}
+              placeholder={kind === "DEBIT" ? "saman" : "boş bırakırsan düz para sayılır"}
+              autoFocus={kind === "DEBIT"}
+            />
+            <datalist id="urunler">
               {products.data?.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} — {p.unit_price ? `${money(p.unit_price)}/${p.base_unit}` : "fiyat yok"}
-                </option>
+                <option key={p.id} value={p.name} />
               ))}
-            </select>
+            </datalist>
+            {yeniUrun && <p className="hint">Yeni ürün açılacak: {product.trim()}</p>}
           </label>
-        )}
 
-        <label className="field">
-          <span>{kind === "DEBIT" ? `Adet${product ? ` (${product.base_unit})` : ""}` : "Tutar (TL)"}</span>
-          <input
-            type="text"
-            inputMode="decimal"
-            placeholder={kind === "DEBIT" ? "20" : "2000"}
-            value={amount}
-            onChange={(e) => setAmount(e.target.value)}
-          />
-        </label>
-
-        <div className="total">
-          <span className="muted">{kind === "DEBIT" ? "Borç tutarı" : "Tahsilat"}</span>
-          <strong className={kind === "DEBIT" ? "borc" : "tahsilat"}>{money(total)}</strong>
+          {showQtyUnit && (
+            <label className="field">
+              <span>Adet ve birim</span>
+              <div className="qty-unit">
+                <input
+                  inputMode="decimal"
+                  value={qty}
+                  onChange={(e) => setQty(e.target.value)}
+                  placeholder="20"
+                />
+                <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+                  {BIRIMLER.map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </label>
+          )}
         </div>
 
-        {kind === "DEBIT" && product && !product.unit_price && (
+        <div className="panel">
+          <p className="panel-title">{kind === "DEBIT" ? "Borç tutarı" : "Alınan para"}</p>
+          <label className="field">
+            <span>Tutar (TL)</span>
+            <input
+              className="amount"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              placeholder={kind === "DEBIT" ? "1500" : "2000"}
+              autoFocus={kind === "CREDIT"}
+            />
+            {birimFiyat !== null && (
+              <p className="hint">
+                Birim fiyat {money(birimFiyat)}
+                {unit.trim() ? ` / ${unit.trim()}` : ""}
+              </p>
+            )}
+          </label>
+          <label className="field">
+            <span>Not (isteğe bağlı)</span>
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Örnek: kamyonla gönderildi"
+            />
+          </label>
+        </div>
+
+        <div className="total">
+          <span className="muted">{kind === "DEBIT" ? "Borç" : "Tahsilat"}</span>
+          <strong className={kind === "DEBIT" ? "borc" : "tahsilat"}>{money(tutar)}</strong>
+        </div>
+
+        {save.isError && (
           <p className="error" style={{ margin: "0 0 12px" }}>
-            Bu ürünün fiyatı tanımlı değil. Kayıt açılamaz.
+            {(save.error as Error).message}
           </p>
         )}
 
-        {save.isError && <p className="error" style={{ margin: "0 0 12px" }}>{(save.error as Error).message}</p>}
-
-        <button className="primary" disabled={!valid || save.isPending} onClick={() => save.mutate()}>
+        <button
+          className="primary"
+          disabled={!valid || save.isPending}
+          onClick={() => save.mutate()}
+        >
           {save.isPending ? "Kaydediliyor" : "Kaydet"}
         </button>
       </div>

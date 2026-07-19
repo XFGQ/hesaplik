@@ -6,8 +6,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class PersonIn(BaseModel):
     full_name: str = Field(min_length=2, max_length=120)
-    phone: str | None = None
-    note: str | None = None
+    phone: str | None = Field(default=None, max_length=40)
+    city: str | None = Field(default=None, max_length=60)
+    district: str | None = Field(default=None, max_length=60)
+    address: str | None = Field(default=None, max_length=300)
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class PersonOut(BaseModel):
@@ -15,17 +18,22 @@ class PersonOut(BaseModel):
     id: int
     full_name: str
     phone: str | None = None
+    city: str | None = None
+    district: str | None = None
+    address: str | None = None
+    note: str | None = None
 
 
-class PersonWithBalanceOut(PersonOut):
+class ItemOut(BaseModel):
+    product_name: str
+    qty: Decimal
+    unit: str
+
+
+class PersonRowOut(PersonOut):
     balance_try: Decimal
-
-
-class ProductIn(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    base_unit: str = Field(min_length=1, max_length=20)
-    unit_price: Decimal = Field(ge=0)
-    valid_from: date | None = None
+    items: list[ItemOut] = []
+    last_activity: datetime | None = None
 
 
 class ProductOut(BaseModel):
@@ -35,25 +43,31 @@ class ProductOut(BaseModel):
     unit_price: Decimal | None = None
 
 
-class LineIn(BaseModel):
-    product_id: int
-    qty: Decimal = Field(gt=0)
+class ProductIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    base_unit: str = Field(default="adet", min_length=1, max_length=20)
     unit_price: Decimal | None = Field(default=None, ge=0)
+    valid_from: date | None = None
 
 
 class DebtIn(BaseModel):
     person_id: int
-    lines: list[LineIn] = []
-    amount_override: Decimal | None = Field(default=None, gt=0)
-    note: str | None = None
+    product_name: str = Field(min_length=1, max_length=80)
+    qty: Decimal = Field(gt=0)
+    unit: str | None = Field(default=None, max_length=20)
+    amount: Decimal = Field(gt=0)
     occurred_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=500)
 
 
 class PaymentIn(BaseModel):
     person_id: int
     amount: Decimal = Field(gt=0)
-    note: str | None = None
+    product_name: str | None = Field(default=None, max_length=80)
+    qty: Decimal | None = Field(default=None, gt=0)
+    unit: str | None = Field(default=None, max_length=20)
     occurred_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=500)
 
 
 class ReverseIn(BaseModel):
@@ -69,6 +83,11 @@ class TxOut(BaseModel):
     occurred_at: datetime
     status: str
     reverses_id: int | None = None
+
+
+class TxWithProductOut(TxOut):
+    product_name: str
+    product_created: bool = False
 
 
 class TxLineOut(BaseModel):
@@ -91,12 +110,6 @@ class TxDetailOut(BaseModel):
     reverses_id: int | None = None
     is_reversed: bool = False
     lines: list[TxLineOut] = []
-
-
-class ItemOut(BaseModel):
-    product_name: str
-    qty: Decimal
-    unit: str
 
 
 class BalanceOut(BaseModel):

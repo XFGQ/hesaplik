@@ -41,10 +41,22 @@ def money(value: Decimal | int | str) -> Decimal:
 
 @dataclass(slots=True)
 class LineInput:
+    """Kalem girdisi.
+
+    Tutar önceliği:
+      1. line_total verilmişse o esastır; birim fiyat ondan türetilir.
+      2. Yoksa unit_price ile qty çarpılır.
+      3. O da yoksa price_history'den o tarihte geçerli fiyat çekilir.
+
+    Gerçek hayatta pazarlık ve iskonto var; bu yüzden kullanıcının yazdığı
+    tutar her zaman fiyat listesini yener.
+    """
+
     product_id: int
     qty: Decimal
     unit: str | None = None
-    unit_price: Decimal | None = None  # None ise price_history'den çekilir
+    unit_price: Decimal | None = None
+    line_total: Decimal | None = None
 
 
 @dataclass(slots=True)
@@ -97,21 +109,39 @@ async def _build_lines(
     built: list[TransactionLine] = []
     total = Decimal("0.00")
     for li in lines:
-        if li.qty <= 0:
+        qty = Decimal(li.qty)
+        if qty <= 0:
             raise LedgerError("Adet sıfır veya negatif olamaz")
-        unit_price = li.unit_price
+
         unit = li.unit
-        if unit_price is None or unit is None:
-            resolved_price, base_unit = await resolve_unit_price(session, li.product_id, on)
-            unit_price = unit_price if unit_price is not None else resolved_price
+        unit_price = li.unit_price
+        line_total = li.line_total
+
+        if line_total is not None:
+            # Kullanicinin yazdigi tutar esas. Birim fiyat yalnizca gosterim icin turetilir.
+            line_total = money(line_total)
+            if line_total < 0:
+                raise LedgerError("Tutar negatif olamaz")
+            unit_price = money(Decimal(line_total) / qty)
+        elif unit_price is not None:
+            unit_price = money(unit_price)
+            line_total = money(qty * unit_price)
+        else:
+            unit_price, base_unit = await resolve_unit_price(session, li.product_id, on)
             unit = unit or base_unit
-        unit_price = money(unit_price)
-        line_total = money(Decimal(li.qty) * unit_price)
+            line_total = money(qty * unit_price)
+
+        if unit is None:
+            product = await session.get(Product, li.product_id)
+            if product is None:
+                raise LedgerError(f"Ürün bulunamadı: {li.product_id}")
+            unit = product.base_unit
+
         total += line_total
         built.append(
             TransactionLine(
                 product_id=li.product_id,
-                qty=Decimal(li.qty),
+                qty=qty,
                 unit=unit,
                 unit_price=unit_price,
                 line_total=line_total,
@@ -165,12 +195,33 @@ async def add_payment(
     person_id: int,
     amount: Decimal,
     meta: TxMeta,
+    lines: list[LineInput] | None = None,
     status: TxStatus = TxStatus.CONFIRMED,
 ) -> Transaction:
-    """Tahsilat kaydı."""
+    """Tahsilat.
+
+    Opsiyonel kalem: "bu para hangi malin parasiydi". Para ve mal iki ayri
+    hesaptir, ama kalem her ikisini de gunceller:
+
+      Ahmet 30 balya aldi (DEBIT, borc)  -> para +2250, mal +30 balya
+      50 balyanin parasini verdi (CREDIT) -> para -3750, mal -50 balya
+      Sonuc: para -1500 (ona borclusun), mal -20 balya (saman vereceksin)
+
+    Fazla odenen para, ileride verilecek malin pesinidir. Kalem tutari
+    tahsilat tutarina esit olmalidir (aksi halde para ve mal birbirini tutmaz).
+    """
     amount = money(amount)
     if amount <= 0:
         raise LedgerError("Tahsilat sıfırdan büyük olmalı")
+
+    built: list[TransactionLine] = []
+    if lines:
+        occurred = meta.occurred_at or datetime.now(timezone.utc)
+        built, lines_total = await _build_lines(session, lines, occurred.date())
+        if lines_total != amount:
+            raise LedgerError(
+                f"Kalem toplamı ({lines_total} TL) tahsilat tutarına ({amount} TL) eşit değil"
+            )
 
     tx = Transaction(
         person_id=person_id,
@@ -185,6 +236,7 @@ async def add_payment(
         trace_id=meta.trace_id,
         status=status,
         created_by=meta.created_by,
+        lines=built,
     )
     session.add(tx)
     await session.flush()
@@ -279,10 +331,15 @@ async def balance_of(session: AsyncSession, person_id: int) -> Balance:
         )
     ).scalar_one()
 
+    # Acik kalem = para-disi mal hesabi. DEBIT +qty (kisi mal aldi, sana borclu),
+    # CREDIT -qty (kisi malin parasini pesin verdi, sen ona mal vereceksin).
+    # Ornek: 30 balya DEBIT, 50 balya CREDIT -> -20 balya = 20 balya vereceksin.
+    # Ters kayit (borc iptali) da CREDIT oldugu icin borcun kalemini geri duser.
+    item_sign = case((Transaction.kind == TxKind.DEBIT, 1), else_=-1)
     items_stmt = (
         select(
             Product.name,
-            func.sum(TransactionLine.qty * sign).label("qty"),
+            func.sum(TransactionLine.qty * item_sign).label("qty"),
             TransactionLine.unit,
         )
         .join(Transaction, Transaction.id == TransactionLine.transaction_id)
@@ -292,7 +349,7 @@ async def balance_of(session: AsyncSession, person_id: int) -> Balance:
             Transaction.status == TxStatus.CONFIRMED,
         )
         .group_by(Product.name, TransactionLine.unit)
-        .having(func.sum(TransactionLine.qty * sign) != 0)
+        .having(func.sum(TransactionLine.qty * item_sign) != 0)
     )
     rows = (await session.execute(items_stmt)).all()
     items = [(name, Decimal(qty), unit) for name, qty, unit in rows]
