@@ -60,6 +60,17 @@ export function parseNumber(input: string): string {
   return input.replace(/\./g, "").replace(",", ".").trim();
 }
 
+/** parseNumber'ın tersi: backend'den gelen "1500.00" gibi ham ondalık
+ * metni, kullanıcının düzenleyebileceği "1500,00" gösterime çevirir. */
+export function toEditableNumber(raw: string): string {
+  return raw.replace(".", ",");
+}
+
+export function hhmm(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 export function toLocalInput(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(

@@ -6,6 +6,7 @@ import type {
   PersonInput,
   PersonRow,
   Product,
+  Settings,
   TxDetail,
 } from "./types";
 
@@ -54,5 +55,17 @@ export const api = {
     req<{ id: number }>(`/transactions/${tx_id}/reverse`, {
       method: "POST",
       body: JSON.stringify({ reason }),
+    }),
+  deleteTransaction: (tx_id: number, reason: string) =>
+    req<void>(`/transactions/${tx_id}`, {
+      method: "DELETE",
+      body: JSON.stringify({ reason }),
+    }),
+
+  getSettings: () => req<Settings>("/settings"),
+  updateSetting: (key: string, value: string) =>
+    req<{ key: string; value: string }>(`/settings/${encodeURIComponent(key)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
     }),
 };

@@ -76,3 +76,5 @@ export type EntryResult = {
   product_name: string | null;
   product_created: boolean;
 };
+
+export type Settings = Record<string, string>;

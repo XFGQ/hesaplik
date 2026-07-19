@@ -1,14 +1,35 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
-import { balanceLabel, balanceTone, itemLabel, itemsSummary, money, shortDate, signedMoney } from "../lib/format";
+import type { TxDetail } from "../api/types";
+import DebtModal from "../components/DebtModal";
+import EditTxModal from "../components/EditTxModal";
+import PaymentModal from "../components/PaymentModal";
+import PersonModal from "../components/PersonModal";
+import {
+  balanceLabel,
+  balanceTone,
+  itemLabel,
+  itemsSummary,
+  money,
+  qty,
+  shortDate,
+  signedMoney,
+} from "../lib/format";
+import { useToast } from "../lib/toast";
+
+type ModalKind = "debt" | "payment" | "edit" | null;
 
 export default function PersonDetail() {
   const { id } = useParams();
   const personId = Number(id);
   const nav = useNavigate();
   const qc = useQueryClient();
+  const toast = useToast();
+  const [modal, setModal] = useState<ModalKind>(null);
+  const [editingTx, setEditingTx] = useState<TxDetail | null>(null);
 
   const person = useQuery({
     queryKey: ["person", personId],
@@ -29,10 +50,12 @@ export default function PersonDetail() {
     qc.invalidateQueries({ queryKey: ["persons"] });
   }
 
-  const reverse = useMutation({
-    mutationFn: ({ txId, reason }: { txId: number; reason: string }) =>
-      api.reverse(txId, reason),
-    onSuccess: refresh,
+  const del = useMutation({
+    mutationFn: (txId: number) => api.deleteTransaction(txId, "kullanıcı sildi"),
+    onSuccess: () => {
+      refresh();
+      toast("Kayıt silindi", "success");
+    },
   });
 
   const remove = useMutation({
@@ -43,9 +66,10 @@ export default function PersonDetail() {
     },
   });
 
-  function cancel(txId: number) {
-    const reason = window.prompt("İptal sebebi (kayıt silinmez, ters kayıt açılır)");
-    if (reason && reason.trim().length >= 3) reverse.mutate({ txId, reason: reason.trim() });
+  function handleDelete(txId: number) {
+    if (window.confirm("Bu kayıt silinsin mi? (arşive taşınır, canlı defterden çıkar)")) {
+      del.mutate(txId);
+    }
   }
 
   function deletePerson() {
@@ -63,13 +87,15 @@ export default function PersonDetail() {
   const p = person.data;
 
   return (
-    <>
+    <div className="page">
       <div className="bar">
         <button className="back" onClick={() => nav("/")}>
           ← Defter
         </button>
-        <h1>{p?.full_name ?? "Kişi"}</h1>
-        <button className="link" onClick={() => nav(`/kisi/${personId}/duzenle`)}>
+        <h1 style={{ cursor: "pointer" }} onClick={() => setModal("edit")}>
+          {p?.full_name ?? "Kişi"}
+        </h1>
+        <button className="link" onClick={() => setModal("edit")}>
           Düzenle
         </button>
       </div>
@@ -106,7 +132,7 @@ export default function PersonDetail() {
         </div>
       )}
 
-      {reverse.isError && <p className="error">{(reverse.error as Error).message}</p>}
+      {del.isError && <p className="error">{(del.error as Error).message}</p>}
       {remove.isError && <p className="error">{(remove.error as Error).message}</p>}
 
       {txs.data?.length === 0 && (
@@ -116,50 +142,52 @@ export default function PersonDetail() {
         </div>
       )}
 
-      <ul className="ledger">
-        {txs.data?.map((t) => {
-          const isDebt = t.kind === "DEBIT";
-          const detail = t.lines.length
-            ? itemsSummary(t.lines)
-            : (t.note ?? (isDebt ? "borç" : "tahsilat"));
-          return (
-            <li key={t.id} className={t.is_reversed ? "struck" : undefined}>
-              <div className="row" style={{ display: "block" }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-                  <span className="row-name">{detail}</span>
-                  <span className="row-leader" aria-hidden="true" />
-                  <span className={`row-amount ${isDebt ? "borc" : "tahsilat"}`}>
-                    {isDebt ? "+" : "−"}
-                    {money(t.amount_try)}
-                  </span>
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: 8,
-                  }}
-                >
-                  <span className="muted">
-                    {shortDate(t.occurred_at)}
-                    {t.reverses_id ? " · iptal kaydı" : ""}
-                    {t.is_reversed ? " · iptal edildi" : ""}
-                    {t.lines.length > 0 && !t.is_reversed
-                      ? ` · ${money(t.lines[0].unit_price)}/${t.lines[0].unit}`
-                      : ""}
-                  </span>
-                  {!t.is_reversed && !t.reverses_id && (
-                    <button className="ghost" onClick={() => cancel(t.id)}>
-                      İptal et
-                    </button>
-                  )}
-                </div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      {txs.data && txs.data.length > 0 && (
+        <div className="tx-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Tarih</th>
+                <th>Ürün</th>
+                <th style={{ textAlign: "right" }}>Adet</th>
+                <th style={{ textAlign: "right" }}>Birim fiyat</th>
+                <th style={{ textAlign: "right" }}>Tutar</th>
+                <th aria-hidden="true"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {txs.data.map((t) => {
+                const isDebt = t.kind === "DEBIT";
+                const hasLines = t.lines.length > 0;
+                const detail = hasLines
+                  ? itemsSummary(t.lines)
+                  : (t.note ?? (isDebt ? "borç" : "tahsilat"));
+                return (
+                  <tr key={t.id} className={t.is_reversed ? "struck" : undefined}>
+                    <td className="muted">{shortDate(t.occurred_at)}</td>
+                    <td>
+                      {detail}
+                      {t.reverses_id ? " · iptal kaydı" : ""}
+                      {t.is_reversed ? " · iptal edildi" : ""}
+                    </td>
+                    <td className="num">{hasLines ? qty(t.lines[0].qty) : "—"}</td>
+                    <td className="num">
+                      {hasLines ? `${money(t.lines[0].unit_price)}/${t.lines[0].unit}` : "—"}
+                    </td>
+                    <td className={`num ${isDebt ? "borc" : "tahsilat"}`}>
+                      {isDebt ? "+" : "−"}
+                      {money(t.amount_try)}
+                    </td>
+                    <td className="row-menu-cell">
+                      <RowMenu onEdit={() => setEditingTx(t)} onDelete={() => handleDelete(t.id)} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       <div className="pad">
         <button className="danger" disabled={!kapali || remove.isPending} onClick={deletePerson}>
@@ -167,9 +195,78 @@ export default function PersonDetail() {
         </button>
       </div>
 
-      <button className="fab" onClick={() => nav(`/kisi/${personId}/ekle`)}>
-        Kayıt ekle
+      <div className="fab-row">
+        <button className="fab-borc" onClick={() => setModal("debt")}>
+          Borç ekle
+        </button>
+        <button className="fab-tahsilat" onClick={() => setModal("payment")}>
+          Tahsilat ekle
+        </button>
+      </div>
+
+      {modal === "debt" && p && (
+        <DebtModal personId={personId} personName={p.full_name} onClose={() => setModal(null)} />
+      )}
+      {modal === "payment" && p && (
+        <PaymentModal
+          personId={personId}
+          personName={p.full_name}
+          onClose={() => setModal(null)}
+        />
+      )}
+      {modal === "edit" && p && <PersonModal person={p} onClose={() => setModal(null)} />}
+      {editingTx && (
+        <EditTxModal tx={editingTx} personId={personId} onClose={() => setEditingTx(null)} />
+      )}
+    </div>
+  );
+}
+
+function RowMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function onClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  return (
+    <div className="row-menu" ref={ref}>
+      <button
+        className="row-menu-trigger"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label="İşlemler"
+      >
+        ⋮
       </button>
-    </>
+      {open && (
+        <div className="row-menu-dropdown">
+          <button
+            onClick={() => {
+              setOpen(false);
+              onEdit();
+            }}
+          >
+            Düzelt
+          </button>
+          <button
+            className="row-menu-danger"
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+          >
+            Sil
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
