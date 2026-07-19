@@ -14,6 +14,9 @@ CREATE TABLE persons (
     id         BIGSERIAL PRIMARY KEY,
     full_name  TEXT        NOT NULL,
     phone      TEXT,
+    city       TEXT,                          -- il
+    district   TEXT,                          -- ilce
+    address    TEXT,
     note       TEXT,
     is_active  BOOLEAN     NOT NULL DEFAULT TRUE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -102,6 +105,9 @@ CREATE INDEX idx_lines_tx ON transaction_lines (transaction_id);
 CREATE OR REPLACE FUNCTION tx_append_only() RETURNS TRIGGER AS $$
 BEGIN
     IF TG_OP = 'DELETE' THEN
+        IF current_setting('app.archiving', true) = 'on' THEN
+            RETURN OLD;
+        END IF;
         RAISE EXCEPTION 'transactions append-only: DELETE yasak (id=%)', OLD.id;
     END IF;
     -- Tek izin verilen gecis: PENDING -> CONFIRMED | REJECTED
@@ -118,6 +124,34 @@ $$ LANGUAGE plpgsql;
 CREATE TRIGGER trg_tx_append_only
     BEFORE UPDATE OR DELETE ON transactions
     FOR EACH ROW EXECUTE FUNCTION tx_append_only();
+
+-- ---------------------------------------------------------------- arsiv (silme = arsive tasi)
+-- "Sil" kaydi yok etmez: kaydi + kalemlerini buraya kopyalar, sonra canli
+-- transactions'tan gercekten siler (SET LOCAL app.archiving='on' ile).
+
+CREATE TABLE archived_transactions (
+    id             BIGINT        PRIMARY KEY,
+    person_id      BIGINT        NOT NULL REFERENCES persons(id),
+    kind           tx_kind       NOT NULL,
+    occurred_at    TIMESTAMPTZ   NOT NULL,
+    amount_try     NUMERIC(14,2) NOT NULL,
+    note           TEXT,
+    source         tx_source     NOT NULL,
+    raw_text       TEXT,
+    llm_confidence NUMERIC(4,3),
+    engine         TEXT,
+    status         tx_status     NOT NULL,
+    reverses_id    BIGINT,
+    trace_id       TEXT,
+    created_by     TEXT          NOT NULL,
+    created_at     TIMESTAMPTZ   NOT NULL,
+    lines_json     JSONB         NOT NULL,
+    archived_by    TEXT          NOT NULL,
+    archived_at    TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    archive_reason TEXT
+);
+
+CREATE INDEX idx_archived_tx_person ON archived_transactions (person_id);
 
 -- ---------------------------------------------------------------- ham mesajlar (dokunulmaz)
 
@@ -149,6 +183,16 @@ CREATE TABLE audit_log (
 );
 
 CREATE INDEX idx_audit_at ON audit_log (at DESC);
+
+-- ---------------------------------------------------------------- ayarlar
+
+CREATE TABLE settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT        NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO settings (key, value) VALUES ('business_name', 'Hesaplık');
 
 -- ---------------------------------------------------------------- görünümler
 -- Bakiye > 0  => kisi bize borclu (bizim alacagimiz)
