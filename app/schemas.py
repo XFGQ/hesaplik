@@ -130,3 +130,15 @@ class SettingIn(BaseModel):
 class SettingOut(BaseModel):
     key: str
     value: str
+
+
+class BackupSnapshotOut(BaseModel):
+    id: str
+    time: datetime
+    size_bytes: int
+
+
+class BackupRunOut(BaseModel):
+    ok: bool
+    message: str
+    duration_seconds: float

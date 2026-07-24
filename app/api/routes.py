@@ -21,6 +21,8 @@ from app.models import (
 )
 from app.schemas import (
     ArchiveIn,
+    BackupRunOut,
+    BackupSnapshotOut,
     BalanceOut,
     DebtIn,
     ItemOut,
@@ -38,7 +40,7 @@ from app.schemas import (
     TxOut,
     TxWithProductOut,
 )
-from app.services import catalog, ledger
+from app.services import backup, catalog, ledger
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
@@ -404,3 +406,34 @@ async def update_setting(
         setting.updated_at = datetime.now(timezone.utc)
     await session.flush()
     return SettingOut(key=setting.key, value=setting.value)
+
+
+# --------------------------------------------------------------- yedekleme
+
+@router.get("/backups", response_model=list[BackupSnapshotOut])
+async def list_backups():
+    """Şimdilik kimliği doğrulanmış herkes görebilir; Faz 3'te yetki eklenecek."""
+    try:
+        snapshots = await backup.list_snapshots()
+    except backup.BackupUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    return [
+        BackupSnapshotOut(
+            id=s["short_id"],
+            time=s["time"],
+            size_bytes=s.get("summary", {}).get("total_bytes_processed", 0),
+        )
+        for s in snapshots
+    ]
+
+
+@router.post("/backups/run", response_model=BackupRunOut)
+async def run_backup_now():
+    """Kullanıcıdan gelen hiçbir parametre kabul etmez, sabit script çalıştırır."""
+    try:
+        ok, message, duration = await backup.run_backup()
+    except backup.BackupUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+    if not ok:
+        raise HTTPException(500, message)
+    return BackupRunOut(ok=ok, message=message, duration_seconds=duration)
