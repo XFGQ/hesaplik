@@ -155,21 +155,6 @@ Tarih / Ürün / Adet / Birim fiyat / Tutar / (üç nokta menü).
 - Dar ekranda (mobil) tablo yatay kaydırılabilir ya da satır düzenine
   düşebilir, ama masaüstünde net sütun/satır tablo.
 
-## Yedekleme saklama politikası
-
-`scripts/backup.sh` 5 dakikada bir çalışır (`hesaplik-backup.timer`).
-`restic forget` **`--keep-hourly` kullanmaz** — saatlik politika saatte
-alınan 12 yedeğin 11'ini anında budar, oysa amaç "20 dakika öncesine
-dönebilmek". Güncel politika:
-
-    --keep-last 288 --keep-daily 30 --keep-weekly 12 --keep-monthly 12 --prune
-
-288 = son 24 saatin tüm 5 dakikalık yedekleri (24*60/5). Restic dedup
-yaptığı için her snapshot ~8.5 KiB — depolama maliyeti önemsiz. Değerler
-`.env`'den okunur: `RESTIC_KEEP_LAST`, `RESTIC_KEEP_DAILY`,
-`RESTIC_KEEP_WEEKLY`, `RESTIC_KEEP_MONTHLY` (varsayılanlar yukarıdaki
-gibi, bkz. `.env.example`).
-
 ## Canlıya alırken yapılacaklar (HATIRLATMA)
 
 Proje GitHub Actions ile İzmir sunucusuna deploy edilecek. Deployment günü
@@ -188,3 +173,67 @@ Proje GitHub Actions ile İzmir sunucusuna deploy edilecek. Deployment günü
 5. `.env`deki tüm parolalar üretim değerleriyle değiştirilir.
 6. Postgres portu (`127.0.0.1:5432`) dışarı AÇILMAZ, sadece compose ağı.
 7. Caddy ile TLS, `DOMAIN` gerçek alan adına ayarlanır.
+
+## Faz 3 — Telegram bot
+
+**Mesaj asla kaybolmaz.** Webhook/polling ile gelen her güncelleme, işleme
+girmeden ÖNCE `raw_messages` tablosuna yazılır ve hemen 200 dönülür.
+İşleme ayrı adımda yapılır. Böylece parser çökse, deploy yapılsa, sunucu
+yeniden başlasa bile mesaj durur ve sonra işlenir.
+- Idempotency: `raw_messages(channel, external_id)` tekil indeksi
+  (external_id = Telegram update_id). Aynı güncelleme iki kez işlenmez.
+
+**LLM'den önce kural parser.** Mesajların çoğu düzenli kalıptadır ve regex
+ile 15 ms'de çözülür; LLM 300 ms sürer. Kural parser önce dener,
+çözemezse (Faz 4'te) LLM'e devreder. `RuleProvider` her zaman açıktır ve
+asla kapanmaz — GPU yoksa sistem yine çalışır, sadece daha çok soru sorar.
+
+**Yerelde polling, sunucuda webhook.** Yerel geliştirmede tünel gerekmesin
+diye long polling; üretimde Caddy arkasında webhook. Aynı işleme kodu,
+farklı besleme.
+
+**Admin/müşteri ayrımı.** `/engine`, `/queue`, `/logs` gibi komutlar sadece
+`TELEGRAM_ADMIN_IDS` içindeki chat_id'lere yanıt verir. Yetkisiz kişi bu
+komutları yazarsa HİÇ cevap verilmez (komutun varlığı bile sızmasın).
+`setMyCommands` scope ile müşteriye yalnızca /start ve /yardim gösterilir.
+
+**Onay akışı.** Güven yüksek ve eşleşme netse: anında kaydet + 60 sn "Geri
+al" butonu. Belirsizse TEK soru sor (inline keyboard butonlarıyla, yazı
+yazdırma). Asla iki soru üst üste sorma, asla "formatı şöyle yazın" deme.
+
+**Müşteriye teknik detay gösterilmez.** Provider adı, güven skoru, hata
+kodu, "LLM/AI/model" kelimeleri asla görünmez.
+
+## Kalıcı düzen ve kişi silme (2026-07-24 kararı)
+
+**Sol panel her sayfada kalır.** People, PersonDetail — hepsinde solda
+sabit panel görünür. Bunun için ortak bir Layout bileşeni (React Router
+Outlet ile) kullanılır; her sayfa kendi barını çizmez. "Defter'e dön"
+butonu sol panelde belirgin şekilde durur.
+
+**Kişi silme üç nokta menüsünden.** Kişi listesinde (ana ekran tablosu) her
+satırın sağında üç nokta: Düzenle / Sil. Kişi detayındaki "Hesap kapanınca
+kaldırılabilir" butonu KALDIRILIR (kafa karıştırıcıydı; bakiye sıfır
+değilken pasif duran bir butondu).
+
+**Silme onayı yazarak.** Kişi silinirken window.confirm yetmez: modal açılır,
+kullanıcı işletme adının ilk kelimesini (settings.business_name'in ilk
+kelimesi, örn. "DUMAN") yazmadan Sil butonu aktifleşmez. Bakiye sıfır
+değilse modalda bu açıkça uyarı olarak gösterilir ("Bu kişinin 10.000 TL
+borcu var") ama kullanıcı yazarak onaylarsa işlem yapılır — kayıtlar zaten
+soft-delete ve arşivle korunuyor.
+
+**Hareket tablosu sabit.** Kişi defterindeki tablo, içerik azken bile
+alanı doldurur; alt buton/eylemler sayfanın en altında sabit durur, tablo
+uzadıkça yukarı kaymaz.
+
+## Yedekten geri dönme (yalnızca komut satırı)
+
+    set -a; source .env; set +a
+    restic snapshots                       # ID seç
+    just backup                            # önce mevcut hâli yedekle
+    restic dump <ID> /hesaplik.dump > /tmp/geri.dump
+    docker compose exec -T db pg_restore -U hesaplik -d hesaplik \
+      --clean --if-exists --no-owner < /tmp/geri.dump
+
+Tüm veritabanını o ana geri sarar. API'ye konmaz, kaza riski yüksek.
