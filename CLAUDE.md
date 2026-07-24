@@ -237,3 +237,16 @@ uzadıkça yukarı kaymaz.
       --clean --if-exists --no-owner < /tmp/geri.dump
 
 Tüm veritabanını o ana geri sarar. API'ye konmaz, kaza riski yüksek.
+
+## Yazarak onay her silmede
+
+Yazarak onay yalnızca kişi silmede değil, HAREKET (borç/tahsilat) silmede
+de uygulanır. Ortak bir ConfirmDeleteModal bileşeni kullanılır; onay
+kelimesi her yerde aynıdır: settings.business_name'in ilk kelimesi, Türkçe
+kurallarla büyük harfe çevrilmiş (örn. "DUMAN").
+
+Ayrım kasıtlıdır:
+- **Düzelt** → yazı istemez. Para kaybolmaz, değeri değişir (eskisi arşive
+  gider, yenisi açılır). Sık kullanılan, düşük riskli işlem.
+- **Sil** → yazı ister. Kayıt defterden tamamen kalkar. Nadir, yüksek
+  riskli işlem.
