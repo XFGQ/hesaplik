@@ -154,3 +154,37 @@ Tarih / Ürün / Adet / Birim fiyat / Tutar / (üç nokta menü).
     toast'ı. Kullanıcıya tek işlem gibi görünür.
 - Dar ekranda (mobil) tablo yatay kaydırılabilir ya da satır düzenine
   düşebilir, ama masaüstünde net sütun/satır tablo.
+
+## Yedekleme saklama politikası
+
+`scripts/backup.sh` 5 dakikada bir çalışır (`hesaplik-backup.timer`).
+`restic forget` **`--keep-hourly` kullanmaz** — saatlik politika saatte
+alınan 12 yedeğin 11'ini anında budar, oysa amaç "20 dakika öncesine
+dönebilmek". Güncel politika:
+
+    --keep-last 288 --keep-daily 30 --keep-weekly 12 --keep-monthly 12 --prune
+
+288 = son 24 saatin tüm 5 dakikalık yedekleri (24*60/5). Restic dedup
+yaptığı için her snapshot ~8.5 KiB — depolama maliyeti önemsiz. Değerler
+`.env`'den okunur: `RESTIC_KEEP_LAST`, `RESTIC_KEEP_DAILY`,
+`RESTIC_KEEP_WEEKLY`, `RESTIC_KEEP_MONTHLY` (varsayılanlar yukarıdaki
+gibi, bkz. `.env.example`).
+
+## Canlıya alırken yapılacaklar (HATIRLATMA)
+
+Proje GitHub Actions ile İzmir sunucusuna deploy edilecek. Deployment günü
+şunlar mutlaka güncellenmeli:
+
+1. **Yedekleme hedefleri.** Yerelde `./data/backups` kullanılıyor. Sunucuda
+   3-2-1 kuralı: (a) sunucu yerel diski, (b) Bosna'daki masaüstü (WireGuard
+   üzerinden), (c) bulut (Cloudflare R2 veya Backblaze B2 ücretsiz katman).
+   `RESTIC_REPOSITORY` bunlara göre çoğaltılır; her hedef için ayrı repo
+   veya `rclone` backend.
+2. `RESTIC_PASSWORD` GitHub Actions secret + sunucuda Docker secret olarak
+   saklanır, asla repoya girmez.
+3. systemd timer'ları sunucuda etkinleştir (`deployment/README.md`).
+4. Haftalık restore testi sonucu Telegram'a bildirilsin (Faz 3'te bot
+   gelince bağlanacak).
+5. `.env`deki tüm parolalar üretim değerleriyle değiştirilir.
+6. Postgres portu (`127.0.0.1:5432`) dışarı AÇILMAZ, sadece compose ağı.
+7. Caddy ile TLS, `DOMAIN` gerçek alan adına ayarlanır.
