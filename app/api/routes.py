@@ -165,16 +165,12 @@ async def update_person(
 
 @router.delete("/persons/{person_id}", status_code=204)
 async def delete_person(person_id: int, session: AsyncSession = Depends(get_session)):
-    """Kişiyi listeden kaldırır. Hareketleri silinmez, hesabı kapalı olmalı."""
+    """Kişiyi listeden kaldırır (soft delete). Hareketleri silinmez; kullanıcı
+    arayüzde yazarak onayladıktan sonra bakiye sıfır olmasa da silinebilir."""
     person = await session.get(Person, person_id)
     if person is None or not person.is_active:
         raise HTTPException(404, "Kişi bulunamadı")
 
-    bal = await ledger.balance_of(session, person_id)
-    if bal.balance_try != 0:
-        raise HTTPException(
-            422, f"Hesabı kapalı değil ({bal.balance_try} TL). Önce hesabı kapatın."
-        )
     person.is_active = False
     await session.flush()
 
