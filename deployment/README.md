@@ -1,0 +1,68 @@
+# Yedekleme — sunucu kurulumu
+
+Bu klasördeki systemd birimleri henüz kurulmadı, hazır bekliyor. İzmir
+sunucusuna deploy günü etkinleştirilecek.
+
+## Kurulum
+
+```
+sudo cp deployment/hesaplik-backup.service /etc/systemd/system/
+sudo cp deployment/hesaplik-backup.timer /etc/systemd/system/
+sudo cp deployment/hesaplik-restore-test.service /etc/systemd/system/
+sudo cp deployment/hesaplik-restore-test.timer /etc/systemd/system/
+
+# Unit dosyalarındaki User= ve WorkingDirectory= gerçek kurulum yoluna göre
+# düzeltilmeli (varsayılan: user=hesaplik, /opt/hesaplik). Bu kullanıcı
+# docker grubunda olmalı (docker compose exec çalıştırabilmesi için).
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now hesaplik-backup.timer
+sudo systemctl enable --now hesaplik-restore-test.timer
+
+# Kontrol
+systemctl list-timers | grep hesaplik
+journalctl -u hesaplik-backup.service -n 50
+```
+
+## Manuel çalıştırma / test
+
+```
+sudo systemctl start hesaplik-backup.service
+sudo systemctl start hesaplik-restore-test.service
+```
+
+## Canlıya alırken mutlaka değiştirilecekler
+
+Bu listenin güncel ve tam hali `CLAUDE.md` > "Canlıya alırken yapılacaklar"
+bölümünde. Özet:
+
+1. **Yedekleme hedefleri (3-2-1 kuralı).** Yerelde `./data/backups`
+   (tek yerel restic deposu) kullanılıyor. Sunucuda en az üç hedef gerekir:
+   sunucu yerel diski, Bosna'daki masaüstü (WireGuard üzerinden), bulut
+   (Cloudflare R2 veya Backblaze B2 ücretsiz katman). Her hedef için ayrı
+   `RESTIC_REPOSITORY` (veya `rclone` backend) demek — `scripts/backup.sh`
+   tek depoya yazıyor; üç hedefe yazmak için ya scripti üç kez farklı
+   `RESTIC_REPOSITORY` ile çağıran bir sarmalayıcı eklenir, ya da script
+   depo listesi üzerinde döner. Bu depoyu henüz seçmedik.
+2. `RESTIC_PASSWORD` GitHub Actions secret + sunucuda Docker/systemd secret
+   olarak saklanır, **asla** `.env` dosyası repoya girmez ve asla loglanmaz.
+3. Bu README'deki systemd timer'ları etkinleştir (yukarıdaki adımlar).
+4. Haftalık restore testi sonucu Telegram'a bildirilsin (Faz 3'te bot
+   gelince `hesaplik-restore-test.service`'e `ExecStartPost` veya benzeri
+   bir bildirim adımı eklenecek).
+5. `.env`'deki tüm parolalar (Postgres, restic) üretim değerleriyle
+   değiştirilir — `.env.example`'daki placeholder'lar asla kullanılmaz.
+6. Postgres portu (`127.0.0.1:5432`) dışarı açılmaz, sadece compose ağı
+   (docker-compose.yml zaten böyle yapılandırılmış, kontrol et).
+7. Caddy ile TLS, `DOMAIN` gerçek alan adına ayarlanır.
+
+## Notlar
+
+- `scripts/backup.sh` ve `scripts/restore-test.sh` idempotent: depo yoksa
+  `restic init` ile oluşturur, geçici test veritabanını her çalıştırmada
+  düşürüp yeniden kurar.
+- Loglar `./data/backup.log` dosyasına eklenir (append). Sunucuda log
+  rotasyonu için `logrotate` eklenmesi düşünülebilir (henüz yok).
+- `RESTIC_PASSWORD` betiklerde asla `echo`/log edilmez; kaybolursa depo
+  kurtarılamaz, bu yüzden parola ayrıca güvenli bir kasada (örn. Bitwarden)
+  saklanmalı.

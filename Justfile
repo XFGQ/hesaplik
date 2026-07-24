@@ -51,3 +51,20 @@ dev: db
 
 web-host:
     cd web && npm run dev -- --host
+
+# Yedek al (restic)
+backup: db
+    ./scripts/backup.sh
+
+# Depodaki yedekleri listele
+backup-list:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    set -a; source .env; set +a
+    : "${RESTIC_REPOSITORY:=./data/backups}"
+    export RESTIC_REPOSITORY RESTIC_PASSWORD
+    restic snapshots
+
+# En son yedeği geçici DB'ye açıp doğrula
+restore-test: db
+    ./scripts/restore-test.sh
