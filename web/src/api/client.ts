@@ -1,5 +1,7 @@
 import type {
   Balance,
+  BackupRunResult,
+  BackupSnapshot,
   EntryInput,
   EntryResult,
   Person,
@@ -68,4 +70,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ value }),
     }),
+
+  getBackups: () => req<BackupSnapshot[]>("/backups"),
+  runBackup: () => req<BackupRunResult>("/backups/run", { method: "POST" }),
 };

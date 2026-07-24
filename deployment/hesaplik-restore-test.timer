@@ -1,0 +1,9 @@
+[Unit]
+Description=Hesaplık - haftalık geri yükleme testi
+
+[Timer]
+OnCalendar=Mon *-*-* 04:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
