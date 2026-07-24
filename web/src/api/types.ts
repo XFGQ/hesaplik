@@ -78,3 +78,15 @@ export type EntryResult = {
 };
 
 export type Settings = Record<string, string>;
+
+export type BackupSnapshot = {
+  id: string;
+  time: string;
+  size_bytes: number;
+};
+
+export type BackupRunResult = {
+  ok: boolean;
+  message: string;
+  duration_seconds: number;
+};
