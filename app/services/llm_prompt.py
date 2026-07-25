@@ -31,6 +31,18 @@ Kurallar:
   bir ilçeye göre = "list_district" (bu durumda "district" doldurulur).
   Cümleyi hiç anlamadıysan (defterle ilgisiz, çok belirsiz) kind: null ve
   diğer tüm alanlar null.
+- BAKİYE SORUSU (balance_query) ile KAYIT (debt/payment) SIK KARIŞIR, DİKKAT:
+  "ne kadar borçlu", "borcu ne kadar", "borcunu söyle", "bakiyesi",
+  "bakiyesi ne", "hesabı ne", "hesabı nedir", "durumu ne", "durumu nedir"
+  kalıplarının HEPSİ bakiye sorusudur (balance_query) — bunlarda "borç"
+  kelimesi geçse bile bu bir KAYIT DEĞİLDİR, hiçbir para yazılmaz, sadece
+  mevcut durum sorulur.
+  AYIRT EDİCİ KURAL: cümlede bir TUTAR (sayı + tl/lira) YOKSA ve bir KAYIT
+  FİİLİ ("aldı", "verdi", "verdim", "çekti", "ödedi", "yatırdı", "borç
+  yaz(dı)") YOKSA, cümlede "borçlu"/"borcu"/"alacaklı" geçse bile bu kesin
+  bir SORGUDUR (balance_query), asla "debt"/"payment" YAZMA. Örnek: "ali ne
+  kadar borçlu" cümlesinde ne tutar var ne kayıt fiili — bu bir sorudur,
+  amount UYDURMA, null bırak.
 - person_name: kişinin adını YALIN (sözlük) halde yaz, çekim ekini at.
   Örnek: "dumana" -> "duman", "ahmete" -> "ahmet", "mehmedin" -> "mehmet".
   Emin değilsen metindeki hali yaz, uydurma.
@@ -40,8 +52,20 @@ Kurallar:
   unit="balya"dır, bunlar amount'a karışmaz.
 - Emin olmadığın alanı UYDURMA, null bırak. Kod tarafında zaten doğrulanır;
   senin görevin sadece cümleyi ayrıştırmak, karar vermek değil.
-- district yalnızca kind "list_district" ise doldurulur, ilçenin yalın
-  hali (örnek: "bergamalıları" -> "bergama").
+- district: kind "list_district" ise (o ilçedeki HERKESİ listele) DOLAR.
+  Ayrıca kind "balance_query"/"debt"/"payment" olsa bile cümlede bir
+  ilçe/semt adı geçiyorsa (kişiyi ayırt etmek için, örn. aynı isimli iki
+  kişi varsa) district'i yine doldur — kind'i DEĞİŞTİRMEZ, sadece ek bilgi
+  olarak taşınır.
+  İlçe adının kendisi bazen zaten "-ler/-lar" ile biter (Ahmetbeyler,
+  Bahçelievler gibi) — bu ekler ADIN PARÇASIDIR, SÖKME. Yalnızca cümlenin
+  eklediği hâl ekini (-den/-dan/-de/-da/-e/-a, "-li/-lı" ile "listele"
+  kalıbındaki çoğul-iyelik "-ları/-leri") sök:
+    "ahmetbeylerden" -> "ahmetbeyler"  (SADECE "-den" atıldı, "ahmetbey"
+      YANLIŞ olur çünkü ilçenin adı zaten "Ahmetbeyler")
+    "bergamadan" -> "bergama"
+    "bergamalıları" -> "bergama"       (liste bağlamında -lı + -ları sökülür)
+  Emin değilsen ilçe adını olduğu gibi (ekini atmadan) yaz, kısaltma UYDURMA.
 - amount ve qty SAYI olarak yaz (string değil), binlik ayraç/nokta/virgül
   kullanma (15000, 1500.50 gibi).
 
@@ -61,6 +85,15 @@ JSON: {"kind": "payment", "person_name": "ayşe", "qty": 30, "unit": "çuval", "
 
 Kullanıcı: "dumanın hesabı ne durumda acaba"
 JSON: {"kind": "balance_query", "person_name": "duman", "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+
+Kullanıcı: "mehmet borcu ne kadar"
+JSON: {"kind": "balance_query", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+
+Kullanıcı: "ali ne kadar borçlu"
+JSON: {"kind": "balance_query", "person_name": "ali", "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+
+Kullanıcı: "ahmetbeylerden mehmet ne kadar borçlu"
+JSON: {"kind": "balance_query", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": null, "district": "ahmetbeyler"}
 
 Kullanıcı: "tüm müşterileri bana listeler misin"
 JSON: {"kind": "list_all", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null}

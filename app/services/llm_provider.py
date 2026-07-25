@@ -96,7 +96,7 @@ class OllamaProvider:
         self,
         base_url: str,
         model: str,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -154,5 +154,5 @@ def get_provider() -> LLMProvider | None:
     from app.config import settings  # döngüsel import olmasın diye gecikmeli
 
     if settings.llm_provider == "ollama":
-        return OllamaProvider(settings.ollama_url, settings.llm_model)
+        return OllamaProvider(settings.ollama_url, settings.llm_model, timeout=settings.llm_timeout)
     return None
