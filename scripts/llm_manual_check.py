@@ -30,11 +30,48 @@ CUMLELER = [
     "ahmet yılmaz 20 balya borcunu 15000 tl ödedi",
 ]
 
+# Bug (2026-07-26, prompt): LLM "borçlu" kelimesini görünce tutar/kayıt
+# fiili yokken bile bunu bir borç KAYDI sanıyordu (kind=debt, amount=None,
+# district="ahmetbey" gibi yanlış kısaltılmış bir ilçe). Bu üçü kesinlikle
+# balance_query olmalı, amount=None, district (varsa) TAM ilçe adı olmalı
+# ("ahmetbeyler", "ahmetbey" DEĞİL). Kişi mehmet/ali dev DB'de olmayabilir,
+# bu yüzden bunlar tam pipeline yerine doğrudan provider ile kontrol edilir
+# — burada ölçülen şey ledger değil, LLM'in ne çıkardığı.
+BAKIYE_SORGUSU_CUMLELERI = [
+    ("ahmetbeylerden mehmet ne kadar borçlu", "balance_query", "mehmet", "ahmetbeyler"),
+    ("mehmet borcu ne kadar", "balance_query", "mehmet", None),
+    ("ali ne kadar borçlu", "balance_query", "ali", None),
+]
+
+
+async def _check_prompt_fix(provider) -> None:
+    print("\n=== Prompt düzeltmesi: bakiye sorgusu vs kayıt ===")
+    for text, expected_kind, expected_person, expected_district in BAKIYE_SORGUSU_CUMLELERI:
+        intent = await provider.parse(text)
+        print(f"\n--- {text!r} ---")
+        print("intent  :", intent)
+        if intent is None:
+            print("SONUÇ   : BAŞARISIZ (None döndü)")
+            continue
+        ok = (
+            intent.kind == expected_kind
+            and intent.person_name == expected_person
+            and intent.amount is None
+            and intent.district == expected_district
+        )
+        print(
+            "beklenen:",
+            {"kind": expected_kind, "person_name": expected_person,
+             "amount": None, "district": expected_district},
+        )
+        print("SONUÇ   :", "DOĞRU" if ok else "YANLIŞ")
+
 
 async def main() -> None:
     print(f"LLM_PROVIDER={settings.llm_provider} OLLAMA_URL={settings.ollama_url} "
-          f"LLM_MODEL={settings.llm_model}")
-    if llm_provider.get_provider() is None:
+          f"LLM_MODEL={settings.llm_model} LLM_TIMEOUT={settings.llm_timeout}")
+    provider = llm_provider.get_provider()
+    if provider is None:
         print("UYARI: LLM devre dışı (LLM_PROVIDER=none). .env'de "
               "LLM_PROVIDER=ollama ayarlayın ve Ollama'yı başlatın.")
         return
@@ -58,6 +95,8 @@ async def main() -> None:
         # Deftere hiçbir şey yazılmasın diye kaydetmiyoruz.
         await session.rollback()
     await engine.dispose()
+
+    await _check_prompt_fix(provider)
 
 
 if __name__ == "__main__":
