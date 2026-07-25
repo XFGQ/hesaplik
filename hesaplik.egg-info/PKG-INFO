@@ -10,6 +10,7 @@ Requires-Dist: alembic>=1.14
 Requires-Dist: pydantic>=2.9
 Requires-Dist: pydantic-settings>=2.6
 Requires-Dist: structlog>=24.4
+Requires-Dist: python-telegram-bot>=21
 Provides-Extra: dev
 Requires-Dist: pytest>=8.3; extra == "dev"
 Requires-Dist: pytest-asyncio>=0.24; extra == "dev"

@@ -6,6 +6,7 @@ alembic>=1.14
 pydantic>=2.9
 pydantic-settings>=2.6
 structlog>=24.4
+python-telegram-bot>=21
 
 [dev]
 pytest>=8.3

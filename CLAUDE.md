@@ -250,3 +250,28 @@ Ayrım kasıtlıdır:
   gider, yenisi açılır). Sık kullanılan, düşük riskli işlem.
 - **Sil** → yazı ister. Kayıt defterden tamamen kalkar. Nadir, yüksek
   riskli işlem.
+
+## Kişi eşleştirme güvenliği (2026-07-25 — kritik bug düzeltmesi)
+
+Telegram'da yanlış kişiye para yazma hatası oldu: "furkan yılmaz" yazıldı,
+sistem "furkan duman"a ekledi. Sebep: pg_trgm eşiği gevşekti, farklı
+soyadlı iki isim "tek net eşleşme" sayıldı.
+
+Kurallar:
+- **Net eşleşme = yalnızca birebir (normalize) ad eşleşmesi VEYA belirgin
+  şekilde tek yakın aday.** İki aday arasındaki benzerlik farkı küçükse
+  (ör. ikisi de eşiğin üstünde) ASLA otomatik seçme — "hangisi?" diye sor.
+- **Soyad ayırt edicidir.** "furkan yılmaz" ile "furkan duman" NET eşleşme
+  değildir; girdi iki kelimeyse (ad+soyad) ve tam eşleşen kişi yoksa,
+  kısmi eşleşmeleri aday olarak sun, otomatik bağlama.
+- **Tek kelime girdi ("furkan") birden çok kişiye uyuyorsa** → hepsini
+  aday göster, "hangisi?" diye sor. Otomatik seçme.
+- Eşik değerleri kod içinde sabit sihirli sayı olarak değil, adlandırılmış
+  sabit olarak tanımlansın (SIMILARITY_STRONG, SIMILARITY_CANDIDATE) ki
+  ayarlanabilsin.
+- Para yazan hiçbir işlemde "muhtemelen bu kişidir" varsayımı yapılmaz.
+  Şüphe varsa sor. Yanlış kişiye borç yazmak, bir soru sormaktan çok daha
+  pahalıdır.
+- Bu mantık testlerle korunsun: "furkan yılmaz vs furkan duman" senaryosu
+  ve "tek kelime iki adaya uyuyor" senaryosu tests/test_intent_resolver.py'de
+  bulunmalı.
