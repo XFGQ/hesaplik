@@ -275,3 +275,28 @@ Kurallar:
 - Bu mantık testlerle korunsun: "furkan yılmaz vs furkan duman" senaryosu
   ve "tek kelime iki adaya uyuyor" senaryosu tests/test_intent_resolver.py'de
   bulunmalı.
+
+## Telegram sorgu komutları (regex, Faz 3 devamı)
+
+Kayıt kadar sorgulama da Telegram'dan yapılır. Kural tabanlı (LLM yok),
+sonuç Telegram'a METİN liste olarak döner.
+
+Desteklenecek sorgular (esnek kalıp, ek/yazım toleranslı):
+- "kişileri listele" / "kişileri sırala" → tüm kişiler + bakiye + kısa kalem
+- "borçluları listele" → bakiyesi + olanlar (kişi sana borçlu)
+- "alacaklıları listele" → bakiyesi − olanlar (sen borçlusun / peşin ödeyen)
+- "{ilçe}lileri listele" → o ilçedeki kişiler (ör. "bergamalıları listele",
+  "ahmetbeylerlileri listele"). İlçe adı Türkçe ekle çekimli gelebilir
+  (-li/-lı/-lu/-lü + -leri/-ları); eki soyup persons.district ile eşleştir.
+- "{isim} borcunu söyle" / "{isim} borcu ne kadar" → tek kişi bakiye+kalem
+  (mevcut bakiye sorgusu, kişi eşleştirme güvenlik kurallarıyla)
+
+Sıralama: bakiye büyükten küçüğe (en çok borçlu üstte). Liste uzunsa
+Telegram mesaj sınırına (4096 karakter) dikkat, gerekirse parçala.
+Format: mono hizalı değil, sade okunur — "Ad Soyad — 1.500 TL borçlu".
+Para tutarları Türkçe biçim (1.500,00 TL). Boş sonuç → "Kimse yok" tarzı
+nazik mesaj.
+
+Backend: bu filtreler API'de de işe yarar, ledger/servis katmanına
+eklensin (ilçeye göre, borçlu/alacaklı filtresi), bot ve web ikisi de
+kullanabilsin.

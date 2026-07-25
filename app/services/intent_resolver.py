@@ -44,6 +44,10 @@ class ResolutionStatus(str, enum.Enum):
     UNRECOGNIZED = "unrecognized"
 
 
+# Kişi/tutar gerektirmeyen sorgu niyetleri (Telegram sorgu komutları).
+LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
+
+
 @dataclass(slots=True)
 class ResolvedIntent:
     status: ResolutionStatus
@@ -56,6 +60,7 @@ class ResolvedIntent:
     product_name_raw: str | None = None
     product: Product | None = None
     amount: Decimal | None = None
+    district: str | None = None
 
 
 async def find_person_match(
@@ -104,6 +109,9 @@ async def find_person_match(
 async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> ResolvedIntent:
     if intent is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED)
+
+    if intent.kind in LIST_KINDS:
+        return ResolvedIntent(status=ResolutionStatus.READY, kind=intent.kind, district=intent.district)
 
     if intent.kind != "balance_query" and intent.amount is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)

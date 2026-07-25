@@ -50,6 +50,7 @@ from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError
 from app.services.ledger import reverse as ledger_reverse
 from app.services.message_processor import ProcessOutcome, ProcessResult
+from app.services.queries import PersonBalanceRow
 from app.services.telegram_intake import save_raw_message
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,14 @@ def _dative(name: str) -> str:
     return f"{name}'{suffix}"
 
 
+def _locative(name: str) -> str:
+    lowered = name.lower()
+    vowels = _BACK_VOWELS + _FRONT_VOWELS
+    last_vowel = next((c for c in reversed(lowered) if c in vowels), "e")
+    suffix = "da" if last_vowel in _BACK_VOWELS else "de"
+    return f"{name}'{suffix}"
+
+
 def _format_item_summary(resolved: ResolvedIntent) -> str:
     if resolved.product is not None and resolved.qty is not None:
         unit = f"{resolved.unit} " if resolved.unit else ""
@@ -129,6 +138,70 @@ def _format_balance(person: Person, bal: Balance) -> str:
         items = "\n".join(f"  {name}: {_fmt_decimal(qty)} {unit}" for name, qty, unit in bal.items)
         text += f"\nAçık kalemler:\n{items}"
     return text
+
+
+TELEGRAM_MAX_LEN = 4096
+
+_LIST_TITLES = {"list_all": "Kişiler", "list_debtors": "Borçlular", "list_creditors": "Alacaklılar"}
+_LIST_EMPTY_MESSAGES = {
+    "list_all": "Defterde kayıtlı kimse yok.",
+    "list_debtors": "Şu anda borçlu kimse yok.",
+    "list_creditors": "Şu anda alacaklı kimse yok.",
+}
+
+
+def _fmt_try(value: Decimal) -> str:
+    """1500.5 -> "1.500,50" (Türkçe: binlik nokta, ondalık virgül)."""
+    q = value.quantize(Decimal("0.01"))
+    neg = q < 0
+    formatted = f"{abs(q):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"-{formatted}" if neg else formatted
+
+
+def _format_person_row(row: PersonBalanceRow) -> str:
+    bal = row.balance_try
+    if bal > 0:
+        line = f"{row.person.full_name} — {_fmt_try(bal)} TL borçlu"
+    elif bal < 0:
+        line = f"{row.person.full_name} — {_fmt_try(-bal)} TL alacaklı"
+    else:
+        line = f"{row.person.full_name} — hesabı sıfır"
+    if row.items:
+        extra = "\n".join(f"  {_fmt_decimal(qty)} {unit} {name}" for name, qty, unit in row.items)
+        line = f"{line}\n{extra}"
+    return line
+
+
+def _split_for_telegram(text: str, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit and current:
+            parts.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _format_list_messages(kind: str, district: str | None, rows: list[PersonBalanceRow]) -> list[str]:
+    if kind == "list_district":
+        title = _title_tr(district or "")
+        if not rows:
+            return [f"{_locative(title)} kayıtlı kimse yok."]
+    else:
+        title = _LIST_TITLES[kind]
+        if not rows:
+            return [_LIST_EMPTY_MESSAGES[kind]]
+
+    header = f"📋 {title} ({len(rows)} kişi)"
+    body = "\n".join(_format_person_row(r) for r in rows)
+    return _split_for_telegram(f"{header}\n{body}")
 
 
 def _undo_keyboard(tx_id: int) -> InlineKeyboardMarkup:
@@ -249,6 +322,11 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.BALANCE:
         await update.message.reply_text(_format_balance(resolved.person, result.balance))
+        return
+
+    if result.outcome == ProcessOutcome.LIST:
+        for msg in _format_list_messages(resolved.kind, resolved.district, result.persons or []):
+            await update.message.reply_text(msg)
         return
 
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:

@@ -9,7 +9,13 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
             varyantlar: "aldı", "verdim", "çekti", "borç yaz(dı)"
   Tahsilat: "{isim} {tutar} tl (ödedi|verdi|yatırdı)"
             ürünlü:    "{isim} {sayı} {birim} {ürün} parası ödedi {tutar} tl"
-  Bakiye:   "{isim} (borcu|hesabı|bakiyesi|durumu) (ne|nedir|kaç|ne kadar)"
+  Bakiye:   "{isim} (borcu|borcunu|hesabı|hesabını|bakiyesi|bakiyesini|
+            durumu|durumunu) [ne|nedir|kaç|ne kadar|söyle|göster]"
+            varyant:   "{isim} ne kadar borcu var"
+  Sorgu:    "kişileri listele/sırala" -> list_all
+            "borçluları listele" -> list_debtors
+            "alacaklıları listele" -> list_creditors
+            "{ilçe}lileri listele" -> list_district (ör. "bergamalıları listele")
 """
 
 from __future__ import annotations
@@ -30,8 +36,44 @@ UNITS = {
 
 DEBT_WORDS = {"aldı", "verdim", "çekti"}
 PAYMENT_WORDS = {"ödedi", "yatırdı", "verdi"}
-BALANCE_KEYWORDS = {"borcu", "hesabı", "bakiyesi", "durumu"}
-BALANCE_QUESTIONS = {"ne", "nedir", "kaç", "kadar"}
+BALANCE_KEYWORDS = {
+    "borcu", "borcunu", "hesabı", "hesabını", "bakiyesi", "bakiyesini",
+    "durumu", "durumunu",
+}
+# Anahtar kelimeden önce ("ne kadar borcu var") ya da sonra ("borcu ne
+# kadar", "borcunu söyle") gelebilen, isme dahil edilmemesi gereken dolgu
+# kelimeleri.
+BALANCE_FILLERS = {"ne", "nedir", "kaç", "kadar", "söyle", "göster", "var"}
+
+LIST_VERBS = {"listele", "sırala", "listeler", "sıralar", "listelesene", "sıralasana"}
+LIST_FILLERS = {"tüm", "tum", "bütün", "butun", "hepsini", "hepsi", "lütfen", "lutfen", "bana"}
+LIST_ALL_WORDS = {"kişileri", "kisileri", "kişiler", "kisiler", "herkesi", "herkes"}
+LIST_DEBTORS_WORDS = {"borçluları", "borclulari", "borçlular", "borclular"}
+LIST_CREDITORS_WORDS = {"alacaklıları", "alacaklilari", "alacaklılar", "alacaklilar"}
+
+# İlçe eki çözümü: sondan önce çoğul/belirtme (-leri/-ları/-i/-ı), sonra
+# "ile ilgili" eki (-li/-lı/-lu/-lü) soyulur. Uzun ekler önce denenir ki
+# "ahmetbeylerlileri" -> "leri" (değil "i") soyulsun.
+_DISTRICT_SUFFIX_OUTER = ("leri", "ları", "i", "ı")
+_DISTRICT_SUFFIX_INNER = ("li", "lı", "lu", "lü")
+
+
+def _strip_district_suffix(word: str) -> str | None:
+    """"bergamalıları" -> "bergama", "ahmetbeylerlileri" -> "ahmetbeyler".
+    Ek bulunamazsa None (bu kelime bir ilçe adı çekimi değil demektir)."""
+    stripped = word
+    for suf in _DISTRICT_SUFFIX_OUTER:
+        if stripped.endswith(suf) and len(stripped) > len(suf) + 1:
+            stripped = stripped[: -len(suf)]
+            break
+    else:
+        return None
+
+    for suf in _DISTRICT_SUFFIX_INNER:
+        if stripped.endswith(suf) and len(stripped) > len(suf) + 1:
+            stripped = stripped[: -len(suf)]
+            return stripped
+    return None
 
 # Niyet belirlendikten sonra kişi/ürün metninden temizlenen kelimeler.
 STOPWORDS = DEBT_WORDS | PAYMENT_WORDS | {
@@ -54,12 +96,13 @@ _NUMBER_TOKEN = re.compile(r"\d[\d.,]*")
 
 @dataclass(slots=True)
 class ParsedIntent:
-    kind: str  # "debt" | "payment" | "balance_query"
+    kind: str  # "debt" | "payment" | "balance_query" | "list_all" | "list_debtors" | "list_creditors" | "list_district"
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
     product: str | None = None
     amount: Decimal | None = None
+    district: str | None = None
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -182,13 +225,41 @@ def _detect_kind(tokens: list[str]) -> str | None:
 
 
 def _try_balance_query(tokens: list[str]) -> ParsedIntent | None:
-    for i, tok in enumerate(tokens):
-        if tok in BALANCE_KEYWORDS:
-            rest = tokens[i + 1:]
-            if rest and any(w in BALANCE_QUESTIONS for w in rest):
-                person = " ".join(tokens[:i]).strip()
-                if person:
-                    return ParsedIntent(kind="balance_query", person_name=person)
+    """Anahtar kelime ("borcu"/"hesabı"/"bakiyesi"/"durumu" ve ekli halleri)
+    tek başına yeterlidir — bir soru/emir kelimesi ("ne", "söyle"...) şart
+    değil. Bu kelimeler isim öncesinde ("ne kadar borcu var") ya da
+    sonrasında ("borcu ne kadar", "borcunu söyle") gelebilir; ikisinde de
+    isme dahil edilmez."""
+    idx = next((i for i, tok in enumerate(tokens) if tok in BALANCE_KEYWORDS), None)
+    if idx is None:
+        return None
+    person_tokens = [t for t in tokens[:idx] if t not in BALANCE_FILLERS]
+    person = " ".join(person_tokens).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="balance_query", person_name=person)
+
+
+def _try_list_query(tokens: list[str]) -> ParsedIntent | None:
+    verb_idx = next((i for i, tok in enumerate(tokens) if tok in LIST_VERBS), None)
+    if verb_idx is None:
+        return None
+
+    head = [t for t in tokens[:verb_idx] if t not in LIST_FILLERS]
+    if len(head) != 1:
+        return None
+    word = head[0]
+
+    if word in LIST_ALL_WORDS:
+        return ParsedIntent(kind="list_all")
+    if word in LIST_DEBTORS_WORDS:
+        return ParsedIntent(kind="list_debtors")
+    if word in LIST_CREDITORS_WORDS:
+        return ParsedIntent(kind="list_creditors")
+
+    district = _strip_district_suffix(word)
+    if district:
+        return ParsedIntent(kind="list_district", district=district)
     return None
 
 
@@ -201,6 +272,10 @@ def parse(raw_text: str) -> ParsedIntent | None:
     tokens = _split_tokens(norm)
     if not tokens:
         return None
+
+    listing = _try_list_query(tokens)
+    if listing is not None:
+        return listing
 
     balance = _try_balance_query(tokens)
     if balance is not None:

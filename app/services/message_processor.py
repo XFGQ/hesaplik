@@ -16,15 +16,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RawMessage, Transaction, TxSource
 from app.services import parser
-from app.services.intent_resolver import ResolutionStatus, ResolvedIntent, resolve
+from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
+from app.services.queries import PersonBalanceRow, list_persons_with_balance
 
 TELEGRAM_ACTOR = "telegram-bot"
+
+_LIST_SCOPE_BY_KIND = {
+    "list_all": "all",
+    "list_debtors": "debtors",
+    "list_creditors": "creditors",
+    "list_district": "all",
+}
 
 
 class ProcessOutcome(str, enum.Enum):
     RECORDED = "recorded"
     BALANCE = "balance"
+    LIST = "list"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
     UNRECOGNIZED = "unrecognized"
@@ -36,6 +45,7 @@ class ProcessResult:
     resolved: ResolvedIntent
     transaction_id: int | None = None
     balance: Balance | None = None
+    persons: list[PersonBalanceRow] | None = None
 
 
 async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str) -> ProcessResult:
@@ -55,6 +65,12 @@ async def handle_resolved(
         return ProcessResult(outcome=ProcessOutcome.NEEDS_CONFIRMATION, resolved=resolved)
     if resolved.status == ResolutionStatus.PERSON_NOT_FOUND:
         return ProcessResult(outcome=ProcessOutcome.PERSON_NOT_FOUND, resolved=resolved)
+
+    if resolved.kind in LIST_KINDS:
+        rows = await list_persons_with_balance(
+            session, scope=_LIST_SCOPE_BY_KIND[resolved.kind], district=resolved.district
+        )
+        return ProcessResult(outcome=ProcessOutcome.LIST, resolved=resolved, persons=rows)
 
     assert resolved.person is not None
 
