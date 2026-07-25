@@ -1,14 +1,20 @@
 """Telegram bot — yerelde uzun yoklama (long polling).
 
-Faz 3'ün ikinci adımı: kural tabanlı parser + kayıt + onay akışı. LLM yok.
-Düz metin geldiğinde önce save_raw_message ile raw_messages'a yazılır
-(mesaj hiçbir zaman kaybolmaz), sonra message_processor ile parser +
+Faz 3: kural tabanlı parser + kayıt + onay akışı. Faz 4: kural parser
+çözemezse (None) LLM (Ollama) fallback olarak devreye girer — kural
+parser kaldırılmaz, LLM yalnızca ek bir yol. Düz metin geldiğinde önce
+save_raw_message ile raw_messages'a yazılır (mesaj hiçbir zaman
+kaybolmaz), sonra message_processor ile parser + (gerekirse) LLM +
 intent_resolver çalıştırılır.
 
 Onay akışı (CLAUDE.md > Faz 3):
-  - Net ve güvenliyse: anında kaydet + 60 sn süreli "Geri al" butonu.
+  - Net ve güvenliyse (kural parser): anında kaydet + 60 sn süreli
+    "Geri al" butonu.
   - Kişi bulunamazsa: "Ekleyeyim mi?" + Evet/Hayır.
   - Kişi adayı birden fazlaysa: TEK soru, seçenekler buton olarak.
+  - LLM'den gelen bir kayıt (borç/tahsilat) niyeti: kişi/ürün/tutar net
+    olsa da düşük güven sayılır, "Bunu mu demek istediniz?" +
+    Evet/Düzelt/İptal (Faz 4).
   - Anlaşılmazsa: örnekli kısa açıklama, ikinci soru sorulmaz.
 
 Müşteriye teknik terim (provider, güven skoru, LLM) asla gösterilmez.
@@ -44,7 +50,7 @@ from telegram.ext import (
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Person, RawMessage
+from app.models import Person, Product, RawMessage
 from app.services import catalog, message_processor
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError
@@ -236,6 +242,39 @@ def _pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, raw_te
     }
 
 
+def _llm_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("Evet", callback_data="llm:yes"),
+            InlineKeyboardButton("Düzelt", callback_data="llm:fix"),
+            InlineKeyboardButton("İptal", callback_data="llm:cancel"),
+        ]]
+    )
+
+
+def _format_llm_preview(resolved: ResolvedIntent) -> str:
+    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
+    return (
+        f"Bunu mu demek istediniz: {_dative(resolved.person.full_name)} "
+        f"{_format_item_summary(resolved)} {kind_word}?"
+    )
+
+
+def _llm_pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, raw_text: str) -> dict:
+    """Kişi/ürün intent_resolver tarafından zaten çözülmüş durumda (READY);
+    onay callback'i bunları yeniden fuzzy-eşleştirmeden id ile geri alır."""
+    return {
+        "kind": resolved.kind,
+        "person_id": resolved.person.id,
+        "qty": resolved.qty,
+        "unit": resolved.unit,
+        "product_id": resolved.product.id if resolved.product else None,
+        "amount": resolved.amount,
+        "raw_message_id": raw_message_id,
+        "raw_text": raw_text,
+    }
+
+
 def _is_admin(chat_id: int | None) -> bool:
     return chat_id is not None and chat_id in settings.telegram_admin_ids_list
 
@@ -329,6 +368,13 @@ async def _reply_result(
             await update.message.reply_text(msg)
         return
 
+    if result.outcome == ProcessOutcome.LLM_CONFIRMATION:
+        context.chat_data["llm_confirm"] = _llm_pending_from_resolved(resolved, raw.id, text)
+        await update.message.reply_text(
+            _format_llm_preview(resolved), reply_markup=_llm_confirm_keyboard()
+        )
+        return
+
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:
         isim = _title_tr(resolved.person_name_raw or "")
         if resolved.kind == "balance_query":
@@ -373,6 +419,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data.startswith("person:pick:"):
         person_id = int(data.rsplit(":", 1)[1])
         await _handle_person_pick(query, context, person_id)
+        return
+    if data == "llm:yes":
+        await _handle_llm_confirm_yes(query, context)
+        return
+    if data == "llm:fix":
+        context.chat_data.pop("llm_confirm", None)
+        await query.edit_message_text("Tamam, doğrusunu yazar mısın?")
+        return
+    if data == "llm:cancel":
+        context.chat_data.pop("llm_confirm", None)
+        await query.edit_message_text("Tamam, iptal ettim.")
         return
 
 
@@ -448,6 +505,47 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     if result.outcome == ProcessOutcome.BALANCE:
         await query.edit_message_text(_format_balance(person, result.balance))
         return
+
+    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
+    msg = (
+        f"{_dative(person.full_name)} {_format_item_summary(resolved)} "
+        f"{kind_word} eklendi.\nYeni bakiye: {_fmt_decimal(result.balance.balance_try)} TL."
+    )
+    context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
+    await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+
+
+async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """LLM önizlemesinde "Evet": kişi/ürün zaten intent_resolver tarafından
+    çözülmüştü (READY), burada yeniden fuzzy-eşleştirme yapılmaz — id'lerle
+    geri alınır ve source="rule" ile kaydedilir (kullanıcı zaten onayladı)."""
+    pending = context.chat_data.pop("llm_confirm", None)
+    if not pending:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, pending["person_id"])
+        if person is None:
+            await query.edit_message_text("Kişi bulunamadı.")
+            return
+        product = await session.get(Product, pending["product_id"]) if pending["product_id"] else None
+
+        resolved = ResolvedIntent(
+            status=ResolutionStatus.READY,
+            kind=pending["kind"],
+            person=person,
+            qty=pending["qty"],
+            unit=pending["unit"],
+            product=product,
+            amount=pending["amount"],
+        )
+
+        raw = await session.get(RawMessage, pending["raw_message_id"])
+        result = await message_processor.handle_resolved(
+            session, raw, resolved, pending["raw_text"], source="rule"
+        )
+        await session.commit()
 
     kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
     msg = (
