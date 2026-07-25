@@ -68,3 +68,7 @@ backup-list:
 # En son yedeği geçici DB'ye açıp doğrula
 restore-test: db
     ./scripts/restore-test.sh
+
+# Telegram bot (yerelde uzun yoklama)
+bot: db
+    .venv/bin/python -m app.bot.main
