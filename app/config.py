@@ -12,9 +12,17 @@ class Settings(BaseSettings):
     restic_repository: str = "./data/backups"
     restic_password: str | None = None
 
+    # Token yoksa bot başlamaz ama API çalışmaya devam eder.
+    telegram_bot_token: str | None = None
+    telegram_admin_ids: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def telegram_admin_ids_list(self) -> list[int]:
+        return [int(x.strip()) for x in self.telegram_admin_ids.split(",") if x.strip()]
 
 
 settings = Settings()
