@@ -300,3 +300,43 @@ nazik mesaj.
 Backend: bu filtreler API'de de işe yarar, ledger/servis katmanına
 eklensin (ilçeye göre, borçlu/alacaklı filtresi), bot ve web ikisi de
 kullanabilsin.
+
+## Faz 4 — LLM (Ollama, sonra vLLM)
+
+Regex'in sınırına gelindi. "anlamazsa sor", serbest cümle, esnek varyasyon
+= LLM işi. Kural parser KALDIRILMAZ — hızlı yol olarak kalır, LLM fallback
+olur.
+
+**Akış:** mesaj → kural parser dener (15 ms) → çözerse kaydet → çözemezse
+LLM'e gönder (Ollama/vLLM) → LLM JSON çıkarır → BİZİM KOD doğrular
+(kişi pg_trgm, ürün catalog, tutar sayı mı) → net ve güvenliyse kaydet,
+değilse "bunu mu demek istediniz?" diye sorar. LLM asla son sözü söylemez,
+öneri sunar; karar kod + kullanıcıda.
+
+**Provider soyutlaması (kritik):**
+- LLMProvider Protocol: parse(text) -> ParsedIntent. Somut sınıflar:
+  OllamaProvider (base_url, model), sonra VllmProvider, ve RuleProvider
+  (her zaman açık taban).
+- Hangi provider kullanılacağı config'ten (inference.yml veya .env), koddan
+  DEĞİL. Laptop→Ollama, 2080 Super→vLLM geçişi tek satır config.
+- Model/URL .env'den: LLM_PROVIDER=ollama, OLLAMA_URL=http://localhost:11434,
+  LLM_MODEL=qwen2.5:7b. Ollama yoksa/erişilemezse sistem kural parser +
+  "elle gir" ile çalışmaya devam eder, ÇÖKMEZ.
+
+**Prompt:** few-shot (örnekli) sistem prompt'u. Kişi adı eklerini temizle,
+birim ile para birimini karıştırma, emin olmadığını null bırak. Ollama
+--format json ile JSON zorlanır. Prompt kod içinde sabit bir dosyada
+(app/services/llm_prompt.py veya .txt), kolay düzenlenebilir.
+
+**Güven ve onay:** LLM çıktısındaki her alan kod tarafından doğrulanır.
+Kişi eşleşmezse veya çok aday varsa → sor (mevcut NEEDS_CONFIRMATION).
+Ürün/tutar/tür belirsizse → "bunu mu demek istediniz: ... ?" + Evet/düzelt.
+Kural parser güvenli sayılır (doğrudan kaydeder), LLM sonucu düşük güven
+sayılır (kritik alanlarda onay ister).
+
+**Hız:** işlemcide 3-8 sn/cümle (model bellekte kalırsa). 2080 Super +
+vLLM'de ~0.3 sn. Kural parser'ın çözdüğü mesajlar LLM'e hiç gitmez, o
+yüzden çoğu mesaj yine hızlı.
+
+**Ses (Faz 5, sonra):** aynı GPU'ya faster-whisper. Ses → metin → yukarıdaki
+akış. Whisper de provider (STTProvider) arkasında. GPU gelince eklenecek.

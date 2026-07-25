@@ -277,6 +277,19 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if listing is not None:
         return listing
 
+    # Bug (2026-07-26): "ahmet yılmaz 20 balya borcunu 15000 tl ödedi" gibi
+    # bir TAHSİLAT cümlesi "borcunu" (bakiye anahtar kelimesi) içerdiği
+    # için _try_balance_query'ye düşüyor ve "ahmet yılmaz 20 balya" diye
+    # anlamsız bir isimle sahte bir bakiye sorgusuna dönüşüyordu; bu da
+    # kural parser'ın "çözdüm" sanıp LLM'e hiç devretmemesine yol açıyordu.
+    # Cümlede HEM bir bakiye kelimesi HEM bir borç/tahsilat fiili
+    # (aldı/verdim/çekti/ödedi/yatırdı/verdi) varsa bu ikisi çelişir —
+    # kural parser'ın basit "sayı/birim/ürün" ayrıştırması böyle karışık
+    # bir cümleyi güvenle çözemez, LLM'e bırakılır (None dön).
+    token_set = set(tokens)
+    if token_set & BALANCE_KEYWORDS and token_set & (DEBT_WORDS | PAYMENT_WORDS):
+        return None
+
     balance = _try_balance_query(tokens)
     if balance is not None:
         return balance
