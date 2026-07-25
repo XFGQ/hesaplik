@@ -1,9 +1,14 @@
-"""raw_message -> parser -> intent_resolver -> ledger.
+"""raw_message -> parser -> (gerekirse LLM) -> intent_resolver -> ledger.
 
-Kural motoruyla net ve güvenli bir eşleşme bulunduysa doğrudan CONFIRMED
-kaydedilir (LLM yok, güven skoru yok — kural eşleşmesi zaten güvenli
-sayılır). Belirsizse hiçbir şey kaydedilmez; sonucun outcome'u botun ne
-soracağını belirler.
+Kural motoru (app/services/parser.py) her zaman önce denenir; çözerse
+yüksek güven sayılır ve net/güvenli eşleşme doğrudan CONFIRMED kaydedilir.
+Kural parser çözemezse (None) ve LLM aktifse (CLAUDE.md > "Faz 4 — LLM")
+fallback olarak LLM'e sorulur. LLM'in çıktısı da AYNI intent_resolver'dan
+geçer (kişi eşleştirme, ürün, güvenlik kuralları aynen uygulanır) ama
+kaynağı düşük güven sayılır: kayıt (borç/tahsilat) öncesi kullanıcıdan
+"bunu mu demek istediniz?" onayı istenir — bakiye/liste sorguları salt
+okunur olduğu için onay gerekmez. Kural parser da LLM de çözemezse hiçbir
+şey kaydedilmez; sonucun outcome'u botun ne soracağını belirler.
 """
 
 from __future__ import annotations
@@ -15,7 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RawMessage, Transaction, TxSource
-from app.services import parser
+from app.services import llm_provider, parser
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
 from app.services.queries import PersonBalanceRow, list_persons_with_balance
@@ -34,6 +39,7 @@ class ProcessOutcome(str, enum.Enum):
     RECORDED = "recorded"
     BALANCE = "balance"
     LIST = "list"
+    LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
     UNRECOGNIZED = "unrecognized"
@@ -50,15 +56,29 @@ class ProcessResult:
 
 async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str) -> ProcessResult:
     intent = parser.parse(text)
+    source = "rule"
+
+    if intent is None:
+        provider = llm_provider.get_provider()
+        if provider is not None:
+            intent = await provider.parse(text)
+            source = "llm"
+
     resolved = await resolve(session, intent)
-    return await handle_resolved(session, raw, resolved, text)
+    return await handle_resolved(session, raw, resolved, text, source=source)
 
 
 async def handle_resolved(
-    session: AsyncSession, raw: RawMessage, resolved: ResolvedIntent, text: str
+    session: AsyncSession,
+    raw: RawMessage,
+    resolved: ResolvedIntent,
+    text: str,
+    source: str = "rule",
 ) -> ProcessResult:
     """Zaten çözülmüş bir niyeti işler. Bot'un onay callback'leri (kişi
-    oluşturuldu / aday seçildi) de bu yolu tekrar kullanır."""
+    oluşturuldu / aday seçildi / LLM önizlemesi onaylandı) de bu yolu
+    tekrar kullanır — bu durumlarda kullanıcı zaten onay verdiği için
+    source="rule" (varsayılan) ile çağrılır, doğrudan kaydeder."""
     if resolved.status == ResolutionStatus.UNRECOGNIZED:
         return ProcessResult(outcome=ProcessOutcome.UNRECOGNIZED, resolved=resolved)
     if resolved.status == ResolutionStatus.NEEDS_CONFIRMATION:
@@ -77,6 +97,12 @@ async def handle_resolved(
     if resolved.kind == "balance_query":
         bal = await balance_of(session, resolved.person.id)
         return ProcessResult(outcome=ProcessOutcome.BALANCE, resolved=resolved, balance=bal)
+
+    if source == "llm":
+        # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net
+        # olsa da LLM sonucu düşük güven sayılır, doğrudan kaydetmeden
+        # önce kullanıcıdan "bunu mu demek istediniz?" onayı istenir.
+        return ProcessResult(outcome=ProcessOutcome.LLM_CONFIRMATION, resolved=resolved)
 
     tx = await record_resolved(session, raw, resolved, text)
     bal = await balance_of(session, resolved.person.id)

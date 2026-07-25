@@ -16,6 +16,14 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_admin_ids: str = ""
 
+    # LLM fallback (Faz 4). Kural parser çözemezse devreye girer, kural
+    # parser asla kaldırılmaz. "none" ise LLM hiç çağrılmaz — Ollama kurulu
+    # olmasa/erişilemese de sistem çökmeden kural parser + "elle gir" ile
+    # çalışmaya devam eder.
+    llm_provider: str = "none"
+    ollama_url: str = "http://localhost:11434"
+    llm_model: str = "qwen2.5:7b"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

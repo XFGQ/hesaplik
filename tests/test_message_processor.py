@@ -4,9 +4,23 @@ import pytest_asyncio
 from sqlalchemy import func, select
 
 from app.models import Person, RawMessage, Transaction, TxKind, TxSource
-from app.services import message_processor
+from app.services import llm_provider, message_processor
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.message_processor import ProcessOutcome
+from app.services.parser import ParsedIntent
+
+
+class _FakeLLMProvider:
+    """Testlerde gerçek Ollama'ya bağlanmamak için: sabit bir ParsedIntent
+    (ya da None) döner, çağrılıp çağrılmadığını işaretler."""
+
+    def __init__(self, intent: ParsedIntent | None):
+        self._intent = intent
+        self.called = False
+
+    async def parse(self, text: str) -> ParsedIntent | None:
+        self.called = True
+        return self._intent
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -238,3 +252,113 @@ async def test_belirsiz_kisi_kayit_olusturmaz(session):
     assert len(result.resolved.person_candidates) >= 2
     await session.refresh(raw)
     assert raw.processed_at is None
+
+
+# ------------------------------------------------------------------
+# Faz 4 — LLM fallback (CLAUDE.md > "Faz 4 — LLM"). Kural parser her zaman
+# önce denenir; yalnızca çözemezse (None) ve LLM aktifse fallback devreye
+# girer. Testlerde gerçek Ollama'ya bağlanılmaz, provider mock'lanır.
+
+_LLM_ANLAMSIZ_METIN = "ahmete bir miktar ödeme yapmak istiyorum"
+
+
+async def test_kural_parser_cozerse_llm_hic_cagrilmaz(session, monkeypatch, ahmet):
+    fake = _FakeLLMProvider(None)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    text = "ahmet yılmaz 500 tl borç yazdım"
+    raw = await _make_raw(session, text, 40)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    assert fake.called is False
+
+
+async def test_borc_kelimesi_tahsilat_fiiliyle_karisan_cumle_llme_duser(session, monkeypatch, ahmet):
+    # Bug (2026-07-26): "ahmet yılmaz 20 balya borcunu 15000 tl ödedi" kural
+    # parser'ı yanıltıp sahte bir bakiye sorgusuna ("ahmet yılmaz 20 balya"
+    # diye anlamsız bir isimle) dönüştürüyordu; bu da rule parser "çözdüm"
+    # sandığı için LLM'e HİÇ düşmüyordu (process_raw_message'ın LLM dalı
+    # izole çalışsa da bot yolunda devreye girmiyordu). Kural parser artık
+    # bu karışık cümlede None dönüyor (bkz. test_parser.py), bu da LLM
+    # fallback'in gerçekten tetiklendiğini doğruluyor.
+    text = "ahmet yılmaz 20 balya borcunu 15000 tl ödedi"
+    intent = ParsedIntent(kind="payment", person_name="ahmet yılmaz", amount=Decimal("15000"))
+    fake = _FakeLLMProvider(intent)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    raw = await _make_raw(session, text, 45)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert fake.called is True
+    assert result.outcome == ProcessOutcome.LLM_CONFIRMATION
+    assert result.resolved.kind == "payment"
+    assert result.resolved.person.id == ahmet.id
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+
+async def test_llm_fallback_net_kayit_onay_ister(session, monkeypatch, ahmet):
+    # Kural parser çözemiyor (LLM'e özgü serbest cümle), LLM ise net bir
+    # borç niyeti dönüyor. Kişi/tutar net olsa da LLM kaynaklı olduğu için
+    # doğrudan kaydedilmez — RECORDED değil, LLM_CONFIRMATION dönmeli.
+    intent = ParsedIntent(kind="debt", person_name="ahmet yılmaz", amount=Decimal("500"))
+    fake = _FakeLLMProvider(intent)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 41)
+    result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
+
+    assert fake.called is True
+    assert result.outcome == ProcessOutcome.LLM_CONFIRMATION
+    assert result.resolved.person.id == ahmet.id
+    assert result.resolved.amount == Decimal("500")
+
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+
+async def test_llm_belirsiz_kisi_de_onay_ister(session, monkeypatch):
+    # Kişi eşleştirme güvenliği LLM kaynaklı niyetlerde de aynen uygulanır:
+    # tek kelimeli "ahmet" iki adaya uyuyor, otomatik seçilmemeli.
+    a = Person(full_name="Ahmet Yılmaz")
+    b = Person(full_name="Ahmet Yıldız")
+    session.add_all([a, b])
+    await session.flush()
+
+    intent = ParsedIntent(kind="debt", person_name="ahmet", amount=Decimal("500"))
+    fake = _FakeLLMProvider(intent)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 42)
+    result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids
+
+
+async def test_llm_erisilemezse_anlasilamadi_doner(session, monkeypatch):
+    # LLM None dönerse (bağlantı hatası/timeout/geçersiz yanıt) sistem
+    # çökmemeli, mevcut "anlayamadım" (UNRECOGNIZED) davranışına düşmeli.
+    fake = _FakeLLMProvider(None)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 43)
+    result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
+
+    assert fake.called is True
+    assert result.outcome == ProcessOutcome.UNRECOGNIZED
+
+
+async def test_llm_kapaliyken_kural_parser_cozemezse_hic_cagrilmaz(session, monkeypatch):
+    # LLM_PROVIDER=none iken get_provider() None döner, LLM'e hiç gidilmez
+    # — mevcut davranış aynen korunur. Gerçek ortamın .env'i (yerelde
+    # Ollama açık olabilir) burada önemli değil; get_provider() doğrudan
+    # devre dışı bırakılarak test bu duruma bağımlı olmaktan çıkarılıyor.
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: None)
+
+    raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 44)
+    result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
+
+    assert result.outcome == ProcessOutcome.UNRECOGNIZED

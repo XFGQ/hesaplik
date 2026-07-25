@@ -173,6 +173,22 @@ def test_bakiye_sorgusu_ne_kadar_borcu_var():
     assert p.person_name == "furkan"
 
 
+def test_borc_kelimesi_tahsilat_fiiliyle_karisirsa_kural_parser_pes_eder():
+    # Bug (2026-07-26): "borcunu" bir bakiye anahtar kelimesi olduğu için
+    # bu tahsilat cümlesi yanlışlıkla "ahmet yılmaz 20 balya" diye anlamsız
+    # bir isimle sahte bir bakiye sorgusuna dönüşüyordu — kural parser
+    # "çözdüm" sandığı için LLM fallback'e hiç düşmüyordu. Cümlede hem
+    # bakiye kelimesi hem tahsilat fiili varsa artık None dönmeli (LLM'e
+    # bırak), yanlış bir niyet UYDURULMAMALI.
+    p = parse("ahmet yılmaz 20 balya borcunu 15000 tl ödedi")
+    assert p is None
+
+
+def test_borc_kelimesi_borc_fiiliyle_karisirsa_kural_parser_pes_eder():
+    p = parse("ahmet borcunu aldı 500 tl")
+    assert p is None
+
+
 def test_turkce_sayi_kelimeleri_miktar_ve_tutar():
     p = parse("ahmet yirmi balya saman aldı on beş bin tl borç")
     assert p.kind == "debt"
