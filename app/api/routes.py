@@ -1,8 +1,7 @@
 from datetime import date, datetime, timezone
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -15,7 +14,6 @@ from app.models import (
     Setting,
     Transaction,
     TransactionLine,
-    TxKind,
     TxSource,
     TxStatus,
 )
@@ -40,7 +38,7 @@ from app.schemas import (
     TxOut,
     TxWithProductOut,
 )
-from app.services import backup, catalog, ledger
+from app.services import backup, catalog, ledger, queries
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
@@ -54,72 +52,40 @@ def _actor() -> str:
 # --------------------------------------------------------------- kişiler
 
 @router.get("/persons", response_model=list[PersonRowOut])
-async def list_persons(q: str | None = None, session: AsyncSession = Depends(get_session)):
-    """Tablo tek istekte dolsun: bakiye ve açık kalemler dahil."""
-    sign = case((Transaction.kind == TxKind.DEBIT, 1), else_=-1)
+async def list_persons(
+    q: str | None = None,
+    filter: str = "all",
+    district: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Tablo tek istekte dolsun: bakiye ve açık kalemler dahil.
 
-    stmt = (
-        select(
-            Person,
-            func.coalesce(func.sum(Transaction.amount_try * sign), 0).label("balance_try"),
-            func.max(Transaction.occurred_at).label("last_activity"),
+    filter: "all" | "debtors" | "creditors". district verilirse yalnızca o
+    ilçedeki kişiler. Bot da (Telegram sorgu komutları) aynı sorgu
+    fonksiyonunu kullanır (app/services/queries.py).
+    """
+    try:
+        rows = await queries.list_persons_with_balance(
+            session, scope=filter, district=district, q=q, order="name"
         )
-        .outerjoin(
-            Transaction,
-            (Transaction.person_id == Person.id) & (Transaction.status == TxStatus.CONFIRMED),
-        )
-        .where(Person.is_active.is_(True))
-        .group_by(Person.id)
-        .order_by(Person.full_name)
-    )
-    if q:
-        like = f"%{q.strip()}%"
-        stmt = stmt.where(Person.full_name.ilike(like) | Person.phone.ilike(like))
-
-    rows = (await session.execute(stmt.limit(500))).all()
-    if not rows:
-        return []
-
-    items_by_person = await _open_items_map(session, [r[0].id for r in rows])
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
 
     return [
         PersonRowOut(
-            id=p.id,
-            full_name=p.full_name,
-            phone=p.phone,
-            city=p.city,
-            district=p.district,
-            address=p.address,
-            note=p.note,
-            balance_try=Decimal(balance),
-            last_activity=last,
-            items=items_by_person.get(p.id, []),
+            id=row.person.id,
+            full_name=row.person.full_name,
+            phone=row.person.phone,
+            city=row.person.city,
+            district=row.person.district,
+            address=row.person.address,
+            note=row.person.note,
+            balance_try=row.balance_try,
+            last_activity=row.last_activity,
+            items=[ItemOut(product_name=n, qty=qty, unit=u) for n, qty, u in row.items],
         )
-        for p, balance, last in rows
+        for row in rows
     ]
-
-
-async def _open_items_map(session: AsyncSession, person_ids: list[int]) -> dict[int, list[ItemOut]]:
-    """Kişi başına açık kalemler. N+1 sorgusu yok, tek sorgu."""
-    sign = case((Transaction.kind == TxKind.DEBIT, 1), else_=-1)
-    qty = func.sum(TransactionLine.qty * sign)
-    stmt = (
-        select(Transaction.person_id, Product.name, TransactionLine.unit, qty.label("qty"))
-        .join(Transaction, Transaction.id == TransactionLine.transaction_id)
-        .join(Product, Product.id == TransactionLine.product_id)
-        .where(
-            Transaction.person_id.in_(person_ids),
-            Transaction.status == TxStatus.CONFIRMED,
-        )
-        .group_by(Transaction.person_id, Product.name, TransactionLine.unit)
-        .having(qty != 0)
-    )
-    out: dict[int, list[ItemOut]] = {}
-    for person_id, name, unit, q in (await session.execute(stmt)).all():
-        out.setdefault(person_id, []).append(
-            ItemOut(product_name=name, qty=Decimal(q), unit=unit)
-        )
-    return out
 
 
 @router.post("/persons", response_model=PersonOut, status_code=201)

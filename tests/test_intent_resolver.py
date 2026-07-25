@@ -134,3 +134,17 @@ async def test_iki_furkandan_birebir_soyadli_net_eslesir(session, two_furkans):
 
     assert resolved.status == ResolutionStatus.READY
     assert resolved.person.id == duman.id
+
+
+async def test_bakiye_sorgusunda_da_tek_kelime_iki_furkan_onay_ister(session, two_furkans):
+    # Kişi eşleştirme güvenliği yalnızca borç/tahsilat değil, bakiye
+    # sorgusu için de geçerli olmalı: "furkan borcunu söyle" iki Furkan
+    # varken hangisi olduğunu sormalı, otomatik birine yazmamalı/göstermemeli.
+    duman, yilmaz = two_furkans
+    intent = ParsedIntent(kind="balance_query", person_name="furkan")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert duman.id in candidate_ids
+    assert yilmaz.id in candidate_ids
