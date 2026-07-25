@@ -113,6 +113,66 @@ def test_bakiye_sorgusu_durumu_kac():
     assert p.person_name == "ayşe"
 
 
+def test_bakiye_sorgusu_borcunu_soyle():
+    p = parse("furkan borcunu söyle")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_borcunu_goster():
+    p = parse("furkan borcunu göster")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_hesabi_yalin():
+    p = parse("furkan hesabı")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_hesabini_soyle():
+    p = parse("furkan hesabını söyle")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_hesabi_ne():
+    p = parse("furkan hesabı ne")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_bakiyesi_yalin():
+    p = parse("furkan bakiyesi")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_bakiyesini_soyle():
+    p = parse("furkan bakiyesini söyle")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_durumu_yalin():
+    p = parse("furkan durumu")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_durumunu_soyle():
+    p = parse("furkan durumunu söyle")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_sorgusu_ne_kadar_borcu_var():
+    p = parse("furkan ne kadar borcu var")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
 def test_turkce_sayi_kelimeleri_miktar_ve_tutar():
     p = parse("ahmet yirmi balya saman aldı on beş bin tl borç")
     assert p.kind == "debt"
@@ -155,4 +215,78 @@ def test_tutar_yoksa_amount_bos_kalir():
     # kararını intent_resolver, amount=None'a bakarak verir.
     p = parse("ahmet saman aldı borç")
     assert p.kind == "debt"
+    assert p.amount is None
+
+
+# --------------------------------------------------------------- sorgu komutları
+
+
+def test_sorgu_kisileri_listele():
+    p = parse("kişileri listele")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_kisileri_sirala():
+    p = parse("kişileri sırala")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_tum_kisileri_listele():
+    p = parse("tüm kişileri listele")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_kisiler_listele_tekil_cogul():
+    p = parse("kişiler listele")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_buyuk_harf_ve_turkce_i():
+    p = parse("KİŞİLERİ LİSTELE")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_borclulari_listele():
+    p = parse("borçluları listele")
+    assert p.kind == "list_debtors"
+
+
+def test_sorgu_borclular_sirala():
+    p = parse("borçlular sırala")
+    assert p.kind == "list_debtors"
+
+
+def test_sorgu_alacaklilari_listele():
+    p = parse("alacaklıları listele")
+    assert p.kind == "list_creditors"
+
+
+def test_sorgu_alacaklilar_sirala():
+    p = parse("alacaklılar sırala")
+    assert p.kind == "list_creditors"
+
+
+def test_sorgu_ilce_bergama():
+    p = parse("bergamalıları listele")
+    assert p.kind == "list_district"
+    assert p.district == "bergama"
+
+
+def test_sorgu_ilce_ahmetbeyler():
+    p = parse("ahmetbeylerlileri listele")
+    assert p.kind == "list_district"
+    assert p.district == "ahmetbeyler"
+
+
+def test_sorgu_ilce_fazla_bosluk_toleransli():
+    p = parse("   bergamalıları    listele   ")
+    assert p.kind == "list_district"
+    assert p.district == "bergama"
+
+
+def test_sorgu_borc_yazma_ile_karismaz():
+    # "borçluları listele" içinde "borç" geçse de bu bir sorgu, borç kaydı değil.
+    p = parse("borçluları listele")
+    assert p.kind == "list_debtors"
+    assert p.person_name is None
     assert p.amount is None

@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 
 from app.models import Person, RawMessage, Transaction, TxKind, TxSource
 from app.services import message_processor
+from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.message_processor import ProcessOutcome
 
 
@@ -91,6 +92,49 @@ async def test_bakiye_sorgusu_kayit_olusturmaz(session, ahmet):
     assert raw2.transaction_id is None
 
 
+async def test_bakiye_sorgusu_borcunu_soyle_kalibiyle_calisir(session, ahmet):
+    # Bug: "borcunu söyle" parser'da tanınmıyordu (UNRECOGNIZED). Şimdi
+    # "borcu ne kadar" ile aynı şekilde bakiye döndürmeli.
+    text1 = "ahmet yılmaz 1000 tl borç yazdım"
+    raw1 = await _make_raw(session, text1, 20)
+    await message_processor.process_raw_message(session, raw1, text1)
+
+    text2 = "ahmet yılmaz borcunu söyle"
+    raw2 = await _make_raw(session, text2, 21)
+    result = await message_processor.process_raw_message(session, raw2, text2)
+
+    assert result.outcome == ProcessOutcome.BALANCE
+    assert result.balance.balance_try == Decimal("1000.00")
+
+
+async def test_bakiye_sorgusu_belirsiz_kisi_onay_ister(session):
+    # Kişi eşleştirme güvenliği bakiye sorgusunda da geçerli: iki "furkan"
+    # varken otomatik birinin bakiyesi gösterilmemeli, "hangisi?" sorulmalı.
+    duman = Person(full_name="Furkan Duman")
+    yilmaz = Person(full_name="Furkan Yılmaz")
+    session.add_all([duman, yilmaz])
+    await session.flush()
+
+    text = "furkan borcunu söyle"
+    raw = await _make_raw(session, text, 22)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {duman.id, yilmaz.id} == candidate_ids
+
+    # Bot'ta aday seçilince (callback), kayıt değil bakiye gösterimi olmalı —
+    # _finish_pending'in yaptığı gibi READY bir ResolvedIntent ile devam.
+    picked = ResolvedIntent(
+        status=ResolutionStatus.READY,
+        kind="balance_query",
+        person=duman,
+    )
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+    assert follow_up.outcome == ProcessOutcome.BALANCE
+    assert follow_up.resolved.person.id == duman.id
+
+
 async def test_anlasilmayan_metin_kayit_olusturmaz(session):
     text = "bugün hava çok güzel"
     raw = await _make_raw(session, text, 6)
@@ -135,6 +179,48 @@ async def test_farkli_soyadli_kisiye_otomatik_baglanmaz(session):
     await session.refresh(raw)
     assert raw.processed_at is None
     assert raw.transaction_id is None
+
+
+async def test_sorgu_kisileri_listele(session, ahmet):
+    text = "kişileri listele"
+    raw = await _make_raw(session, text, 10)
+
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.LIST
+    assert [r.person.id for r in result.persons] == [ahmet.id]
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert raw.transaction_id is None
+
+
+async def test_sorgu_borclulari_listele(session, ahmet):
+    text1 = "ahmet yılmaz 1000 tl borç yazdım"
+    raw1 = await _make_raw(session, text1, 11)
+    await message_processor.process_raw_message(session, raw1, text1)
+
+    text2 = "borçluları listele"
+    raw2 = await _make_raw(session, text2, 12)
+    result = await message_processor.process_raw_message(session, raw2, text2)
+
+    assert result.outcome == ProcessOutcome.LIST
+    assert len(result.persons) == 1
+    assert result.persons[0].balance_try == Decimal("1000.00")
+
+
+async def test_sorgu_ilceye_gore_listele(session):
+    bergama = Person(full_name="Bergamalı Ahmet", district="Bergama")
+    izmir = Person(full_name="İzmirli Mehmet", district="İzmir")
+    session.add_all([bergama, izmir])
+    await session.flush()
+
+    text = "bergamalıları listele"
+    raw = await _make_raw(session, text, 13)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.LIST
+    assert result.resolved.district == "bergama"
+    assert [r.person.id for r in result.persons] == [bergama.id]
 
 
 async def test_belirsiz_kisi_kayit_olusturmaz(session):
