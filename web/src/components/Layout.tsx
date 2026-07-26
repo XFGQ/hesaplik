@@ -66,6 +66,15 @@ export default function Layout() {
           </div>
         </div>
 
+        <div className="side-reports">
+          <button className="side-back" onClick={() => window.open(api.dailyReportUrl(), "_blank")}>
+            <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Günlük rapor
+          </button>
+          <button className="side-back" onClick={() => window.open(api.generalReportUrl(), "_blank")}>
+            <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Genel rapor
+          </button>
+        </div>
+
         <div className="side-actions">
           <button
             className="side-icon-btn"

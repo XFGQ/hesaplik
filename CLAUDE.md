@@ -340,3 +340,64 @@ yüzden çoğu mesaj yine hızlı.
 
 **Ses (Faz 5, sonra):** aynı GPU'ya faster-whisper. Ses → metin → yukarıdaki
 akış. Whisper de provider (STTProvider) arkasında. GPU gelince eklenecek.
+
+## Faz 4b — PDF Raporlar
+
+Üç rapor türü, ortak sabit şablon (hepsi aynı tarzda). reportlab + DejaVu
+font (Türkçe). Kaynak taslak onaylandı, app/services/report.py olacak.
+
+**Şablon (ReportDoc):** lacivert üst bant (#1e3a5f) — sol: işletme adı
+(settings.business_name) + "Cari Hesap Raporu", sağ: rapor başlığı + alt
+başlık. Kişi ekstresinde alt başlık = kişi adı, BÜYÜK ve beyaz (vurgu="alt").
+Alt bilgi: oluşturulma tarihi, "Hesaplık", sayfa no. Renkler: NAVY başlık,
+BORC #c0261d kırmızı, ALACAK #1d6b3c yeşil, ZEBRA satır. Tutarlar Türkçe
+biçim (1.500,00 ₺). Az ama anlamlı renk.
+
+**Üç rapor:**
+1. Günlük: bugün (veya verilen gün) kaydedilen hareketler. Sütun: Saat/
+   Kişi/Ürün/Miktar/Tür/Tutar. Özet kutuları: kayıt sayısı, toplam borç,
+   toplam tahsilat, net.
+2. Kişi ekstresi: bir kişinin tüm hareketleri + yürüyen bakiye sütunu.
+   Üstte kişi bilgi şeridi (ad, tel, ilçe/il) + güncel bakiye + açık
+   kalemler. Sütun: Tarih/Açıklama/Birim fiyat/Tür/Tutar/Bakiye.
+3. Genel durum: tüm kişiler, borçlu çoktan aza sıralı. Sütun: Kişi/İlçe/
+   Açık kalem/Durum/Bakiye. Özet: kişi sayısı, toplam alacak, toplam borç,
+   net alacak.
+
+**Nereden:**
+- Telegram: "rapor ver" → günlük/genel butonla seç. "{isim} ekstresi" veya
+  "{isim} raporu" → kişi ekstresi (kişi eşleştirme güvenlik kurallarıyla).
+  PDF dosyası + KISA metin özet birlikte gönderilir.
+- Web: her rapor için buton (ana ekranda veya kişi detayında), tıkla → PDF
+  indir. Kişi ekstresi kişi detayında, diğerleri ana ekranda/ayarlarda.
+
+**Teknik:** reportlab pyproject.toml'a. Font yolu sabit değil, birkaç
+olası yol denensin (DejaVu Fedora/Debian'da farklı yerde olabilir), yoksa
+anlamlı hata. PDF bellekte üretilip (BytesIO) Telegram'a gönderilir ve/veya
+web'de indirilir; diske yazmak şart değil.
+
+## Rapor komutları — gelişmiş anlama (regex + LLM)
+
+Kullanıcı raporu çok farklı şekillerde ister; hepsi anlaşılmalı, anlaşılmazsa
+LLM devreye girmeli.
+
+**Üç rapor niyeti:**
+- report_general: "genel rapor", "tüm zamanların raporu", "herkesin durumu",
+  "genel durum raporu", "bütün müşteriler raporu" → genel durum PDF
+- report_daily: "günün raporu", "bugünün raporu", "gün raporu", "bugün ne
+  yaptık", "günlük rapor", "bugünkü hareketler" → günlük PDF
+- report_person: "{isim} ekstresi/raporu/dökümü/hesap dökümü" → kişi ekstresi
+- report_menu: sadece "rapor" / "rapor ver" (hangisi belli değil) → günlük mü
+  genel mi diye butonla sor
+
+**Regex:** yaygın kalıpları ve Türkçe ekleri tanı (rapor/raporu/raporunu,
+ekstre/ekstresi/ekstresini, döküm/dökümü). Kesin çözülenler doğrudan, "rapor"
+tek başına → menü.
+
+**LLM:** regex çözemezse rapor niyetlerini de LLM tanımalı. llm_prompt.py'ye
+rapor örnekleri eklensin: "bana genel bir rapor çıkar" → report_general,
+"bugün neler olmuş göster" → report_daily, "ahmetin hesap dökümünü ver" →
+report_person(ahmet). LLM islem alanına "rapor" ekle, tür (genel/gunluk/kisi)
+ve kişi (varsa) döndürsün. Belirsizse ("rapor" tek başına) → menü.
+
+Kişi ekstresi her zaman kişi eşleştirme güvenlik kurallarından geçer.

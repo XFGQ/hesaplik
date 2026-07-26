@@ -36,6 +36,15 @@ VALID_KINDS = {
     "list_district",
 }
 
+# LLM rapor isteklerini ayrı bir alan çiftiyle ("islem"/"tur") döner (bkz.
+# llm_prompt.py), "kind" şemasıyla karışmasın diye. tur -> ParsedIntent.kind
+# eşlemesi burada yapılır.
+REPORT_TUR_TO_KIND = {
+    "genel": "report_general",
+    "gunluk": "report_daily",
+    "kisi": "report_person",
+}
+
 
 class LLMProvider(Protocol):
     async def parse(self, text: str) -> ParsedIntent | None: ...
@@ -57,9 +66,31 @@ def _to_decimal(value) -> Decimal | None:
         return None
 
 
+def _report_intent_from_json(data: dict) -> ParsedIntent:
+    """LLM'in "islem": "rapor" çıktısını rapor niyetine çevirir. tur
+    belirsiz/tanınmayan bir değerse ya da tur "kisi" olup kişi adı boşsa,
+    kod UYDURMAZ — report_menu döner, kullanıcıya hangi raporu istediği
+    sorulur (bkz. CLAUDE.md > "Rapor komutları — gelişmiş anlama")."""
+    tur = data.get("tur")
+    kind = REPORT_TUR_TO_KIND.get(tur)
+    if kind is None:
+        return ParsedIntent(kind="report_menu")
+
+    if kind == "report_person":
+        person_name = _clean_str(data.get("kisi"))
+        if person_name is None:
+            return ParsedIntent(kind="report_menu")
+        return ParsedIntent(kind="report_person", person_name=person_name)
+
+    return ParsedIntent(kind=kind)
+
+
 def parsed_intent_from_json(data: dict) -> ParsedIntent | None:
     """LLM'in ürettiği JSON sözlüğünü ParsedIntent'e çevirir. Şema dışı ya
     da anlamsız bir çıktı gelirse None döner (LLM çözemedi sayılır)."""
+    if data.get("islem") == "rapor":
+        return _report_intent_from_json(data)
+
     kind = data.get("kind")
     if kind not in VALID_KINDS:
         return None

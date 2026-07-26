@@ -46,6 +46,13 @@ class ResolutionStatus(str, enum.Enum):
 
 # Kişi/tutar gerektirmeyen sorgu niyetleri (Telegram sorgu komutları).
 LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
+# Kişi gerektirmeyen rapor niyetleri: report_menu ("rapor ver" -> bot
+# günlük/genel seçimini buton ile sorar), report_general/report_daily
+# (tür zaten net, PDF doğrudan üretilir). Kişiye özel ekstre isteği
+# (report_person) kişi çözümü gerektirdiği için burada değil, balance_query
+# gibi NO_AMOUNT_KINDS'te.
+NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily"}
+NO_AMOUNT_KINDS = {"balance_query", "report_person"}
 
 
 @dataclass(slots=True)
@@ -110,10 +117,10 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
     if intent is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED)
 
-    if intent.kind in LIST_KINDS:
+    if intent.kind in NO_PERSON_KINDS:
         return ResolvedIntent(status=ResolutionStatus.READY, kind=intent.kind, district=intent.district)
 
-    if intent.kind != "balance_query" and intent.amount is None:
+    if intent.kind not in NO_AMOUNT_KINDS and intent.amount is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)
 
     person, candidates = await find_person_match(session, intent.person_name or "")
@@ -141,7 +148,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         )
 
     product = None
-    if intent.product and intent.kind != "balance_query":
+    if intent.product and intent.kind not in NO_AMOUNT_KINDS:
         product, _created = await catalog.resolve_or_create(session, intent.product, intent.unit)
 
     return ResolvedIntent(

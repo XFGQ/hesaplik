@@ -1,6 +1,7 @@
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +39,7 @@ from app.schemas import (
     TxOut,
     TxWithProductOut,
 )
-from app.services import backup, catalog, ledger, queries
+from app.services import backup, catalog, ledger, queries, report
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
@@ -368,6 +369,44 @@ async def update_setting(
         setting.updated_at = datetime.now(timezone.utc)
     await session.flush()
     return SettingOut(key=setting.key, value=setting.value)
+
+
+# --------------------------------------------------------------- raporlar
+
+def _pdf_response(pdf: bytes, filename: str) -> Response:
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/reports/daily")
+async def report_daily(
+    gun: date | None = Query(default=None, alias="date"),
+    session: AsyncSession = Depends(get_session),
+):
+    gun = gun or report.today_tr()
+    isletme = await report.isletme_adi(session)
+    pdf = await report.rapor_gunluk(session, isletme, gun=gun)
+    return _pdf_response(pdf, f"rapor_gunluk_{gun.isoformat()}.pdf")
+
+
+@router.get("/reports/general")
+async def report_general(session: AsyncSession = Depends(get_session)):
+    isletme = await report.isletme_adi(session)
+    pdf = await report.rapor_genel(session, isletme)
+    return _pdf_response(pdf, f"rapor_genel_{report.today_tr().isoformat()}.pdf")
+
+
+@router.get("/reports/person/{person_id}")
+async def report_person(person_id: int, session: AsyncSession = Depends(get_session)):
+    person = await session.get(Person, person_id)
+    if person is None or not person.is_active:
+        raise HTTPException(404, "Kişi bulunamadı")
+    isletme = await report.isletme_adi(session)
+    pdf = await report.rapor_kisi(session, isletme, person_id)
+    return _pdf_response(pdf, f"rapor_ekstre_{report.slugify(person.full_name)}.pdf")
 
 
 # --------------------------------------------------------------- yedekleme
