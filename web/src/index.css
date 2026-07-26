@@ -344,6 +344,27 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+.side-reports {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.side-reports .side-back {
+  margin-top: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.report-icon {
+  height: 18px;
+  width: 18px;
+  flex: 0 0 auto;
+  vertical-align: middle;
+}
+
 .side-actions {
   display: flex;
   align-items: center;
@@ -661,6 +682,9 @@ input.amount {
   padding: 6px 0;
   color: var(--stamp);
   font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .fab {
