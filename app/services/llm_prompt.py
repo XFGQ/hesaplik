@@ -21,7 +21,10 @@ hiçbir açıklama/metin yazma.
   "unit": string | null,
   "product": string | null,
   "amount": number | null,
-  "district": string | null
+  "district": string | null,
+  "islem": "rapor" | null,
+  "tur": "genel" | "gunluk" | "kisi" | null,
+  "kisi": string | null
 }
 
 Kurallar:
@@ -68,42 +71,70 @@ Kurallar:
   Emin değilsen ilçe adını olduğu gibi (ekini atmadan) yaz, kısaltma UYDURMA.
 - amount ve qty SAYI olarak yaz (string değil), binlik ayraç/nokta/virgül
   kullanma (15000, 1500.50 gibi).
+- RAPOR isteği: kullanıcı kayıt/sorgu değil, bir PDF RAPOR/EKSTRE/DÖKÜM
+  istiyorsa (örn. "rapor ver", "genel durum", "bugünün raporu", "ahmetin
+  ekstresini ver"): kind'i null bırak, bunun yerine islem: "rapor" yaz.
+  tur alanını doldur:
+    - "genel": tüm müşterilerin/genel durumun raporu ("genel rapor",
+      "herkesin durumu", "tüm müşteriler ne durumda").
+    - "gunluk": yalnızca bugünün hareketlerinin raporu ("bugünün raporu",
+      "bugün ne oldu", "günlük rapor").
+    - "kisi": belirli BİR kişinin ekstresi/dökümü — bu durumda kisi
+      alanına kişinin adını YALIN halde yaz (person_name kuralıyla aynı).
+    - Hangi türü istediği belirsizse (yalnızca "rapor ver"/"rapor" dediyse,
+      genel/günlük/kişi ayrımı yoksa) tur: null bırak — kod kullanıcıya
+      hangi raporu istediğini soracak. UYDURMA.
 
 Örnekler:
 
 Kullanıcı: "furkana 20 balya saman verdim 15000 tl borç yazsana"
-JSON: {"kind": "debt", "person_name": "furkan", "qty": 20, "unit": "balya", "product": "saman", "amount": 15000, "district": null}
+JSON: {"kind": "debt", "person_name": "furkan", "qty": 20, "unit": "balya", "product": "saman", "amount": 15000, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "ahmete 500 tl borç"
-JSON: {"kind": "debt", "person_name": "ahmet", "qty": null, "unit": null, "product": null, "amount": 500, "district": null}
+JSON: {"kind": "debt", "person_name": "ahmet", "qty": null, "unit": null, "product": null, "amount": 500, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "mehmet bugün 2000 lira ödedi"
-JSON: {"kind": "payment", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": 2000, "district": null}
+JSON: {"kind": "payment", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": 2000, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "ayşe 30 çuval arpanın parasını yatırdı 9000 tl"
-JSON: {"kind": "payment", "person_name": "ayşe", "qty": 30, "unit": "çuval", "product": "arpa", "amount": 9000, "district": null}
+JSON: {"kind": "payment", "person_name": "ayşe", "qty": 30, "unit": "çuval", "product": "arpa", "amount": 9000, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "dumanın hesabı ne durumda acaba"
-JSON: {"kind": "balance_query", "person_name": "duman", "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+JSON: {"kind": "balance_query", "person_name": "duman", "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "mehmet borcu ne kadar"
-JSON: {"kind": "balance_query", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+JSON: {"kind": "balance_query", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "ali ne kadar borçlu"
-JSON: {"kind": "balance_query", "person_name": "ali", "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+JSON: {"kind": "balance_query", "person_name": "ali", "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "ahmetbeylerden mehmet ne kadar borçlu"
-JSON: {"kind": "balance_query", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": null, "district": "ahmetbeyler"}
+JSON: {"kind": "balance_query", "person_name": "mehmet", "qty": null, "unit": null, "product": null, "amount": null, "district": "ahmetbeyler", "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "tüm müşterileri bana listeler misin"
-JSON: {"kind": "list_all", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+JSON: {"kind": "list_all", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "kimler bana borçlu bakabilir miyim"
-JSON: {"kind": "list_debtors", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+JSON: {"kind": "list_debtors", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": null, "tur": null, "kisi": null}
 
 Kullanıcı: "bergama tarafındaki müşterileri görebilir miyim"
-JSON: {"kind": "list_district", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": "bergama"}
+JSON: {"kind": "list_district", "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": "bergama", "islem": null, "tur": null, "kisi": null}
+
+Kullanıcı: "bana genel bir rapor çıkar"
+JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": "rapor", "tur": "genel", "kisi": null}
+
+Kullanıcı: "bugün neler olmuş göster"
+JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": "rapor", "tur": "gunluk", "kisi": null}
+
+Kullanıcı: "ahmetin hesap dökümünü ver"
+JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": "rapor", "tur": "kisi", "kisi": "ahmet"}
+
+Kullanıcı: "tüm müşterilerin durumu ne"
+JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": "rapor", "tur": "genel", "kisi": null}
+
+Kullanıcı: "bir rapor istiyorum"
+JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": "rapor", "tur": null, "kisi": null}
 
 Kullanıcı: "bugün hava çok güzel"
-JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null}
+JSON: {"kind": null, "person_name": null, "qty": null, "unit": null, "product": null, "amount": null, "district": null, "islem": null, "tur": null, "kisi": null}
 """
