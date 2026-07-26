@@ -73,4 +73,9 @@ export const api = {
 
   getBackups: () => req<BackupSnapshot[]>("/backups"),
   runBackup: () => req<BackupRunResult>("/backups/run", { method: "POST" }),
+
+  dailyReportUrl: (date?: string) =>
+    `${BASE}/api/reports/daily${date ? `?date=${encodeURIComponent(date)}` : ""}`,
+  generalReportUrl: () => `${BASE}/api/reports/general`,
+  personReportUrl: (id: number) => `${BASE}/api/reports/person/${id}`,
 };

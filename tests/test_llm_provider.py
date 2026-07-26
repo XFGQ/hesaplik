@@ -79,6 +79,47 @@ def test_json_gecersiz_tutar_null_olur():
     assert intent.amount is None
 
 
+# --------------------------------------------------------------- rapor (islem/tur/kisi)
+
+
+def test_json_rapor_genel():
+    data = {"kind": None, "islem": "rapor", "tur": "genel", "kisi": None}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "report_general"
+
+
+def test_json_rapor_gunluk():
+    data = {"kind": None, "islem": "rapor", "tur": "gunluk", "kisi": None}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "report_daily"
+
+
+def test_json_rapor_kisi():
+    data = {"kind": None, "islem": "rapor", "tur": "kisi", "kisi": "ahmet"}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "report_person"
+    assert intent.person_name == "ahmet"
+
+
+def test_json_rapor_kisi_isimsizse_menu_doner():
+    # tur "kisi" ama kişi adı boş -> uydurma, menü sorulsun.
+    data = {"kind": None, "islem": "rapor", "tur": "kisi", "kisi": None}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "report_menu"
+
+
+def test_json_rapor_tur_belirsiz_menu_doner():
+    data = {"kind": None, "islem": "rapor", "tur": None, "kisi": None}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "report_menu"
+
+
+def test_json_rapor_tur_bilinmeyen_menu_doner():
+    data = {"kind": None, "islem": "rapor", "tur": "her_ihtimale_karsi", "kisi": None}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "report_menu"
+
+
 # --------------------------------------------------------------- OllamaProvider
 
 

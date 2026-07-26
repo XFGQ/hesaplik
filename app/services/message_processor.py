@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RawMessage, Transaction, TxSource
-from app.services import llm_provider, parser
+from app.services import llm_provider, parser, report
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
 from app.services.queries import PersonBalanceRow, list_persons_with_balance
@@ -39,6 +39,10 @@ class ProcessOutcome(str, enum.Enum):
     RECORDED = "recorded"
     BALANCE = "balance"
     LIST = "list"
+    REPORT_MENU = "report_menu"
+    REPORT_DAILY = "report_daily"
+    REPORT_GENERAL = "report_general"
+    REPORT_PERSON = "report_person"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -52,6 +56,8 @@ class ProcessResult:
     transaction_id: int | None = None
     balance: Balance | None = None
     persons: list[PersonBalanceRow] | None = None
+    report_pdf: bytes | None = None
+    report_stats: report.DailyStats | report.GeneralStats | None = None
 
 
 async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str) -> ProcessResult:
@@ -86,6 +92,25 @@ async def handle_resolved(
     if resolved.status == ResolutionStatus.PERSON_NOT_FOUND:
         return ProcessResult(outcome=ProcessOutcome.PERSON_NOT_FOUND, resolved=resolved)
 
+    if resolved.kind == "report_menu":
+        return ProcessResult(outcome=ProcessOutcome.REPORT_MENU, resolved=resolved)
+
+    if resolved.kind == "report_daily":
+        isletme = await report.isletme_adi(session)
+        stats = await report.gunluk_ozet(session)
+        pdf = await report.rapor_gunluk(session, isletme)
+        return ProcessResult(
+            outcome=ProcessOutcome.REPORT_DAILY, resolved=resolved, report_pdf=pdf, report_stats=stats
+        )
+
+    if resolved.kind == "report_general":
+        isletme = await report.isletme_adi(session)
+        stats = await report.genel_ozet(session)
+        pdf = await report.rapor_genel(session, isletme)
+        return ProcessResult(
+            outcome=ProcessOutcome.REPORT_GENERAL, resolved=resolved, report_pdf=pdf, report_stats=stats
+        )
+
     if resolved.kind in LIST_KINDS:
         rows = await list_persons_with_balance(
             session, scope=_LIST_SCOPE_BY_KIND[resolved.kind], district=resolved.district
@@ -97,6 +122,14 @@ async def handle_resolved(
     if resolved.kind == "balance_query":
         bal = await balance_of(session, resolved.person.id)
         return ProcessResult(outcome=ProcessOutcome.BALANCE, resolved=resolved, balance=bal)
+
+    if resolved.kind == "report_person":
+        isletme = await report.isletme_adi(session)
+        pdf = await report.rapor_kisi(session, isletme, resolved.person.id)
+        bal = await balance_of(session, resolved.person.id)
+        return ProcessResult(
+            outcome=ProcessOutcome.REPORT_PERSON, resolved=resolved, balance=bal, report_pdf=pdf
+        )
 
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net

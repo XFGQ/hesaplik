@@ -92,6 +92,9 @@ export default function PersonDetail() {
         <button className="link" onClick={() => setModal("edit")}>
           Düzenle
         </button>
+        <button className="link" onClick={() => window.open(api.personReportUrl(personId), "_blank")}>
+          <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Ekstre (PDF)
+        </button>
       </div>
 
       <div className="balance">
