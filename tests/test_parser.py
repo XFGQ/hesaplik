@@ -306,3 +306,180 @@ def test_sorgu_borc_yazma_ile_karismaz():
     assert p.kind == "list_debtors"
     assert p.person_name is None
     assert p.amount is None
+
+
+# --------------------------------------------------------------- rapor niyetleri
+
+
+def test_rapor_ver_menu_doner():
+    p = parse("rapor ver")
+    assert p.kind == "report_menu"
+
+
+def test_bare_rapor_menu_doner():
+    p = parse("rapor")
+    assert p.kind == "report_menu"
+
+
+def test_rapor_ver_dolgu_kelimeli():
+    p = parse("bana rapor ver lütfen")
+    assert p.kind == "report_menu"
+
+
+def test_isim_ekstresi_report_person():
+    p = parse("ahmet yılmaz ekstresi")
+    assert p.kind == "report_person"
+    assert p.person_name == "ahmet yılmaz"
+
+
+def test_isim_ekstre_report_person():
+    p = parse("furkan ekstre")
+    assert p.kind == "report_person"
+    assert p.person_name == "furkan"
+
+
+def test_isim_raporu_report_person():
+    p = parse("mehmet raporu")
+    assert p.kind == "report_person"
+    assert p.person_name == "mehmet"
+
+
+def test_isimsiz_ekstresi_none_doner():
+    # Anahtar kelime var ama önünde isim yok -> anlamsız, uydurma.
+    p = parse("ekstresi")
+    assert p is None
+
+
+# ------------------------------------------------- rapor: genel durum (report_general)
+
+
+def test_rapor_genel_rapor():
+    p = parse("genel rapor")
+    assert p.kind == "report_general"
+
+
+def test_rapor_genel_durum():
+    p = parse("genel durum")
+    assert p.kind == "report_general"
+
+
+def test_rapor_genel_durum_raporu():
+    p = parse("genel durum raporu")
+    assert p.kind == "report_general"
+
+
+def test_rapor_tum_zamanlarin_raporu():
+    p = parse("tüm zamanların raporu")
+    assert p.kind == "report_general"
+
+
+def test_rapor_herkesin_durumu():
+    p = parse("herkesin durumu")
+    assert p.kind == "report_general"
+
+
+def test_rapor_butun_musteriler():
+    p = parse("bütün müşteriler")
+    assert p.kind == "report_general"
+
+
+def test_rapor_tum_rapor():
+    p = parse("tüm rapor")
+    assert p.kind == "report_general"
+
+
+def test_rapor_genel_raporu_kisi_sanilmaz():
+    # "genel raporu" hem report_general hem (yanlışlıkla) report_person
+    # ("raporu" kişi eki) ile eşleşebilirdi — genel kontrol önce çalışmalı,
+    # "genel" bir kişi adı SANILMAMALI.
+    p = parse("genel raporu")
+    assert p.kind == "report_general"
+
+
+def test_rapor_tum_musterilerin_durumu_ne():
+    p = parse("tüm müşterilerin durumu ne")
+    assert p.kind == "report_general"
+
+
+# ------------------------------------------------- rapor: günlük (report_daily)
+
+
+def test_rapor_gunluk_rapor():
+    p = parse("günlük rapor")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_gunun_raporu():
+    p = parse("günün raporu")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_bugunun_raporu():
+    p = parse("bugünün raporu")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_gun_raporu():
+    p = parse("gün raporu")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_bugunku_hareketler():
+    p = parse("bugünkü hareketler")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_bugun_ne_yaptik():
+    p = parse("bugün ne yaptık")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_bugun_ne_oldu():
+    p = parse("bugün ne oldu")
+    assert p.kind == "report_daily"
+
+
+def test_rapor_bugunun_raporu_kisi_sanilmaz():
+    # "bugünün raporu" da aynı çakışma riskini taşır: günlük kontrol önce
+    # çalışmalı, "bugünün" bir kişi adı SANILMAMALI.
+    p = parse("bugünün raporu")
+    assert p.kind == "report_daily"
+    assert p.person_name is None
+
+
+# ------------------------------------------------- rapor: kişi (report_person) — ek çekimler
+
+
+def test_rapor_isim_dokumu():
+    p = parse("ayşe dökümü")
+    assert p.kind == "report_person"
+    assert p.person_name == "ayşe"
+
+
+def test_rapor_isim_hesap_dokumunu_ver():
+    p = parse("ahmetin hesap dökümünü ver")
+    assert p.kind == "report_person"
+    assert p.person_name == "ahmetin"
+
+
+def test_rapor_isim_ekstresini():
+    p = parse("mehmedin ekstresini istiyorum")
+    assert p.kind == "report_person"
+    assert p.person_name == "mehmedin"
+
+
+def test_rapor_isim_raporunu():
+    p = parse("furkanın raporunu ver")
+    assert p.kind == "report_person"
+    assert p.person_name == "furkanın"
+
+
+# ------------------------------------------------- rapor: belirsiz cümle LLM'e düşer
+
+
+def test_rapor_belirsiz_durum_raporu_regex_pes_eder():
+    # "bir durum raporu" ("durum" genel niteleyicisiz) ne report_general'a
+    # ne report_person'a net uyar — kural parser uydurmadan pes etmeli,
+    # LLM fallback devreye girsin (bkz. test_message_processor.py).
+    p = parse("bana bir durum raporu hazırla")
+    assert p is None

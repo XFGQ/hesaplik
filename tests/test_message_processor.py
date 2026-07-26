@@ -351,6 +351,126 @@ async def test_llm_erisilemezse_anlasilamadi_doner(session, monkeypatch):
     assert result.outcome == ProcessOutcome.UNRECOGNIZED
 
 
+async def test_rapor_ver_menu_kayit_olusturmaz(session):
+    text = "rapor ver"
+    raw = await _make_raw(session, text, 50)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.REPORT_MENU
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert raw.transaction_id is None
+
+
+async def test_isim_ekstresi_report_person_pdf_uretir(session, ahmet):
+    text = "ahmet yılmaz ekstresi"
+    raw = await _make_raw(session, text, 51)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.REPORT_PERSON
+    assert result.resolved.person.id == ahmet.id
+    assert result.report_pdf is not None
+    assert result.report_pdf.startswith(b"%PDF")
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert raw.transaction_id is None
+
+
+async def test_report_person_bulunamayan_kisi(session):
+    text = "hiç yok böyle biri ekstresi"
+    raw = await _make_raw(session, text, 52)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
+    assert result.resolved.kind == "report_person"
+
+
+async def test_report_person_belirsiz_kisi_onay_ister(session):
+    a = Person(full_name="Ahmet Yılmaz")
+    b = Person(full_name="Ahmet Yıldız")
+    session.add_all([a, b])
+    await session.flush()
+
+    text = "ahmet yı ekstresi"
+    raw = await _make_raw(session, text, 53)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    assert result.resolved.kind == "report_person"
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids
+
+    picked = ResolvedIntent(status=ResolutionStatus.READY, kind="report_person", person=a)
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+    assert follow_up.outcome == ProcessOutcome.REPORT_PERSON
+    assert follow_up.report_pdf.startswith(b"%PDF")
+
+
+async def test_genel_rapor_regexle_dogrudan_uretilir(session):
+    text = "genel rapor"
+    raw = await _make_raw(session, text, 54)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.REPORT_GENERAL
+    assert result.report_pdf.startswith(b"%PDF")
+    assert result.report_stats is not None
+    await session.refresh(raw)
+    assert raw.processed_at is None
+
+
+async def test_gunluk_rapor_regexle_dogrudan_uretilir(session):
+    text = "bugünün raporu"
+    raw = await _make_raw(session, text, 55)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.REPORT_DAILY
+    assert result.report_pdf.startswith(b"%PDF")
+    assert result.report_stats is not None
+
+
+# ------------------------------------------------------------------
+# Rapor komutları — gelişmiş anlama (CLAUDE.md): kural parser çözemediği
+# rapor cümlelerinde LLM devreye girmeli ve doğru rapora yönlendirmeli.
+
+
+async def test_regex_cozemedigi_rapor_cumlesinde_llm_devreye_girer(session, monkeypatch):
+    # "bana bir durum raporu hazırla": ne "genel"/"tüm" gibi bir genel
+    # niteleyici ne "bugün" gibi bir gün niteleyicisi içeriyor — kural
+    # parser bunu uydurmadan None döner (bkz. test_parser.py). LLM
+    # "islem": "rapor", "tur": "genel" dönerse sistem doğru rapora
+    # (REPORT_GENERAL) yönlenmeli.
+    text = "bana bir durum raporu hazırla"
+    intent = ParsedIntent(kind="report_general")
+    fake = _FakeLLMProvider(intent)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    raw = await _make_raw(session, text, 56)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert fake.called is True
+    assert result.outcome == ProcessOutcome.REPORT_GENERAL
+    assert result.report_pdf.startswith(b"%PDF")
+
+
+async def test_regex_cozemedigi_kisi_raporu_llm_ile_dogru_kisiye_yonlenir(session, ahmet, monkeypatch):
+    # LLM "tur": "kisi" dönerse (ör. "ahmet için bir hesap özeti çıkar" gibi
+    # kural parser'ın çözemediği serbest bir cümle — "özeti" report_person
+    # anahtar kelimeleri arasında değil), aynı kişi eşleştirme güvenlik
+    # kuralları (pg_trgm) uygulanarak report_person akışına girmeli.
+    text = "ahmet için bir hesap özeti çıkar"
+    intent = ParsedIntent(kind="report_person", person_name="ahmet yılmaz")
+    fake = _FakeLLMProvider(intent)
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+
+    raw = await _make_raw(session, text, 57)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert fake.called is True
+    assert result.outcome == ProcessOutcome.REPORT_PERSON
+    assert result.resolved.person.id == ahmet.id
+    assert result.report_pdf.startswith(b"%PDF")
+
+
 async def test_llm_kapaliyken_kural_parser_cozemezse_hic_cagrilmaz(session, monkeypatch):
     # LLM_PROVIDER=none iken get_provider() None döner, LLM'e hiç gidilmez
     # — mevcut davranış aynen korunur. Gerçek ortamın .env'i (yerelde
