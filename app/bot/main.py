@@ -51,7 +51,7 @@ from telegram.ext import (
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Person, Product, RawMessage
-from app.services import catalog, message_processor
+from app.services import catalog, message_processor, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError
 from app.services.ledger import reverse as ledger_reverse
@@ -178,6 +178,28 @@ def _format_person_row(row: PersonBalanceRow) -> str:
     return line
 
 
+def _format_daily_report_caption(stats: report.DailyStats) -> str:
+    net = stats.net
+    yon = "borç" if net >= 0 else "alacak"
+    return f"📄 Günlük rapor — {stats.count} kayıt, net {_fmt_try(abs(net))} TL {yon}."
+
+
+def _format_general_report_caption(stats: report.GeneralStats) -> str:
+    net = stats.net_alacak
+    yon = "alacak" if net >= 0 else "borç"
+    return f"📄 Genel durum raporu — {stats.kisi_sayisi} kişi, net {_fmt_try(abs(net))} TL {yon}."
+
+
+def _format_person_report_caption(person: Person, bal: Balance) -> str:
+    if bal.balance_try > 0:
+        durum = f"{_fmt_try(bal.balance_try)} TL borçlu"
+    elif bal.balance_try < 0:
+        durum = f"{_fmt_try(-bal.balance_try)} TL alacaklı"
+    else:
+        durum = "hesabı sıfır"
+    return f"📄 {person.full_name} ekstresi — {durum}."
+
+
 def _split_for_telegram(text: str, limit: int = TELEGRAM_MAX_LEN) -> list[str]:
     if len(text) <= limit:
         return [text]
@@ -219,6 +241,15 @@ def _yes_no_keyboard() -> InlineKeyboardMarkup:
         [[
             InlineKeyboardButton("Evet", callback_data="person:yes"),
             InlineKeyboardButton("Hayır", callback_data="person:no"),
+        ]]
+    )
+
+
+def _report_menu_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("Günlük", callback_data="report:daily"),
+            InlineKeyboardButton("Genel", callback_data="report:general"),
         ]]
     )
 
@@ -368,6 +399,39 @@ async def _reply_result(
             await update.message.reply_text(msg)
         return
 
+    if result.outcome == ProcessOutcome.REPORT_MENU:
+        await update.message.reply_text(
+            "Hangi raporu istersin?", reply_markup=_report_menu_keyboard()
+        )
+        return
+
+    if result.outcome == ProcessOutcome.REPORT_DAILY:
+        assert result.report_pdf is not None and result.report_stats is not None
+        await update.message.reply_document(
+            document=result.report_pdf,
+            filename=f"rapor_gunluk_{report.today_tr().isoformat()}.pdf",
+            caption=_format_daily_report_caption(result.report_stats),
+        )
+        return
+
+    if result.outcome == ProcessOutcome.REPORT_GENERAL:
+        assert result.report_pdf is not None and result.report_stats is not None
+        await update.message.reply_document(
+            document=result.report_pdf,
+            filename=f"rapor_genel_{report.today_tr().isoformat()}.pdf",
+            caption=_format_general_report_caption(result.report_stats),
+        )
+        return
+
+    if result.outcome == ProcessOutcome.REPORT_PERSON:
+        assert result.report_pdf is not None and result.balance is not None
+        await update.message.reply_document(
+            document=result.report_pdf,
+            filename=f"rapor_ekstre_{report.slugify(resolved.person.full_name)}.pdf",
+            caption=_format_person_report_caption(resolved.person, result.balance),
+        )
+        return
+
     if result.outcome == ProcessOutcome.LLM_CONFIRMATION:
         context.chat_data["llm_confirm"] = _llm_pending_from_resolved(resolved, raw.id, text)
         await update.message.reply_text(
@@ -377,7 +441,7 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:
         isim = _title_tr(resolved.person_name_raw or "")
-        if resolved.kind == "balance_query":
+        if resolved.kind in ("balance_query", "report_person"):
             await update.message.reply_text(f"{isim} defterde yok.")
             return
         context.chat_data["pending"] = _pending_from_resolved(resolved, raw.id, text)
@@ -431,6 +495,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         context.chat_data.pop("llm_confirm", None)
         await query.edit_message_text("Tamam, iptal ettim.")
         return
+    if data == "report:daily":
+        await _handle_report_daily(query, context)
+        return
+    if data == "report:general":
+        await _handle_report_general(query, context)
+        return
 
 
 async def _handle_undo(query, context: ContextTypes.DEFAULT_TYPE, tx_id: int) -> None:
@@ -452,6 +522,34 @@ async def _handle_undo(query, context: ContextTypes.DEFAULT_TYPE, tx_id: int) ->
     context.chat_data.pop("undo", None)
     await query.edit_message_reply_markup(reply_markup=None)
     await query.message.reply_text("Kayıt geri alındı.")
+
+
+async def _handle_report_daily(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async with SessionLocal() as session:
+        isletme = await report.isletme_adi(session)
+        stats = await report.gunluk_ozet(session)
+        pdf = await report.rapor_gunluk(session, isletme)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_document(
+        document=pdf,
+        filename=f"rapor_gunluk_{report.today_tr().isoformat()}.pdf",
+        caption=_format_daily_report_caption(stats),
+    )
+
+
+async def _handle_report_general(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async with SessionLocal() as session:
+        isletme = await report.isletme_adi(session)
+        stats = await report.genel_ozet(session)
+        pdf = await report.rapor_genel(session, isletme)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await query.message.reply_document(
+        document=pdf,
+        filename=f"rapor_genel_{report.today_tr().isoformat()}.pdf",
+        caption=_format_general_report_caption(stats),
+    )
 
 
 async def _handle_create_person(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -504,6 +602,16 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
 
     if result.outcome == ProcessOutcome.BALANCE:
         await query.edit_message_text(_format_balance(person, result.balance))
+        return
+
+    if result.outcome == ProcessOutcome.REPORT_PERSON:
+        assert result.report_pdf is not None and result.balance is not None
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_document(
+            document=result.report_pdf,
+            filename=f"rapor_ekstre_{report.slugify(person.full_name)}.pdf",
+            caption=_format_person_report_caption(person, result.balance),
+        )
         return
 
     kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
