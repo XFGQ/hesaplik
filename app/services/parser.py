@@ -6,9 +6,18 @@ boş bırakılır — kararı intent_resolver ve bot verir.
 
 Desteklenen kalıplar (kelime sırası biraz oynayabilir):
   Borç:     "{isim} {sayı} {birim} {ürün} aldı {tutar} tl borç"
-            varyantlar: "aldı", "verdim", "çekti", "borç yaz(dı)"
-  Tahsilat: "{isim} {tutar} tl (ödedi|verdi|yatırdı)"
+            varyantlar: "aldı", "verdim/verdik", "çekti", "sattım",
+            "çıktı", "gitti", "borç yaz(dı)"
+  Tahsilat: "{isim} {tutar} tl (ödedi|verdi|yatırdı|geldi)"
+            varyantlar: "{isim}den/dan {tutar} aldım/aldık",
+            "{isim}den tahsil ettim"
             ürünlü:    "{isim} {sayı} {birim} {ürün} parası ödedi {tutar} tl"
+  Yön ayrımı fiil çekiminde: "aldı" (o aldı) = borç, "aldım/aldık" (ben
+            aldım) = tahsilat — bkz. DEBT_WORDS/PAYMENT_WORDS.
+  Tutar/adet: birim kelimesi (balya/kg/...) yoksa sayı ADET değil TUTAR
+            sayılır ("mehmete 3000 verdim" -> amount=3000, qty=None).
+  Türkçe sayı: "3bin"/"15bin"=3000/15000, "ikiyüz"=200, "3buçuk"=3.5,
+            "birmilyon"=1000000 (bkz. parse_turkish_number, _consume_number).
   Bakiye:   "{isim} (borcu|borcunu|hesabı|hesabını|bakiyesi|bakiyesini|
             durumu|durumunu) [ne|nedir|kaç|ne kadar|söyle|göster]"
             varyant:   "{isim} ne kadar borcu var"
@@ -44,8 +53,14 @@ UNITS = {
     "metre", "m", "düzine", "kutu", "torba", "top", "dolap", "çift",
 }
 
-DEBT_WORDS = {"aldı", "verdim", "çekti"}
-PAYMENT_WORDS = {"ödedi", "yatırdı", "verdi"}
+# Yön ayrımı (CLAUDE.md > "LLM son çare, regex birincil"): kişi eki değil,
+# FİİL ÇEKİMİ zaten yönü kodluyor — "aldı" (3. şahıs, o aldı) = BORÇ ama
+# "aldım/aldık" (1. şahıs, ben aldım) = TAHSİLAT. Bu ayrım kelime bazında
+# net ve LLM'e bırakılamayacak kadar kritik (bkz. "mehmetten 5000 aldım").
+DEBT_WORDS = {"aldı", "verdim", "verdik", "çekti", "sattım", "çıktı", "gitti"}
+PAYMENT_WORDS = {
+    "ödedi", "yatırdı", "verdi", "aldım", "aldık", "geldi", "tahsil",
+}
 BALANCE_KEYWORDS = {
     "borcu", "borcunu", "hesabı", "hesabını", "bakiyesi", "bakiyesini",
     "durumu", "durumunu",
@@ -130,7 +145,7 @@ def _strip_district_suffix(word: str) -> str | None:
 # Niyet belirlendikten sonra kişi/ürün metninden temizlenen kelimeler.
 STOPWORDS = DEBT_WORDS | PAYMENT_WORDS | {
     "borç", "borc", "yaz", "yazdı", "yazdım", "parası", "parasını",
-    "için", "icin",
+    "için", "icin", "ettim",
 }
 
 _TR_ONES = {
@@ -141,9 +156,35 @@ _TR_TENS = {
     "on": 10, "yirmi": 20, "otuz": 30, "kırk": 40, "elli": 50,
     "altmış": 60, "yetmiş": 70, "seksen": 80, "doksan": 90,
 }
-_TR_SCALES = {"yüz": 100, "bin": 1000}
+_TR_SCALES = {"yüz": 100, "bin": 1000, "milyon": 1_000_000}
+
+# "buçuk" (yarım fazlası) bir sayı kelimesi değil ama zincirin son halkası
+# olabilir ("üç buçuk" -> 3.5) — sözlük dışı ayrı işlenir (bkz. _consume_number).
+_NUMBER_WORDS = set(_TR_ONES) | set(_TR_TENS) | set(_TR_SCALES) | {"buçuk"}
 
 _NUMBER_TOKEN = re.compile(r"\d[\d.,]*")
+
+
+def _segment_number_word(word: str, _cache: dict[str, list[str] | None] = {}) -> list[str] | None:
+    """Bitişik yazılmış Türkçe sayı kelimelerini ayırır: "ikiyüz" ->
+    ["iki", "yüz"], "binbeşyüz" -> ["bin", "beş", "yüz"]. Kelime TAMAMEN
+    sayı kelimelerinden oluşmuyorsa None (rastgele bir isim/ürün adının
+    yanlışlıkla bölünmemesi için tam kapsama şartı aranır)."""
+    if word in _cache:
+        return _cache[word]
+    if word in _NUMBER_WORDS:
+        _cache[word] = [word]
+        return [word]
+    result: list[str] | None = None
+    for split in range(len(word) - 1, 0, -1):
+        prefix, suffix = word[:split], word[split:]
+        if prefix in _NUMBER_WORDS:
+            rest = _segment_number_word(suffix)
+            if rest is not None:
+                result = [prefix] + rest
+                break
+    _cache[word] = result
+    return result
 
 
 @dataclass(slots=True)
@@ -179,71 +220,118 @@ def _parse_amount(raw: str) -> Decimal | None:
         return None
 
 
-def _words_to_number(words: list[str]) -> int | None:
-    total = 0
-    segment = 0
+def _consume_number(tokens: list[str], i: int) -> tuple[Decimal, int] | None:
+    """tokens[i]'den başlayan bir sayıyı tüketir: düz rakam ("15000"),
+    Türkçe sayı kelimesi dizisi ("on beş bin" -> 15000) ya da glue-split
+    sonrası karışık biçim ("3"+"bin" -> 3000, "3"+"buçuk" -> 3.5). İlk
+    token rakamsa (yalnızca i'de) taban değer olarak alınır, ardından gelen
+    "yüz"/"bin"/"milyon"/"buçuk" ile zincirlenebilir — bu sayede "3bin" ASLA
+    3 milyon değil 3000 olur (çarpan mantığı: bin=×1000, milyon=×1000000,
+    yüz=×100, kökle çarpılır/toplanır, rakamla karıştırılmaz).
+    Bulamazsa None döner."""
+    total = Decimal(0)
+    segment = Decimal(0)
     matched = False
-    for w in words:
-        if w in _TR_ONES:
-            segment += _TR_ONES[w]
+    j = i
+    while j < len(tokens):
+        tok = tokens[j]
+        if j == i and _NUMBER_TOKEN.fullmatch(tok):
+            value = _parse_amount(tok)
+            if value is None:
+                break
+            segment += value
             matched = True
-        elif w in _TR_TENS:
-            segment += _TR_TENS[w]
+            j += 1
+            continue
+        if tok in _TR_ONES:
+            segment += _TR_ONES[tok]
             matched = True
-        elif w in _TR_SCALES:
-            scale = _TR_SCALES[w]
-            if scale == 1000:
-                total += (segment or 1) * scale
-                segment = 0
-            else:
-                segment = (segment or 1) * scale
+            j += 1
+            continue
+        if tok in _TR_TENS:
+            segment += _TR_TENS[tok]
             matched = True
-        else:
-            break
+            j += 1
+            continue
+        if tok == "buçuk":
+            segment += Decimal("0.5")
+            matched = True
+            j += 1
+            continue
+        if tok in _TR_SCALES:
+            scale = _TR_SCALES[tok]
+            base = segment if segment else Decimal(1)
+            if scale == 100:
+                segment = base * scale
+            else:  # bin, milyon: taban katmanı kapanır, toplama eklenir
+                total += base * scale
+                segment = Decimal(0)
+            matched = True
+            j += 1
+            continue
+        break
     if not matched:
         return None
-    return total + segment
+    return total + segment, j - i
 
 
-def _consume_number(tokens: list[str], i: int) -> tuple[Decimal, int] | None:
-    """tokens[i]'den başlayan bir sayıyı (rakam ya da Türkçe sayı kelimesi
-    dizisi) tüketir. Bulamazsa None."""
-    tok = tokens[i]
-    if _NUMBER_TOKEN.fullmatch(tok):
-        value = _parse_amount(tok)
-        return (value, 1) if value is not None else None
-
-    words: list[str] = []
-    j = i
-    while j < len(tokens) and (
-        tokens[j] in _TR_ONES or tokens[j] in _TR_TENS or tokens[j] in _TR_SCALES
-    ):
-        words.append(tokens[j])
-        j += 1
-    if not words:
+def parse_turkish_number(text: str) -> Decimal | None:
+    """Tek bir sayı ifadesini uçtan uca çözer: "3bin" -> 3000, "3 bin" ->
+    3000, "on beş bin" -> 15000, "ikiyüz" -> 200, "3buçuk" -> 3.5,
+    "birmilyon" -> 1000000, "15000" -> 15000. Metnin TAMAMI tek bir sayıya
+    karşılık gelmelidir (fazladan kelime kalırsa None) — cümle içinde geçen
+    bir sayıyı bulmak için değil, sayı ifadesinin kendisini test etmek/
+    çözmek için kullanılır (bkz. tests/test_sayi.py)."""
+    tokens = _split_tokens(normalize(text or ""))
+    if not tokens:
         return None
-    num = _words_to_number(words)
-    if num is None:
+    consumed = _consume_number(tokens, 0)
+    if consumed is None:
         return None
-    return Decimal(num), j - i
+    value, length = consumed
+    if length != len(tokens):
+        return None
+    return value
 
 
 def _split_tokens(norm: str) -> list[str]:
     norm = re.sub(r"[.,!?;:]+(?=\s|$)", "", norm)          # cümle sonu noktalama
-    norm = re.sub(r"(\d)(tl|try|lira|₺)\b", r"\1 \2", norm)  # "15000tl" -> "15000 tl"
+    # "15000tl" -> "15000 tl", "3bin" -> "3 bin", "3buçuk" -> "3 buçuk": rakama
+    # bitişik yazılmış her türlü harf grubu (para birimi ya da sayı çarpanı) ayrılır.
+    norm = re.sub(r"(\d)([a-zçğıöşü]+)", r"\1 \2", norm)
     norm = re.sub(r"(₺)(\d)", r"\1 \2", norm)
-    return norm.split()
+    tokens = norm.split()
+
+    # Bitişik yazılmış Türkçe sayı kelimelerini ayır: "ikiyüz" -> "iki yüz",
+    # "birmilyon" -> "bir milyon" (bkz. _segment_number_word — tam kapsama
+    # şartı sayesinde rastgele bir isim/ürün adı yanlışlıkla bölünmez).
+    expanded: list[str] = []
+    for tok in tokens:
+        if tok.isdigit() or len(tok) < 3:
+            expanded.append(tok)
+            continue
+        segments = _segment_number_word(tok)
+        expanded.extend(segments if segments else [tok])
+    return expanded
+
+
+# Para birimi ("tl"/"lira"/"₺") olmasa da hemen ardından "borç" gelen bir
+# sayı da tutar sayılır ("15bin borç" -> 15000): "borç" burada para birimi
+# yerine geçen bir tutar işaretçisi. Kind tespiti bu tokenlar tüketilmeden
+# ÖNCE (parse() içinde) yapıldığı için "borç"un kind sinyali olarak
+# kaybolması sorun olmaz (bkz. parse()).
+_AMOUNT_MARKERS = CURRENCY_UNITS | {"borç", "borc"}
 
 
 def _extract_amount(tokens: list[str]) -> tuple[Decimal | None, list[str]]:
-    """Sayı + (tl|lira|₺) ikilisini bulur, kalan tokenlardan çıkarır."""
+    """Sayı + (tl|lira|₺|borç) ikilisini bulur, kalan tokenlardan çıkarır."""
     for i in range(len(tokens)):
         consumed = _consume_number(tokens, i)
         if consumed is None:
             continue
         value, length = consumed
         end = i + length
-        if end < len(tokens) and tokens[end] in CURRENCY_UNITS:
+        if end < len(tokens) and tokens[end] in _AMOUNT_MARKERS:
             return value, tokens[:i] + tokens[end + 1:]
     return None, tokens
 
@@ -413,14 +501,26 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if balance is not None:
         return balance
 
-    amount, tokens = _extract_amount(tokens)
-
+    # Kind, tutar çıkarılmadan ÖNCE tespit edilir: "borç" hem bir fiil
+    # sinyali hem de (bkz. _extract_amount) tutarın bitişiğindeki bir
+    # işaretçi olarak tüketilebilir ("15bin borç" -> 15000). Sıra tersine
+    # çevrilirse ("...borç" tüketildikten sonra kind aransa) tek kind
+    # sinyali "borç" olan cümlelerde (fiil hiç yoksa) kind kaybolurdu.
     kind = _detect_kind(tokens)
     if kind is None:
         return None
 
+    amount, tokens = _extract_amount(tokens)
+
     tokens = [t for t in tokens if t not in STOPWORDS]
     qty, unit, product_tokens, person_tokens = _extract_qty_unit(tokens)
+
+    # Adet-birim bulunamadıysa ve ürün de yoksa, bu sayı aslında bir ADET
+    # değil çıplak bir TUTARDIR ("mehmete 3000 verdim" — para birimi/"borç"
+    # eki yok ama "3000" tek başına kalan sayı, ürün/birim bağlamı da yok).
+    # CLAUDE.md > "Para vs adet": birim kelimesi yoksa sayı tutar sayılır.
+    if amount is None and qty is not None and unit is None and not product_tokens:
+        amount, qty = qty, None
 
     person_name = " ".join(person_tokens).strip() or None
     product = " ".join(product_tokens).strip() or None

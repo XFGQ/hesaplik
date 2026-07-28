@@ -26,6 +26,8 @@ komutun varlığı bile sızmasın.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from decimal import Decimal
@@ -39,6 +41,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -51,7 +54,7 @@ from telegram.ext import (
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Person, Product, RawMessage
-from app.services import catalog, message_processor, report
+from app.services import catalog, llm_provider, message_processor, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError
 from app.services.ledger import reverse as ledger_reverse
@@ -82,6 +85,46 @@ ANLASILAMADI_METNI = (
 
 _BACK_VOWELS = "aıou"
 _FRONT_VOWELS = "eiöü"
+
+
+# --------------------------------------------------------------- "yazıyor..." göstergesi
+
+TYPING_REFRESH_SECONDS = 4  # Telegram'da typing durumu ~5 sn sürer, süresi dolmadan yenilenir
+
+
+class _TypingIndicator:
+    """LLM'e düşen mesaj işleme veya rapor üretimi gibi uzun sürebilecek
+    işlemler boyunca arka planda periyodik send_chat_action gönderir;
+    kullanıcı botu donmuş sanmasın diye. `async with` bloğu bitince (işlem
+    tamamlanınca) arka plan görevi durur."""
+
+    def __init__(self, bot, chat_id: int, action: str) -> None:
+        self._bot = bot
+        self._chat_id = chat_id
+        self._action = action
+        self._task: asyncio.Task | None = None
+
+    async def __aenter__(self) -> "_TypingIndicator":
+        self._task = asyncio.create_task(self._loop())
+        return self
+
+    async def __aexit__(self, *_exc) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+
+    async def _loop(self) -> None:
+        while True:
+            try:
+                await self._bot.send_chat_action(chat_id=self._chat_id, action=self._action)
+            except Exception:
+                logger.debug("typing action gönderilemedi", exc_info=True)
+            await asyncio.sleep(TYPING_REFRESH_SECONDS)
+
+
+def typing_action(bot, chat_id: int, action: str = ChatAction.TYPING) -> _TypingIndicator:
+    return _TypingIndicator(bot, chat_id, action)
 
 
 # --------------------------------------------------------------- biçimlendirme
@@ -349,17 +392,23 @@ async def cmd_durum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
+    chat_id = update.effective_chat.id
 
+    # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
+    # belli olmadığından baştan gösterilir. Regex anında çözerse tek bir
+    # typing zararsız; LLM'e düşerse (~13 sn) periyodik yenilenir.
+    #
     # Aynı session boyunca: save_raw_message hemen commit edilir (mesaj
     # asla kaybolmaz), sonra aynı session'da işlenir — raw nesnesi başka
     # bir session'a taşınırsa flush() processed_at/transaction_id
     # güncellemesini göremez.
-    async with SessionLocal() as session:
-        raw = await save_raw_message(session, update.to_dict())
-        await session.commit()
+    async with typing_action(context.bot, chat_id):
+        async with SessionLocal() as session:
+            raw = await save_raw_message(session, update.to_dict())
+            await session.commit()
 
-        result = await message_processor.process_raw_message(session, raw, text)
-        await session.commit()
+            result = await message_processor.process_raw_message(session, raw, text)
+            await session.commit()
 
     await _reply_result(update, context, result, raw, text)
 
@@ -407,6 +456,7 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.REPORT_DAILY:
         assert result.report_pdf is not None and result.report_stats is not None
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         await update.message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_gunluk_{report.today_tr().isoformat()}.pdf",
@@ -416,6 +466,7 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.REPORT_GENERAL:
         assert result.report_pdf is not None and result.report_stats is not None
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         await update.message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_genel_{report.today_tr().isoformat()}.pdf",
@@ -425,6 +476,7 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.REPORT_PERSON:
         assert result.report_pdf is not None and result.balance is not None
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
         await update.message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_ekstre_{report.slugify(resolved.person.full_name)}.pdf",
@@ -525,12 +577,15 @@ async def _handle_undo(query, context: ContextTypes.DEFAULT_TYPE, tx_id: int) ->
 
 
 async def _handle_report_daily(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    async with SessionLocal() as session:
-        isletme = await report.isletme_adi(session)
-        stats = await report.gunluk_ozet(session)
-        pdf = await report.rapor_gunluk(session, isletme)
+    chat_id = query.message.chat_id
+    async with typing_action(context.bot, chat_id):
+        async with SessionLocal() as session:
+            isletme = await report.isletme_adi(session)
+            stats = await report.gunluk_ozet(session)
+            pdf = await report.rapor_gunluk(session, isletme)
 
     await query.edit_message_reply_markup(reply_markup=None)
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
     await query.message.reply_document(
         document=pdf,
         filename=f"rapor_gunluk_{report.today_tr().isoformat()}.pdf",
@@ -539,12 +594,15 @@ async def _handle_report_daily(query, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _handle_report_general(query, context: ContextTypes.DEFAULT_TYPE) -> None:
-    async with SessionLocal() as session:
-        isletme = await report.isletme_adi(session)
-        stats = await report.genel_ozet(session)
-        pdf = await report.rapor_genel(session, isletme)
+    chat_id = query.message.chat_id
+    async with typing_action(context.bot, chat_id):
+        async with SessionLocal() as session:
+            isletme = await report.isletme_adi(session)
+            stats = await report.genel_ozet(session)
+            pdf = await report.rapor_genel(session, isletme)
 
     await query.edit_message_reply_markup(reply_markup=None)
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
     await query.message.reply_document(
         document=pdf,
         filename=f"rapor_genel_{report.today_tr().isoformat()}.pdf",
@@ -598,7 +656,8 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
         resolved.product = product
 
     raw = await session.get(RawMessage, pending["raw_message_id"])
-    result = await message_processor.handle_resolved(session, raw, resolved, pending["raw_text"])
+    async with typing_action(context.bot, query.message.chat_id):
+        result = await message_processor.handle_resolved(session, raw, resolved, pending["raw_text"])
 
     if result.outcome == ProcessOutcome.BALANCE:
         await query.edit_message_text(_format_balance(person, result.balance))
@@ -607,6 +666,7 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     if result.outcome == ProcessOutcome.REPORT_PERSON:
         assert result.report_pdf is not None and result.balance is not None
         await query.edit_message_reply_markup(reply_markup=None)
+        await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
         await query.message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_ekstre_{report.slugify(person.full_name)}.pdf",
@@ -682,6 +742,25 @@ async def _set_commands(application: Application) -> None:
         )
 
 
+async def _warmup_llm() -> None:
+    """Polling başlamadan önce modeli belleğe alır: Ollama boştayken modeli
+    düşürüyor (keep_alive), ilk gerçek mesaj bu yüzden soğuk (60sn+) yükleme
+    süresine denk geliyordu (CLAUDE.md ölçümü). Bu çağrı sonucu kullanılmaz,
+    yalnızca modeli ısıtır. Hata olursa yutulur — bot LLM'siz de başlar."""
+    provider = llm_provider.get_provider()
+    if provider is None:
+        return
+    try:
+        await provider.parse("ısınma")
+    except Exception:
+        logger.warning("LLM ısınma çağrısı başarısız oldu", exc_info=True)
+
+
+async def _on_startup(application: Application) -> None:
+    await _set_commands(application)
+    await _warmup_llm()
+
+
 def build_application() -> Application:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN tanımlı değil, bot başlatılamaz")
@@ -689,7 +768,7 @@ def build_application() -> Application:
     application = (
         Application.builder()
         .token(settings.telegram_bot_token)
-        .post_init(_set_commands)
+        .post_init(_on_startup)
         .build()
     )
 

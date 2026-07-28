@@ -79,6 +79,72 @@ def test_json_gecersiz_tutar_null_olur():
     assert intent.amount is None
 
 
+# --------------------------------------------------------------- KRİTİK: LLM isim bozuyor
+# (CLAUDE.md 2026-07-27) — LLM'in uydurduğu bir isim ham metinde hiç
+# geçmiyorsa (ör. "mehmetten" -> "mehtap") güvenilmemeli. raw_text
+# verilmediğinde (eski/doğrudan birim testleri gibi) doğrulama atlanır.
+
+
+def test_json_raw_text_yoksa_dogrulama_atlanir():
+    data = {"kind": "payment", "person_name": "ahmet", "amount": 500}
+    intent = parsed_intent_from_json(data)
+    assert intent.person_name == "ahmet"
+
+
+def test_json_isim_ham_metinle_ortusuyorsa_kabul_edilir():
+    data = {"kind": "payment", "person_name": "ahmet", "amount": 500}
+    intent = parsed_intent_from_json(data, "ahmete 500 tl verdim")
+    assert intent.person_name == "ahmet"
+
+
+def test_json_isim_uydurulmussa_reddedilir():
+    # LLM "mehmetten" yerine "mehtap" uydurmuş: ham metinde böyle bir
+    # kelime yok, kayıt niyeti kişisiz sayılır ve None döner.
+    data = {"kind": "payment", "person_name": "mehtap", "amount": 5000}
+    intent = parsed_intent_from_json(data, "mehmetten 5000 aldım")
+    assert intent is None
+
+
+def test_json_isim_ekli_haliyle_aynen_donduysa_kabul_edilir():
+    # LLM ismi hiç dokunmadan (ekli haliyle) döndürmüş — CLAUDE.md kuralı
+    # bu şekilde bekliyor, koruma bunu reddetmemeli.
+    data = {"kind": "payment", "person_name": "mehmetten", "amount": 5000}
+    intent = parsed_intent_from_json(data, "mehmetten 5000 aldım")
+    assert intent.person_name == "mehmetten"
+
+
+def test_json_isim_koku_donduyse_kabul_edilir():
+    # LLM eki kendi soymuş ("mehmet"), yasak ama harf uydurmamış — ham
+    # metinle hâlâ yeterince örtüşüyor, güvenilir kabul edilmeli.
+    data = {"kind": "payment", "person_name": "mehmet", "amount": 5000}
+    intent = parsed_intent_from_json(data, "mehmetten 5000 aldım")
+    assert intent.person_name == "mehmet"
+
+
+def test_json_kisa_isim_ekliyken_yanlislikla_reddedilmez():
+    # Önceki (saf difflib) eşik, kısa isim + ek kombinasyonlarında geçerli
+    # isimleri reddediyordu (ör. "ali"/"aliden" oranı eşiğin altına
+    # düşüyordu). Kök eşleşmesi bunu düzeltir.
+    data = {"kind": "payment", "person_name": "ali", "amount": 200}
+    intent = parsed_intent_from_json(data, "aliden 200 aldım")
+    assert intent.person_name == "ali"
+
+
+def test_json_isim_dogrulama_deterministik():
+    # Aynı (person_name, raw_text) girdisi her çağrıda aynı sonucu vermeli
+    # — koruma saf/pure bir fonksiyon olmalı, LLM örneklemesinden bağımsız.
+    data = {"kind": "payment", "person_name": "mehmetten", "amount": 5000}
+    raw_text = "mehmetten 5000 aldım"
+    results = [parsed_intent_from_json(data, raw_text).person_name for _ in range(3)]
+    assert results == ["mehmetten"] * 3
+
+
+def test_json_rapor_kisi_uydurulmussa_menu_doner():
+    data = {"kind": None, "islem": "rapor", "tur": "kisi", "kisi": "mehtap"}
+    intent = parsed_intent_from_json(data, "mehmetin ekstresini ver")
+    assert intent.kind == "report_menu"
+
+
 # --------------------------------------------------------------- rapor (islem/tur/kisi)
 
 
