@@ -401,3 +401,77 @@ report_person(ahmet). LLM islem alanına "rapor" ekle, tür (genel/gunluk/kisi)
 ve kişi (varsa) döndürsün. Belirsizse ("rapor" tek başına) → menü.
 
 Kişi ekstresi her zaman kişi eşleştirme güvenlik kurallarından geçer.
+
+## Bot "yazıyor..." göstergesi
+
+LLM işlemcide yavaş (~13 sn). Kullanıcı beklerken bot donmuş görünmesin:
+- Uzun sürebilecek her işlemde (LLM parse, rapor üretimi) Telegram'a
+  "typing" chat action gönder (send_chat_action ACTION_TYPING). Cevap
+  gelene kadar tekrarlanır (Telegram typing ~5 sn sürer, uzun işlemde
+  periyodik yenilenmeli).
+- Regex'in anında çözdüğü komutlarda gösterge gereksiz (zaten hızlı), ama
+  zararı yok; basitlik için LLM'e düşen ve rapor üreten yollarda göster.
+- PDF gönderirken "upload_document" action kullanılabilir.
+
+## KRİTİK — LLM isim bozuyor (2026-07-27)
+
+Ciddi buglar tespit edildi, hepsi LLM'in Türkçe ek temizlemesinden:
+1. "mehmetten 5000 aldım" → LLM ismi "mehtap" olarak uydurdu. İSİM
+   DEĞİŞTİRME kabul edilemez, para/kişi güvenliği ihlali.
+2. "ahmetin durumu ne" → "ahmetin" eki temizlenemedi, kişi bulunamadı.
+   Ama "ahmet in" (boşluklu) çalıştı. Tutarsız.
+3. Aynı isim bazen bulunuyor bazen "hangisini?" soruyor — kararsız.
+
+**Kural: İsim temizlemeyi LLM'E BIRAKMA.** LLM ham metinden ismi
+çıkarabilir ama Türkçe ekleri (iyelik -in/-ın/-nin, ayrılma -den/-dan/-ten/
+-tan, yönelme -e/-a/-ye/-ya) KOD tarafından temizlenir, LLM tarafından
+değil. LLM'in döndürdüğü isim, kod içinde normalize edilip pg_trgm ile
+eşleştirilir. LLM asla harf ekleyip çıkaramaz (mehmet→mehtap gibi).
+
+**Uygulama:**
+- app/services/catalog.py veya yeni bir isim-normalize modülü: Türkçe ek
+  soyma fonksiyonu. Kişi adının son kelimesindeki yaygın ekleri sök
+  (ahmetten→ahmet, mehmetin→mehmet, aliye→ali). Ek listesini kapsamlı tut.
+- intent_resolver kişi eşleştirmede bu normalize'i HEM regex HEM LLM
+  sonucuna uygular. LLM ne döndürürse döndürsün, kod ekini temizler.
+- Ünsüz yumuşaması dikkat: "mehmedin"→"mehmet" (d→t), "ahmedin"→"ahmet".
+- Eşleştirme yine pg_trgm güvenlik kurallarıyla (soyad ayrımı, çoklu aday).
+
+## Tek mesajda birden çok istek
+
+Kullanıcı bir mesajda birden çok işlem yazabilir ("mehmetten 5000 aldım
+ali veliye 500 mal gitti"). Sistem:
+- Mesajı cümlelere/işlemlere böl (satır sonu, "ve", ayrı fiiller).
+- Her işlemi SIRAYLA işle, her biri için AYRI cevap/onay gönder.
+- İlk işlemi yap + bilgilendir, sonra ikinciyi yap + bilgilendir.
+- Bölme belirsizse tek işlem sayıp normal akışa devam et (aşırı bölme
+  yapma, yanlış bölmektense tek bırak).
+
+## LLM son çare, regex birincil (2026-07-27 mimari kararı)
+
+Test sonucu: LLM işlemcide çok yavaş (2 dk) ve hatalı — "aldım"ı borç
+sandı, "3bin"i 3.000.000 yaptı, "verdim"i anlamadı. Bu kalıplar DÜZENLİ,
+regex'le anında ve DOĞRU çözülmeli. LLM'e sadece gerçekten serbest/belirsiz
+cümlelerde başvurulur.
+
+**Kural: Mümkün olan HER kalıbı regex'e ekle. LLM son çare.**
+Kayıt, tahsilat, bakiye, liste, rapor komutlarının yaygın tüm biçimleri
+regex'te olmalı. LLM yalnızca regex'in tamamen çözemediği (None döndürdüğü)
+serbest ifadeler için devreye girer.
+
+**Regex'in kesin çözmesi gerekenler (LLM'e gitmemeli):**
+- Yön: "kişiDEN aldım/tahsil ettim" = TAHSİLAT (para bana geldi).
+  "kişiYE verdim/borç/sattım/çıktı" = BORÇ (mal/para ona gitti).
+  "kişi X aldı" (3. şahıs) = BORÇ (o aldı, bana borçlandı).
+  Bu ayrım koddadır, LLM'e bırakılmaz — para yönü kritik.
+- Türkçe sayı: "3bin"/"3 bin"=3000, "5bin"=5000, "10bin"=10000,
+  "yüz"=100, "ikiyüz"=200, "bin beşyüz"=1500, "2buçuk"=2.5.
+  Bitişik/ayrık yazımlar, "bin/yüz/milyon" çarpanları. Kod parse eder.
+- Para vs adet: "3bin lira/tl" = tutar, "20 balya/kilo" = adet+birim.
+
+**Donanım stratejisi (provider seçimi config'ten):**
+- Yerel Ollama (laptop/sunucu işlemci): yavaş yedek.
+- 2080 Super vLLM (host): hızlı birincil, hazır olduğunda.
+- Öncelik: 2080 Super çalışıyorsa onu kullan; timeout/erişilemezse yerel
+  Ollama'ya düş; o da olmazsa regex + "elle gir". Katmanlı fallback.
+- Kod değişmez, provider config'ten seçilir (mevcut soyutlama).
