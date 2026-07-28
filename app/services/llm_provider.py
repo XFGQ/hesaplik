@@ -14,6 +14,7 @@ Provider soyutlaması: hangi sağlayıcı kullanılacağı config'ten
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 from decimal import Decimal, InvalidOperation
@@ -21,10 +22,26 @@ from typing import Protocol
 
 import httpx
 
+from app.services.catalog import normalize
 from app.services.llm_prompt import SYSTEM_PROMPT
+from app.services.name_utils import strip_turkish_suffix
 from app.services.parser import ParsedIntent
 
 logger = logging.getLogger(__name__)
+
+# LLM'in döndürdüğü kişi adı, ham metindeki hiçbir kelimeye yeterince
+# benzemiyorsa harf uydurmuş sayılır ve güvenilmez (CLAUDE.md > "KRİTİK —
+# LLM isim bozuyor": "mehmetten" -> "mehtap" gibi).
+#
+# Saf difflib oranı kısa isimlerde yanlış pozitif (yani GEÇERLİ ismi
+# reddetme) veriyordu: örn. "ali"/"aliden" 0.67, ama "eda"/"edadan" 0.67,
+# "su"/"sudan" 0.57 — kısa kök + Türkçe ek eklendikçe oran hızla düşüyor,
+# 0.7 eşiği bunları eler. Bu yüzden önce DETERMİNİSTİK bir kök eşleşmesi
+# denenir (strip_turkish_suffix ile hem isim hem ham kelimenin eki
+# soyulur, kökler birebir eşleşiyorsa kabul); yalnızca kök eşleşmezse
+# difflib'e (daha düşük eşikle) düşülür. Kök soyucu tam bir morfolojik
+# çözümleyici olmadığından (bkz. name_utils) ikinci katman hâlâ gerekli.
+NAME_HALLUCINATION_THRESHOLD = 0.6
 
 VALID_KINDS = {
     "debt",
@@ -66,7 +83,42 @@ def _to_decimal(value) -> Decimal | None:
         return None
 
 
-def _report_intent_from_json(data: dict) -> ParsedIntent:
+def _verified_person_name(person_name: str | None, raw_text: str | None) -> str | None:
+    """LLM'in döndürdüğü kişi adını ham metinle doğrular. raw_text
+    verilmemişse (ör. eski/doğrudan birim testleri) doğrulama atlanır.
+    Ham metindeki hiçbir kelimeye yeterince benzemiyorsa None döner — bu,
+    LLM'in harf uydurduğu (mehmetten -> mehtap gibi) anlamına gelir ve
+    güvenilmez; çağıran yer bunu "kişi yok" gibi ele alıp güvenli tarafta
+    kalır (sor ya da anlaşılamadı de, asla yanlış kişiye yazma).
+
+    Deterministiktir: aynı (person_name, raw_text) çifti her zaman aynı
+    sonucu verir. Önce kök eşleşmesi denenir (ek farklarından etkilenmez),
+    yalnızca o başarısız olursa difflib oranına bakılır."""
+    if person_name is None or raw_text is None:
+        return person_name
+
+    raw_words = normalize(raw_text).split()
+    if not raw_words:
+        return person_name
+
+    name_norm = normalize(person_name)
+    name_root = strip_turkish_suffix(person_name)
+    if any(word == name_norm or strip_turkish_suffix(word) == name_root for word in raw_words):
+        return person_name
+
+    best_ratio = max(
+        difflib.SequenceMatcher(None, name_norm, w).ratio() for w in raw_words
+    )
+    if best_ratio < NAME_HALLUCINATION_THRESHOLD:
+        logger.warning(
+            "LLM kişi adı ham metinle örtüşmüyor, güvenilmiyor: %r (metin: %r)",
+            person_name, raw_text,
+        )
+        return None
+    return person_name
+
+
+def _report_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIntent:
     """LLM'in "islem": "rapor" çıktısını rapor niyetine çevirir. tur
     belirsiz/tanınmayan bir değerse ya da tur "kisi" olup kişi adı boşsa,
     kod UYDURMAZ — report_menu döner, kullanıcıya hangi raporu istediği
@@ -77,7 +129,7 @@ def _report_intent_from_json(data: dict) -> ParsedIntent:
         return ParsedIntent(kind="report_menu")
 
     if kind == "report_person":
-        person_name = _clean_str(data.get("kisi"))
+        person_name = _verified_person_name(_clean_str(data.get("kisi")), raw_text)
         if person_name is None:
             return ParsedIntent(kind="report_menu")
         return ParsedIntent(kind="report_person", person_name=person_name)
@@ -85,21 +137,28 @@ def _report_intent_from_json(data: dict) -> ParsedIntent:
     return ParsedIntent(kind=kind)
 
 
-def parsed_intent_from_json(data: dict) -> ParsedIntent | None:
+def parsed_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIntent | None:
     """LLM'in ürettiği JSON sözlüğünü ParsedIntent'e çevirir. Şema dışı ya
-    da anlamsız bir çıktı gelirse None döner (LLM çözemedi sayılır)."""
+    da anlamsız bir çıktı gelirse None döner (LLM çözemedi sayılır).
+
+    raw_text verilirse (asıl kullanıcı mesajı), kişi adı buna karşı
+    doğrulanır — LLM'in isim uydurmasını (CLAUDE.md > "KRİTİK — LLM isim
+    bozuyor") engeller. Çekim eki temizleme LLM'e bırakılmaz, burada da
+    yapılmaz: ek temizleme intent_resolver'da (name_utils) olur, burada
+    yalnızca "bu isim ham metinden mi geliyor" kontrol edilir."""
     if data.get("islem") == "rapor":
-        return _report_intent_from_json(data)
+        return _report_intent_from_json(data, raw_text)
 
     kind = data.get("kind")
     if kind not in VALID_KINDS:
         return None
 
-    person_name = _clean_str(data.get("person_name"))
+    person_name = _verified_person_name(_clean_str(data.get("person_name")), raw_text)
     if kind in ("debt", "payment", "balance_query") and person_name is None:
         # Kayıt niyeti kişisiz anlamsızdır — intent_resolver zaten kişisiz
         # ParsedIntent'i reddeder ama burada erken çıkmak niyeti açıkça
-        # "çözülemedi" sayar (LLM belirsiz kaldıysa None dönmesi doğrudur).
+        # "çözülemedi" sayar (LLM belirsiz kaldıysa ya da isim ham metinle
+        # örtüşmüyorsa None dönmesi doğrudur).
         return None
 
     return ParsedIntent(
@@ -176,7 +235,7 @@ class OllamaProvider:
         if not isinstance(data, dict):
             return None
 
-        return parsed_intent_from_json(data)
+        return parsed_intent_from_json(data, text)
 
 
 def get_provider() -> LLMProvider | None:

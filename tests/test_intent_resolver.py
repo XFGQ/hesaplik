@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import pytest
 import pytest_asyncio
 
 from app.models import Person
@@ -31,6 +32,23 @@ async def two_furkans(session):
     session.add_all([a, b])
     await session.flush()
     return a, b
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def tek_ahmet(session):
+    p = Person(full_name="Ahmet")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def mehmet_ve_mehtap(session):
+    mehmet = Person(full_name="Mehmet")
+    mehtap = Person(full_name="Mehtap")
+    session.add_all([mehmet, mehtap])
+    await session.flush()
+    return mehmet, mehtap
 
 
 async def test_birebir_eslesme_kullanilir(session, two_ahmets):
@@ -148,3 +166,48 @@ async def test_bakiye_sorgusunda_da_tek_kelime_iki_furkan_onay_ister(session, tw
     candidate_ids = {p.id for p in resolved.person_candidates}
     assert duman.id in candidate_ids
     assert yilmaz.id in candidate_ids
+
+
+# ------------------------------------------------------------------
+# KRİTİK — LLM isim bozuyor (CLAUDE.md 2026-07-27): Türkçe ek temizleme
+# LLM'e bırakıldığında "mehmetten" -> "mehtap" gibi harf uydurmalar ve
+# "ahmetin" gibi eki temizlenemeyen isimler kişiyi bulamıyordu. Artık ek
+# temizleme koddadır (name_utils.strip_turkish_suffix), LLM/regex ne
+# döndürürse döndürsün burada uygulanır.
+
+async def test_mehmetten_mehmete_eslesir_mehtaba_asla(session, mehmet_ve_mehtap):
+    mehmet, mehtap = mehmet_ve_mehtap
+    intent = ParsedIntent(kind="payment", person_name="mehmetten", amount=Decimal("5000"))
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == mehmet.id
+    assert resolved.person.id != mehtap.id
+
+
+@pytest.mark.parametrize("raw_name", ["ahmetin", "ahmet in", "ahmete", "ahmetten"])
+async def test_ahmet_ek_varyantlari_tutarli_sekilde_ayni_kisiye_isaret_eder(
+    session, tek_ahmet, raw_name
+):
+    intent = ParsedIntent(kind="balance_query", person_name=raw_name)
+    resolved = await resolve(session, intent)
+
+    assert resolved.status in (ResolutionStatus.READY, ResolutionStatus.NEEDS_CONFIRMATION), raw_name
+    if resolved.status == ResolutionStatus.READY:
+        assert resolved.person.id == tek_ahmet.id, raw_name
+    else:
+        candidate_ids = {p.id for p in resolved.person_candidates}
+        assert candidate_ids == {tek_ahmet.id}, raw_name
+
+
+async def test_ek_temizleme_sonrasi_da_coklu_aday_hangisi_diye_sorar(session, two_ahmets):
+    # "ahmetin" -> "ahmet"e soyulur ama iki Ahmet varsa yine otomatik
+    # birine bağlanmaz, ikisi de aday olarak sunulur.
+    a, b = two_ahmets
+    intent = ParsedIntent(kind="balance_query", person_name="ahmetin")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert a.id in candidate_ids
+    assert b.id in candidate_ids

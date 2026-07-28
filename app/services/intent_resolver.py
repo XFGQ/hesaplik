@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Person, Product
 from app.services import catalog
+from app.services.name_utils import strip_turkish_suffix
 from app.services.parser import ParsedIntent
 
 # Aday listesine girmek için alt sınır (gevşek — "hiç ilgisiz" olanları eler).
@@ -77,8 +78,13 @@ async def find_person_match(
 
     net_eşleşme dolu ise doğrudan kullanılabilir (adaylar bu durumda boştur).
     net_eşleşme None ise adaylar listesi kullanıcıya sorulacak seçenekleri
-    taşır (boş liste = hiç aday yok -> kişi bulunamadı)."""
-    key = catalog.normalize(name_raw)
+    taşır (boş liste = hiç aday yok -> kişi bulunamadı).
+
+    Eşleştirmeden önce ismin SON kelimesindeki Türkçe çekim eki (iyelik,
+    ayrılma, yönelme) koddan soyulur (CLAUDE.md > "KRİTİK — LLM isim
+    bozuyor") — hem regex parser'dan hem LLM'den gelen isimde aynı şekilde,
+    LLM'in ek temizlemesine güvenilmez."""
+    key = strip_turkish_suffix(name_raw)
     if not key:
         return None, []
 
