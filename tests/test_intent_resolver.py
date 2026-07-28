@@ -59,6 +59,14 @@ async def tek_mehmet(session):
 
 
 @pytest_asyncio.fixture(loop_scope="session")
+async def esma(session):
+    p = Person(full_name="Esma")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
 async def mehmet_ve_mehtap(session):
     mehmet = Person(full_name="Mehmet")
     mehtap = Person(full_name="Mehtap")
@@ -282,3 +290,46 @@ async def test_baglam_kelimesi_olmayan_normal_isim_bozulmaz(session, two_ahmets)
 
     assert resolved.status == ResolutionStatus.READY
     assert resolved.person.id == a.id
+
+
+# ------------------------------------------------------------------
+# Kişi bilgisi (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz, SOR"):
+# info_menu/person_contact de balance_query gibi kişi gerektirir, tutar
+# gerektirmez; hitap kelimesi ("esma abla") burada da ayıklanmalı.
+
+async def test_info_menu_tutar_gerekmez(session, esma):
+    intent = ParsedIntent(kind="info_menu", person_name="esma")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == esma.id
+
+
+async def test_info_menu_hitapli_isimle_kisiye_net_eslesir(session, esma):
+    # "esma abla" -> hitap ayıklanır -> "esma" -> birebir eşleşir. (Tamponsuz
+    # yönelme eki bug'ı düzeltildiğinden "esma" artık "esm"e kesilmiyor —
+    # bkz. CLAUDE.md > "KRİTİK BUG" ve test_name_utils.py.)
+    intent = ParsedIntent(kind="info_menu", person_name="esma abla")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == esma.id
+
+
+async def test_person_contact_tutar_gerekmez(session, esma):
+    intent = ParsedIntent(kind="person_contact", person_name="esma")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == esma.id
+
+
+async def test_info_menu_belirsiz_kisi_onay_ister(session, two_ahmets):
+    a, b = two_ahmets
+    intent = ParsedIntent(kind="info_menu", person_name="ahmet")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert a.id in candidate_ids
+    assert b.id in candidate_ids

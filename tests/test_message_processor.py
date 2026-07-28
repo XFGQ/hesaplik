@@ -406,6 +406,54 @@ async def test_report_person_belirsiz_kisi_onay_ister(session):
     assert follow_up.report_pdf.startswith(b"%PDF")
 
 
+# ------------------------------------------------- kişi bilgisi (CLAUDE.md > "DÜZELTME —
+# 'bilgi ver' belirsiz, SOR")
+
+
+async def test_info_menu_belirsiz_bilgi_bekletilir(session, ahmet):
+    text = "ahmet yılmaz bilgi ver"
+    raw = await _make_raw(session, text, 60)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.INFO_MENU
+    assert result.resolved.person.id == ahmet.id
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert raw.transaction_id is None
+
+
+async def test_person_contact_net_niyet_dogrudan_calisir(session, ahmet):
+    text = "ahmet yılmaz telefonu"
+    raw = await _make_raw(session, text, 61)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_CONTACT
+    assert result.resolved.person.id == ahmet.id
+
+
+async def test_info_menu_bulunamayan_kisi(session):
+    text = "hiç yok böyle biri bilgi ver"
+    raw = await _make_raw(session, text, 62)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
+    assert result.resolved.kind == "info_menu"
+
+
+async def test_info_menu_secilince_bakiye_gosterimi(session, ahmet):
+    # Bot'ta "Bakiye / borç" butonuna basılınca kayıt değil bakiye
+    # gösterimi olmalı — READY bir ResolvedIntent ile devam edilir.
+    text = "ahmet yılmaz bilgi ver"
+    raw = await _make_raw(session, text, 63)
+    result = await message_processor.process_raw_message(session, raw, text)
+    assert result.outcome == ProcessOutcome.INFO_MENU
+
+    picked = ResolvedIntent(status=ResolutionStatus.READY, kind="balance_query", person=ahmet)
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+    assert follow_up.outcome == ProcessOutcome.BALANCE
+    assert follow_up.resolved.person.id == ahmet.id
+
+
 async def test_genel_rapor_regexle_dogrudan_uretilir(session):
     text = "genel rapor"
     raw = await _make_raw(session, text, 54)

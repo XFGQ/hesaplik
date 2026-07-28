@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from app.bot.main import _fmt_try, _format_list_messages
+from app.bot.main import _fmt_try, _format_list_messages, _format_person_card
 from app.models import Person
 from app.services.queries import PersonBalanceRow
 
@@ -57,3 +57,27 @@ def test_format_list_messages_4096_karakter_sinirinda_bolunur():
     assert len(msgs) > 1
     for m in msgs:
         assert len(m) <= 4096
+
+
+# --------------------------------------------------------------- kişi bilgileri kartı
+
+
+def test_format_person_card_bos_alanlar_gosterilmez():
+    person = Person(full_name="Esma Kaya")
+    text = _format_person_card(person)
+
+    assert text == "Esma Kaya\nKayıtlı iletişim/konum bilgisi yok."
+
+
+def test_format_person_card_dolu_alanlar_gosterilir():
+    person = Person(full_name="Esma Kaya", phone="0555 111 22 33", city="İzmir", district="Bergama")
+    text = _format_person_card(person)
+
+    assert text == "Esma Kaya\nTelefon: 0555 111 22 33\nİl: İzmir\nİlçe: Bergama"
+
+
+def test_format_person_card_kismi_alanlar():
+    person = Person(full_name="Ahmet Yılmaz", phone="0555 000 00 00")
+    text = _format_person_card(person)
+
+    assert text == "Ahmet Yılmaz\nTelefon: 0555 000 00 00"

@@ -547,3 +547,79 @@ def test_rapor_belirsiz_durum_raporu_regex_pes_eder():
     # LLM fallback devreye girsin (bkz. test_message_processor.py).
     p = parse("bana bir durum raporu hazırla")
     assert p is None
+
+
+# ------------------------------------------------- kişi bilgisi (CLAUDE.md > "DÜZELTME —
+# 'bilgi ver' belirsiz, SOR"): net iletişim niyeti (person_contact) sorulmadan
+# çalışır, belirsiz "bilgi ver" (info_menu) bot'a üç seçenek sordurur.
+
+
+def test_esma_borcu_ne_bakiye_sorgusu_sormadan():
+    p = parse("esma borcu ne")
+    assert p.kind == "balance_query"
+    assert p.person_name == "esma"
+
+
+def test_bilgi_ver_belirsiz_info_menu_doner():
+    p = parse("esma bilgi ver")
+    assert p.kind == "info_menu"
+    assert p.person_name == "esma"
+
+
+def test_bilgi_ver_hitapli_isimle_info_menu_doner():
+    p = parse("esma abla bilgi ver")
+    assert p.kind == "info_menu"
+    assert p.person_name == "esma abla"
+
+
+def test_bilgi_ver_soyadli_isim_korunur():
+    # "şeker" bilinen bir hitap değil, soyad olarak korunmalı.
+    p = parse("esma şeker bilgi ver")
+    assert p.kind == "info_menu"
+    assert p.person_name == "esma şeker"
+
+
+def test_bilgi_tek_basina_info_menu_doner():
+    p = parse("ahmet bilgisi")
+    assert p.kind == "info_menu"
+    assert p.person_name == "ahmet"
+
+
+def test_bilgilerini_ver_info_menu_doner():
+    p = parse("ahmet bilgilerini ver")
+    assert p.kind == "info_menu"
+    assert p.person_name == "ahmet"
+
+
+def test_isimsiz_bilgi_ver_none_doner():
+    p = parse("bilgi ver")
+    assert p is None
+
+
+def test_telefonu_person_contact_doner():
+    p = parse("esma telefonu")
+    assert p.kind == "person_contact"
+    assert p.person_name == "esma"
+
+
+def test_numarasi_person_contact_doner():
+    p = parse("ahmet numarası ne")
+    assert p.kind == "person_contact"
+    assert p.person_name == "ahmet"
+
+
+def test_adresi_person_contact_doner():
+    p = parse("mehmet adresi ne")
+    assert p.kind == "person_contact"
+    assert p.person_name == "mehmet"
+
+
+def test_nerede_oturuyor_person_contact_doner():
+    p = parse("ahmet nerede oturuyor")
+    assert p.kind == "person_contact"
+    assert p.person_name == "ahmet"
+
+
+def test_isimsiz_telefonu_none_doner():
+    p = parse("telefonu ne")
+    assert p is None
