@@ -21,6 +21,11 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
   Bakiye:   "{isim} (borcu|borcunu|hesabı|hesabını|bakiyesi|bakiyesini|
             durumu|durumunu) [ne|nedir|kaç|ne kadar|söyle|göster]"
             varyant:   "{isim} ne kadar borcu var"
+  Kişi bilgisi (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz, SOR"):
+            "{isim} telefonu/numarası/adresi/nerede oturuyor" -> net niyet,
+              person_contact (doğrudan kişi kartı gösterilir, sorulmaz).
+            "{isim} bilgi ver/bilgi/bilgileri" -> belirsiz, info_menu (bot
+              bakiye/kişi bilgileri/ekstre arasında SORAR).
   Sorgu:    "kişileri listele/sırala" -> list_all
             "borçluları listele" -> list_debtors
             "alacaklıları listele" -> list_creditors
@@ -69,6 +74,22 @@ BALANCE_KEYWORDS = {
 # kadar", "borcunu söyle") gelebilen, isme dahil edilmemesi gereken dolgu
 # kelimeleri.
 BALANCE_FILLERS = {"ne", "nedir", "kaç", "kadar", "söyle", "göster", "var"}
+
+# Net iletişim/konum niyeti (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
+# SOR"): "telefonu/numarası/adresi/nerede oturuyor" gibi somut bir istek
+# varsa sorulmadan doğrudan kişi kartı gösterilir — yalnızca çıplak "bilgi
+# ver" belirsizdir (bkz. INFO_MENU_KEYWORDS).
+PERSON_CONTACT_KEYWORDS = {
+    "telefonu", "telefonunu", "telefon",
+    "numarası", "numarasını", "numarasi", "numarasini", "numara",
+    "adresi", "adresini", "adres",
+    "nerede", "nerde",
+}
+
+# Belirsiz "bilgi ver" isteği: kullanıcı bakiye mi, iletişim bilgisi mi
+# istediğini belirtmemiş — bot VARSAYMAZ, üç seçenekli buton sorar
+# (bkz. app/bot/main.py > info_menu akışı).
+INFO_MENU_KEYWORDS = {"bilgi", "bilgisi", "bilgisini", "bilgiler", "bilgileri", "bilgilerini"}
 
 LIST_VERBS = {"listele", "sırala", "listeler", "sıralar", "listelesene", "sıralasana"}
 LIST_FILLERS = {"tüm", "tum", "bütün", "butun", "hepsini", "hepsi", "lütfen", "lutfen", "bana"}
@@ -191,7 +212,7 @@ def _segment_number_word(word: str, _cache: dict[str, list[str] | None] = {}) ->
 class ParsedIntent:
     kind: str  # "debt" | "payment" | "balance_query" | "list_all" | "list_debtors" |
                # "list_creditors" | "list_district" | "report_menu" | "report_person" |
-               # "report_general" | "report_daily"
+               # "report_general" | "report_daily" | "person_contact" | "info_menu"
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
@@ -382,6 +403,32 @@ def _try_balance_query(tokens: list[str]) -> ParsedIntent | None:
     return ParsedIntent(kind="balance_query", person_name=person)
 
 
+def _try_person_contact_query(tokens: list[str]) -> ParsedIntent | None:
+    """"{isim} telefonu/numarası/adresi" / "{isim} nerede oturuyor" -> net
+    iletişim/konum niyeti, sormadan doğrudan kişi kartı gösterilir."""
+    idx = next((i for i, tok in enumerate(tokens) if tok in PERSON_CONTACT_KEYWORDS), None)
+    if idx is None:
+        return None
+    person = " ".join(tokens[:idx]).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="person_contact", person_name=person)
+
+
+def _try_info_menu_query(tokens: list[str]) -> ParsedIntent | None:
+    """"{isim} bilgi ver/bilgi/bilgileri" -> hangi bilgi istendiği belirsiz,
+    bot bakiye/kişi bilgileri/ekstre arasında buton ile sorar (CLAUDE.md >
+    "DÜZELTME — 'bilgi ver' belirsiz, SOR"). Net iletişim niyeti
+    (_try_person_contact_query) bundan önce denenir."""
+    idx = next((i for i, tok in enumerate(tokens) if tok in INFO_MENU_KEYWORDS), None)
+    if idx is None:
+        return None
+    person = " ".join(tokens[:idx]).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="info_menu", person_name=person)
+
+
 def _try_list_query(tokens: list[str]) -> ParsedIntent | None:
     verb_idx = next((i for i, tok in enumerate(tokens) if tok in LIST_VERBS), None)
     if verb_idx is None:
@@ -483,6 +530,17 @@ def parse(raw_text: str) -> ParsedIntent | None:
     report_menu = _try_report_menu(tokens)
     if report_menu is not None:
         return report_menu
+
+    # Kişi bilgisi: net iletişim niyeti (telefonu/adresi/nerede) önce
+    # denenir, ancak belirsiz "bilgi ver" ondan sonra — ikisi de bir isim
+    # gerektirir ve anahtar kelime kümeleri çakışmaz.
+    person_contact = _try_person_contact_query(tokens)
+    if person_contact is not None:
+        return person_contact
+
+    info_menu = _try_info_menu_query(tokens)
+    if info_menu is not None:
+        return info_menu
 
     # Bug (2026-07-26): "ahmet yılmaz 20 balya borcunu 15000 tl ödedi" gibi
     # bir TAHSİLAT cümlesi "borcunu" (bakiye anahtar kelimesi) içerdiği

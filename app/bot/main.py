@@ -56,7 +56,7 @@ from app.db import SessionLocal
 from app.models import Person, Product, RawMessage
 from app.services import catalog, llm_provider, message_processor, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
-from app.services.ledger import Balance, LedgerError
+from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
 from app.services.message_processor import ProcessOutcome, ProcessResult
 from app.services.queries import PersonBalanceRow
@@ -82,6 +82,11 @@ ANLASILAMADI_METNI = (
     "Tam anlayamadım. Örnek: \"Ahmet 20 balya saman aldı 1500 lira borç\".\n"
     "Ya da uygulamadan elle girebilirsin."
 )
+
+# Salt okunur sorgu niyetleri: bulunamayan kişi için "Ekleyeyim mi?"
+# sorulmaz (bkz. PERSON_NOT_FOUND kolları), sadece "defterde yok" denir —
+# bunlar hiçbir şey kaydetmediği için yeni kişi açmak anlamsız.
+_QUERY_ONLY_KINDS = ("balance_query", "report_person", "person_contact", "info_menu")
 
 _BACK_VOWELS = "aıou"
 _FRONT_VOWELS = "eiöü"
@@ -187,6 +192,21 @@ def _format_balance(person: Person, bal: Balance) -> str:
         items = "\n".join(f"  {name}: {_fmt_decimal(qty)} {unit}" for name, qty, unit in bal.items)
         text += f"\nAçık kalemler:\n{items}"
     return text
+
+
+def _format_person_card(person: Person) -> str:
+    """Kişi bilgileri kartı: ad/telefon/il/ilçe, boş alanlar gösterilmez
+    (CLAUDE.md > "Kişi bilgi sorgusu + hitap kelimeleri")."""
+    lines = [person.full_name]
+    if person.phone:
+        lines.append(f"Telefon: {person.phone}")
+    if person.city:
+        lines.append(f"İl: {person.city}")
+    if person.district:
+        lines.append(f"İlçe: {person.district}")
+    if len(lines) == 1:
+        lines.append("Kayıtlı iletişim/konum bilgisi yok.")
+    return "\n".join(lines)
 
 
 TELEGRAM_MAX_LEN = 4096
@@ -297,10 +317,79 @@ def _report_menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def _info_menu_keyboard() -> InlineKeyboardMarkup:
+    """Belirsiz "bilgi ver" isteğinde sorulan üç seçenek (CLAUDE.md >
+    "DÜZELTME — 'bilgi ver' belirsiz, SOR")."""
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Bakiye / borç", callback_data="info:balance")],
+            [InlineKeyboardButton("Kişi bilgileri", callback_data="info:card")],
+            [InlineKeyboardButton("Ekstre (PDF)", callback_data="info:report")],
+        ]
+    )
+
+
 def _candidates_keyboard(candidates: list[Person]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(p.full_name, callback_data=f"person:pick:{p.id}")] for p in candidates]
     rows.append([InlineKeyboardButton("+ Yeni kişi ekle", callback_data="person:new")])
     return InlineKeyboardMarkup(rows)
+
+
+# --------------------------------------------------------------- yeni kişi — adım adım bilgi toplama
+#
+# Telegram'dan borç/tahsilat sırasında kişi bulunamayınca (veya "+ Yeni kişi
+# ekle" seçilince) kişi tek seferde sadece isimle açılmıyor; ad soyad
+# onaylatılıp telefon/il/ilçe adım adım (opsiyonel, [Geç] ile atlanabilir)
+# sorulur. Toplanan bilgiler chat_data["new_person_flow"] içinde tutulur;
+# akış bitince kişi oluşturulur ve bekleyen borç/tahsilat işlenir
+# (CLAUDE.md > "Telegram'dan kişi eklerken detay sorma").
+
+_NEW_PERSON_FIELD_ORDER = ["name", "phone", "city", "district"]
+
+
+def _new_person_name_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Onayla", callback_data="newperson:confirm")],
+            [InlineKeyboardButton("Düzelt", callback_data="newperson:edit")],
+            [InlineKeyboardButton("Hepsini geç", callback_data="newperson:skip_all")],
+            [InlineKeyboardButton("İptal", callback_data="newperson:cancel")],
+        ]
+    )
+
+
+def _new_person_optional_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Geç", callback_data="newperson:skip")],
+            [InlineKeyboardButton("İptal", callback_data="newperson:cancel")],
+        ]
+    )
+
+
+def _new_person_prompt(step: str, name: str = "") -> tuple[str, InlineKeyboardMarkup]:
+    if step == "name":
+        return f"Ad soyad: {name} — doğru mu?", _new_person_name_keyboard()
+    if step == "phone":
+        return "Telefon? (yoksa Geç)", _new_person_optional_keyboard()
+    if step == "city":
+        return "İl? (yoksa Geç)", _new_person_optional_keyboard()
+    if step == "district":
+        return "İlçe? (yoksa Geç)", _new_person_optional_keyboard()
+    raise ValueError(f"bilinmeyen adım: {step}")
+
+
+def _new_person_set_field_and_next(flow: dict, value: str | None) -> str | None:
+    """flow'daki mevcut adımın değerini yazar, sıradaki adımı döner.
+    Son adımdan sonra None döner (toplama tamamlandı demektir)."""
+    step = flow["step"]
+    flow[step] = value
+    idx = _NEW_PERSON_FIELD_ORDER.index(step)
+    if idx + 1 < len(_NEW_PERSON_FIELD_ORDER):
+        next_step = _NEW_PERSON_FIELD_ORDER[idx + 1]
+        flow["step"] = next_step
+        return next_step
+    return None
 
 
 def _pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, raw_text: str) -> dict:
@@ -394,6 +483,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text = update.message.text or ""
     chat_id = update.effective_chat.id
 
+    # Yeni kişi bilgi toplama akışı sürüyorsa, gelen metin normal mesaj
+    # işlemeye değil bu akışın bir sonraki adımına gider (telefon/il/ilçe
+    # ya da isim düzeltmesi).
+    flow = context.chat_data.get("new_person_flow")
+    if flow is not None:
+        await _handle_new_person_text(update, context, flow, text)
+        return
+
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
     # belli olmadığından baştan gösterilir. Regex anında çözerse tek bir
     # typing zararsız; LLM'e düşerse (~13 sn) periyodik yenilenir.
@@ -420,6 +517,29 @@ async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("Ses kaydını aldım, şimdilik yazıyla gönderir misin?")
 
 
+async def _handle_new_person_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, flow: dict, text: str
+) -> None:
+    text = text.strip()
+    step = flow["step"]
+
+    if step == "name":
+        if not text:
+            await update.message.reply_text("Ad soyad boş olamaz, yazar mısın?")
+            return
+        value: str | None = _title_tr(text)
+    else:
+        value = text or None
+
+    next_step = _new_person_set_field_and_next(flow, value)
+    if next_step is None:
+        await _complete_new_person(update.message, context)
+        return
+
+    prompt, keyboard = _new_person_prompt(next_step, flow.get("name", ""))
+    await update.message.reply_text(prompt, reply_markup=keyboard)
+
+
 async def _reply_result(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -441,6 +561,15 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.BALANCE:
         await update.message.reply_text(_format_balance(resolved.person, result.balance))
+        return
+
+    if result.outcome == ProcessOutcome.PERSON_CONTACT:
+        await update.message.reply_text(_format_person_card(resolved.person))
+        return
+
+    if result.outcome == ProcessOutcome.INFO_MENU:
+        context.chat_data["info_menu"] = {"person_id": resolved.person.id}
+        await update.message.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
         return
 
     if result.outcome == ProcessOutcome.LIST:
@@ -493,7 +622,7 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:
         isim = _title_tr(resolved.person_name_raw or "")
-        if resolved.kind in ("balance_query", "report_person"):
+        if resolved.kind in _QUERY_ONLY_KINDS:
             await update.message.reply_text(f"{isim} defterde yok.")
             return
         context.chat_data["pending"] = _pending_from_resolved(resolved, raw.id, text)
@@ -530,11 +659,26 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text("Tamam, iptal ettim.")
         return
     if data in ("person:yes", "person:new"):
-        await _handle_create_person(query, context)
+        await _begin_new_person_flow(query, context)
         return
     if data.startswith("person:pick:"):
         person_id = int(data.rsplit(":", 1)[1])
         await _handle_person_pick(query, context, person_id)
+        return
+    if data == "newperson:confirm":
+        await _new_person_confirm_name(query, context)
+        return
+    if data == "newperson:edit":
+        await _new_person_edit_name(query, context)
+        return
+    if data == "newperson:skip_all":
+        await _new_person_skip_all(query, context)
+        return
+    if data == "newperson:skip":
+        await _new_person_skip_field(query, context)
+        return
+    if data == "newperson:cancel":
+        await _new_person_cancel(query, context)
         return
     if data == "llm:yes":
         await _handle_llm_confirm_yes(query, context)
@@ -552,6 +696,15 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if data == "report:general":
         await _handle_report_general(query, context)
+        return
+    if data == "info:balance":
+        await _handle_info_balance(query, context)
+        return
+    if data == "info:card":
+        await _handle_info_card(query, context)
+        return
+    if data == "info:report":
+        await _handle_info_report(query, context)
         return
 
 
@@ -610,18 +763,133 @@ async def _handle_report_general(query, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def _handle_create_person(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _handle_info_balance(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Belirsiz "bilgi ver" menüsünde "Bakiye / borç" seçilince: kişi
+    daha önce netleşmişti (info_menu chat_data'sında person_id olarak
+    saklı), burada yeniden kişi eşleştirme yapılmaz."""
+    info = context.chat_data.pop("info_menu", None)
+    if not info:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, info["person_id"])
+        if person is None:
+            await query.edit_message_text("Kişi bulunamadı.")
+            return
+        bal = await balance_of(session, person.id)
+
+    await query.edit_message_text(_format_balance(person, bal))
+
+
+async def _handle_info_card(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    info = context.chat_data.pop("info_menu", None)
+    if not info:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, info["person_id"])
+        if person is None:
+            await query.edit_message_text("Kişi bulunamadı.")
+            return
+
+    await query.edit_message_text(_format_person_card(person))
+
+
+async def _handle_info_report(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    info = context.chat_data.pop("info_menu", None)
+    if not info:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    chat_id = query.message.chat_id
+    async with typing_action(context.bot, chat_id):
+        async with SessionLocal() as session:
+            person = await session.get(Person, info["person_id"])
+            if person is None:
+                await query.edit_message_text("Kişi bulunamadı.")
+                return
+            isletme = await report.isletme_adi(session)
+            pdf = await report.rapor_kisi(session, isletme, person.id)
+            bal = await balance_of(session, person.id)
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+    await query.message.reply_document(
+        document=pdf,
+        filename=f"rapor_ekstre_{report.slugify(person.full_name)}.pdf",
+        caption=_format_person_report_caption(person, bal),
+    )
+
+
+async def _begin_new_person_flow(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Kişi bulunamadığında ("Ekleyeyim mi?" → Evet) veya adaylardan
+    "+ Yeni kişi ekle" seçilince çağrılır: kişiyi hemen açmak yerine ad
+    soyadı onaylatıp telefon/il/ilçeyi adım adım sorar (bkz. CLAUDE.md >
+    "Telegram'dan kişi eklerken detay sorma")."""
     pending = context.chat_data.pop("pending", None)
     if not pending:
         await query.edit_message_text("Bu istek artık geçerli değil.")
         return
 
-    async with SessionLocal() as session:
-        person = Person(full_name=_title_tr(pending["person_name_raw"] or ""))
-        session.add(person)
-        await session.flush()
-        await _finish_pending(session, query, context, person, pending)
-        await session.commit()
+    name = _title_tr(pending.get("person_name_raw") or "")
+    context.chat_data["new_person_flow"] = {
+        "step": "name",
+        "name": name,
+        "phone": None,
+        "city": None,
+        "district": None,
+        "pending": pending,
+    }
+    prompt, keyboard = _new_person_prompt("name", name)
+    await query.edit_message_text(prompt, reply_markup=keyboard)
+
+
+async def _new_person_confirm_name(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    flow = context.chat_data.get("new_person_flow")
+    if not flow:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+    flow["step"] = "phone"
+    prompt, keyboard = _new_person_prompt("phone")
+    await query.edit_message_text(prompt, reply_markup=keyboard)
+
+
+async def _new_person_edit_name(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    flow = context.chat_data.get("new_person_flow")
+    if not flow:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+    await query.edit_message_text("Ad soyadı yazar mısın?")
+
+
+async def _new_person_skip_all(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    flow = context.chat_data.get("new_person_flow")
+    if not flow:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+    await query.edit_message_reply_markup(reply_markup=None)
+    await _complete_new_person(query.message, context)
+
+
+async def _new_person_skip_field(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    flow = context.chat_data.get("new_person_flow")
+    if not flow:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+    next_step = _new_person_set_field_and_next(flow, None)
+    if next_step is None:
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _complete_new_person(query.message, context)
+        return
+    prompt, keyboard = _new_person_prompt(next_step)
+    await query.edit_message_text(prompt, reply_markup=keyboard)
+
+
+async def _new_person_cancel(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    context.chat_data.pop("new_person_flow", None)
+    await query.edit_message_text("Kişi ekleme iptal edildi.")
 
 
 async def _handle_person_pick(query, context: ContextTypes.DEFAULT_TYPE, person_id: int) -> None:
@@ -639,7 +907,9 @@ async def _handle_person_pick(query, context: ContextTypes.DEFAULT_TYPE, person_
         await session.commit()
 
 
-async def _finish_pending(session, query, context, person: Person, pending: dict) -> None:
+async def _resolve_and_process(
+    session, context, chat_id: int, person: Person, pending: dict
+) -> tuple[ResolvedIntent, ProcessResult]:
     resolved = ResolvedIntent(
         status=ResolutionStatus.READY,
         kind=pending["kind"],
@@ -656,8 +926,13 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
         resolved.product = product
 
     raw = await session.get(RawMessage, pending["raw_message_id"])
-    async with typing_action(context.bot, query.message.chat_id):
+    async with typing_action(context.bot, chat_id):
         result = await message_processor.handle_resolved(session, raw, resolved, pending["raw_text"])
+    return resolved, result
+
+
+async def _finish_pending(session, query, context, person: Person, pending: dict) -> None:
+    resolved, result = await _resolve_and_process(session, context, query.message.chat_id, person, pending)
 
     if result.outcome == ProcessOutcome.BALANCE:
         await query.edit_message_text(_format_balance(person, result.balance))
@@ -674,6 +949,15 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
         )
         return
 
+    if result.outcome == ProcessOutcome.PERSON_CONTACT:
+        await query.edit_message_text(_format_person_card(person))
+        return
+
+    if result.outcome == ProcessOutcome.INFO_MENU:
+        context.chat_data["info_menu"] = {"person_id": person.id}
+        await query.edit_message_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
+        return
+
     kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
     msg = (
         f"{_dative(person.full_name)} {_format_item_summary(resolved)} "
@@ -681,6 +965,62 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     )
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
     await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+
+
+async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Adım adım toplama akışı bitince (onay/hepsini geç/son alanı geç ya
+    da son alanı yazınca) çağrılır: kişiyi toplanan bilgilerle oluşturur,
+    sonra bekleyen borç/tahsilat işlemini işler. `msg`, hem CallbackQuery'nin
+    hem Update'in taşıdığı `telegram.Message` nesnesidir (ikisi de aynı
+    reply_text/reply_document arayüzünü sağlar)."""
+    flow = context.chat_data.pop("new_person_flow", None)
+    if not flow:
+        await msg.reply_text("Bu istek artık geçerli değil.")
+        return
+
+    pending = flow["pending"]
+    async with SessionLocal() as session:
+        person = Person(
+            full_name=flow["name"],
+            phone=flow.get("phone"),
+            city=flow.get("city"),
+            district=flow.get("district"),
+        )
+        session.add(person)
+        await session.flush()
+        resolved, result = await _resolve_and_process(session, context, msg.chat_id, person, pending)
+        await session.commit()
+
+    if result.outcome == ProcessOutcome.BALANCE:
+        await msg.reply_text(_format_balance(person, result.balance))
+        return
+
+    if result.outcome == ProcessOutcome.REPORT_PERSON:
+        assert result.report_pdf is not None and result.balance is not None
+        await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        await msg.reply_document(
+            document=result.report_pdf,
+            filename=f"rapor_ekstre_{report.slugify(person.full_name)}.pdf",
+            caption=_format_person_report_caption(person, result.balance),
+        )
+        return
+
+    if result.outcome == ProcessOutcome.PERSON_CONTACT:
+        await msg.reply_text(_format_person_card(person))
+        return
+
+    if result.outcome == ProcessOutcome.INFO_MENU:
+        context.chat_data["info_menu"] = {"person_id": person.id}
+        await msg.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
+        return
+
+    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
+    text = (
+        f"{_dative(person.full_name)} {_format_item_summary(resolved)} "
+        f"{kind_word} eklendi.\nYeni bakiye: {_fmt_decimal(result.balance.balance_try)} TL."
+    )
+    context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
+    await msg.reply_text(text, reply_markup=_undo_keyboard(result.transaction_id))
 
 
 async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -118,6 +118,18 @@ def _verified_person_name(person_name: str | None, raw_text: str | None) -> str 
     return person_name
 
 
+def _info_intent_from_json(data: dict, kind: str, raw_text: str | None) -> ParsedIntent | None:
+    """LLM'in "islem": "bilgi_menu"/"iletisim" çıktısını çevirir (bkz.
+    llm_prompt.py, CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz, SOR").
+    Rapor ailesinden farklı olarak burada kişisiz bir "menü" fallback'i
+    anlamsızdır (ikisi de zaten bir kişiyi hedefler) — kişi adı
+    doğrulanamazsa None dönülür, çağıran yer "anlaşılamadı" sayar."""
+    person_name = _verified_person_name(_clean_str(data.get("kisi")), raw_text)
+    if person_name is None:
+        return None
+    return ParsedIntent(kind=kind, person_name=person_name)
+
+
 def _report_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIntent:
     """LLM'in "islem": "rapor" çıktısını rapor niyetine çevirir. tur
     belirsiz/tanınmayan bir değerse ya da tur "kisi" olup kişi adı boşsa,
@@ -146,8 +158,13 @@ def parsed_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIn
     bozuyor") engeller. Çekim eki temizleme LLM'e bırakılmaz, burada da
     yapılmaz: ek temizleme intent_resolver'da (name_utils) olur, burada
     yalnızca "bu isim ham metinden mi geliyor" kontrol edilir."""
-    if data.get("islem") == "rapor":
+    islem = data.get("islem")
+    if islem == "rapor":
         return _report_intent_from_json(data, raw_text)
+    if islem == "bilgi_menu":
+        return _info_intent_from_json(data, "info_menu", raw_text)
+    if islem == "iletisim":
+        return _info_intent_from_json(data, "person_contact", raw_text)
 
     kind = data.get("kind")
     if kind not in VALID_KINDS:
