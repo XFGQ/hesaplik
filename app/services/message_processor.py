@@ -43,6 +43,8 @@ class ProcessOutcome(str, enum.Enum):
     REPORT_DAILY = "report_daily"
     REPORT_GENERAL = "report_general"
     REPORT_PERSON = "report_person"
+    PERSON_CONTACT = "person_contact"
+    INFO_MENU = "info_menu"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -130,6 +132,16 @@ async def handle_resolved(
         return ProcessResult(
             outcome=ProcessOutcome.REPORT_PERSON, resolved=resolved, balance=bal, report_pdf=pdf
         )
+
+    if resolved.kind == "person_contact":
+        return ProcessResult(outcome=ProcessOutcome.PERSON_CONTACT, resolved=resolved)
+
+    if resolved.kind == "info_menu":
+        # Belirsiz "bilgi ver": kişi zaten net (READY), hangi bilgi
+        # istendiği belirsiz — bot buton ile sorar (CLAUDE.md > "DÜZELTME —
+        # 'bilgi ver' belirsiz, SOR"). Seçime göre bakiye/kişi
+        # bilgileri/ekstre ayrı callback'lerde üretilir.
+        return ProcessResult(outcome=ProcessOutcome.INFO_MENU, resolved=resolved)
 
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net

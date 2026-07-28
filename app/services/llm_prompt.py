@@ -20,7 +20,8 @@ SYSTEM_PROMPT = """Sen bir cari hesap defteri asistanısın. Türkçe cümleyi
 {"kind": "debt"|"payment"|"balance_query"|"list_all"|"list_debtors"|
 "list_creditors"|"list_district"|null, "person_name": string|null,
 "qty": number|null, "unit": string|null, "product": string|null,
-"amount": number|null, "district": string|null, "islem": "rapor"|null,
+"amount": number|null, "district": string|null,
+"islem": "rapor"|"bilgi_menu"|"iletisim"|null,
 "tur": "genel"|"gunluk"|"kisi"|null, "kisi": string|null}
 
 Kurallar:
@@ -39,6 +40,13 @@ Kurallar:
   raporu/bakiyesi" gibi komut/bağlam kelimeleri İSME DAHİL DEĞİL, bunları
   isim öbeğine KATMA. "ahmetin hesabının dökümünü çıkar" -> kisi:"ahmetin"
   (aynen, ama "hesabının"/"dökümünü" hariç) — "ahmetin hesabının" DEĞİL.
+  Aynı şekilde "abla/abi/bey/hanım/amca/dayı/teyze/hala/usta/hoca/efendi/
+  kardeş/bacı" gibi hitaplar da isme dahil değil. "esma abla bilgi ver" ->
+  kisi:"esma" (aynen, "abla" hariç).
+- Belirsiz "bilgi ver/bilgi/bilgileri" isteği (bakiye mi iletişim mi belli
+  değil): kind null, islem="bilgi_menu", kisi=kişi adı.
+- Net iletişim isteği ("telefonu/numarası/adresi/nerede oturuyor"): kind
+  null, islem="iletisim", kisi=kişi adı.
 - unit (balya/kg/çuval/adet) MAL ölçüsüdür; amount HER ZAMAN para (TL)'dır,
   karıştırma. "500 tl" -> unit yok, amount=500. amount/qty sayı (string,
   binlik ayraç değil).
@@ -82,6 +90,12 @@ Kurallar:
 
 "ali velinin ekstresi" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"kisi","kisi":"ali velinin"}
+
+"esma abla bilgi ver" ->
+{"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"bilgi_menu","tur":null,"kisi":"esma"}
+
+"ahmetin telefonu ne" ->
+{"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"iletisim","tur":null,"kisi":"ahmetin"}
 
 "bugün hava çok güzel" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}

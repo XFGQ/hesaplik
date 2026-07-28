@@ -53,7 +53,10 @@ LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
 # (report_person) kişi çözümü gerektirdiği için burada değil, balance_query
 # gibi NO_AMOUNT_KINDS'te.
 NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily"}
-NO_AMOUNT_KINDS = {"balance_query", "report_person"}
+# person_contact/info_menu (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
+# SOR") de kişi gerektirir ama tutar gerektirmez, balance_query/
+# report_person ile aynı kategoride.
+NO_AMOUNT_KINDS = {"balance_query", "report_person", "person_contact", "info_menu"}
 
 
 @dataclass(slots=True)

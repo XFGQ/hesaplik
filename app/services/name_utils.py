@@ -16,8 +16,18 @@ Kapsanan ekler:
   - ünsüz yumuşaması: iyelik ekinden önce kökün son ünsüzü sertleşmiş
     olabilir (mehmedin -> mehmed -> mehmet; d/c/b/g -> t/ç/p/k).
   - ayrılma (ablatif): -den/-dan/-ten/-tan (ahmetten -> ahmet).
-  - yönelme (dative): tamponsuz -e/-a (ahmete -> ahmet), tamponlu -ye/-ya
-    (aliye -> ali).
+  - yönelme (dative), yalnızca TAMPONLU -ye/-ya (aliye -> ali).
+
+KRİTİK BUG (2026-07-28, düzeltildi): tamponSUZ yönelme eki (çıplak -e/-a,
+"ahmete -> ahmet") KASTEN SÖKÜLMEZ. Bu ek tek bir harf ("e"/"a") ve Türkçe
+isimlerin çoğu zaten sesli harfle bitiyor ("esma", "ayşe", "fatma",
+"hatice") — bu ekle isim sonu ayırt edilemez, "esma" yanlışlıkla "esm"e
+kesiliyordu (para/kişi güvenliği ihlali: kişi hiç bulunamıyordu). Prensip:
+YANLIŞ KESMEKTENSE HİÇ KESME — eşleştirme zaten pg_trgm fuzzy olduğundan ek
+kalsa bile ("ahmete") yakın eşleşme/aday olarak bulunur, ama isim
+kesildiğinde ("esm") eşleşme TAMAMEN kaçar. Tamponlu -ye/-ya ("aliye")
+sökülmeye devam eder çünkü 2 harflik daha belirgin bir örüntüdür (çıplak
+kökler nadiren "ye"/"ya" ile biter).
 
 Bu basit bir sezgisel sökücüdür, tam bir Türkçe morfolojik çözümleyici
 değil: nadir durumlarda (örn. kökü de "n" ile biten adlar) tamponlu/
@@ -32,6 +42,13 @@ yanlışlıkla "ahmetin hesabının" oluyor). Bunlar gerçek isim DEĞİL, rapor
 bakiye komutunun parçası — eşleştirmeden önce ayıklanır (bkz.
 strip_context_words). Bu ayıklama hem regex parser'dan hem LLM'den gelen
 isimde aynı şekilde uygulanır (tek giriş noktası: strip_turkish_suffix).
+
+Aynı katmanda HİTAP kelimeleri de ayıklanır (bkz. CLAUDE.md > "Kişi bilgi
+sorgusu + hitap kelimeleri"): "abla", "abi/ağabey", "bey", "hanım", "amca",
+"dayı", "teyze", "hala", "usta", "hoca", "efendi", "kardeş", "bacı" gerçek
+isim değil, hitaptır ("esma abla" -> "esma", "ahmet usta" -> "ahmet").
+Yalnızca ismin SON kelimesi kontrol edilir (bkz. strip_honorific) — bilinen
+hitap listesi dışındaki gerçek soyadlara dokunulmaz ("esma şeker" değişmez).
 """
 
 from __future__ import annotations
@@ -49,6 +66,16 @@ _CONTEXT_GENITIVE_EXTRAS = {
     "ekstresinin", "raporunun", "dökümünün", "dokumunun",
 }
 CONTEXT_WORDS = BALANCE_KEYWORDS | REPORT_PERSON_KEYWORDS | _CONTEXT_GENITIVE_EXTRAS
+
+# Hitap kelimeleri (CLAUDE.md > "Kişi bilgi sorgusu + hitap kelimeleri"):
+# isim değil, hitaptır. Bağlam kelimelerinden farklı olarak yalnızca ismin
+# SON kelimesiyken ayıklanır (bkz. strip_honorific) — "hala" gibi bazı
+# hitaplar nadiren gerçek isim de olabilir, orta kelimede dokunulmaz.
+HONORIFIC_WORDS = {
+    "abla", "abi", "ağabey", "agabey", "bey", "hanım", "hanim",
+    "amca", "dayı", "dayi", "teyze", "hala", "usta", "hoca",
+    "efendi", "kardeş", "kardes", "bacı", "baci",
+}
 
 # Ünsüz yumuşaması: iyelik eki (-in/-ın/-un/-ün) sertleşmiş kökün üstüne
 # geldiğinde kökün son ünsüzü yumuşar (t->d, ç->c, p->b, k->ğ/g). Sökerken
@@ -98,16 +125,12 @@ def _strip_word(word: str) -> str:
                 return root
             return word
 
-    # Yönelme (dative), tamponlu (kök ünlüyle bitiyor): aliye -> ali.
+    # Yönelme (dative), yalnızca TAMPONLU (kök ünlüyle bitiyor): aliye ->
+    # ali. Tamponsuz biçim (çıplak -e/-a, "ahmete" -> "ahmet") KASTEN
+    # sökülmez (bkz. modül docstring'i, "KRİTİK BUG" notu) — "esma", "ayşe",
+    # "fatma" gibi doğal olarak sesli biten isimlerle ayırt edilemiyordu.
     if len(word) >= 3 and word[-2:] in ("ye", "ya"):
         root = word[:-2]
-        if len(root) >= MIN_ROOT_LEN:
-            return root
-        return word
-
-    # Yönelme (dative), tamponsuz (kök ünsüzle bitiyor): ahmete -> ahmet.
-    if word[-1] in _DATIVE_VOWELS:
-        root = word[:-1]
         if len(root) >= MIN_ROOT_LEN:
             return root
         return word
@@ -125,11 +148,26 @@ def strip_context_words(name: str) -> str:
     return " ".join(words)
 
 
+def strip_honorific(name: str) -> str:
+    """Sondaki hitap kelimesini ayıklar: "esma abla" -> "esma", "ahmet
+    usta" -> "ahmet". Yalnızca SON kelime kontrol edilir ve en az bir
+    kelime daha kalması gerekir — tek başına "abla" gibi bir girdi olduğu
+    gibi bırakılır (belki gerçek bir isimdir). Bilinen hitap listesi
+    dışındaki soyadlara dokunmaz ("esma şeker" değişmeden kalır)."""
+    norm = normalize(name or "")
+    words = norm.split()
+    if len(words) >= 2 and words[-1] in HONORIFIC_WORDS:
+        return " ".join(words[:-1])
+    return norm
+
+
 def strip_turkish_suffix(name: str) -> str:
-    """Adın normalize edilmiş halini, önce bağlam kelimelerinden arındırılmış
-    (bkz. strip_context_words) sonra SON kelimesindeki yaygın Türkçe çekim
-    eki soyulmuş olarak döner. Boş girdide boş döner."""
+    """Adın normalize edilmiş halini, önce bağlam kelimelerinden (bkz.
+    strip_context_words) ve sondaki hitaptan (bkz. strip_honorific)
+    arındırılmış, sonra SON kelimesindeki yaygın Türkçe çekim eki soyulmuş
+    olarak döner. Boş girdide boş döner."""
     norm = strip_context_words(name)
+    norm = strip_honorific(norm)
     words = norm.split()
     if not words:
         return norm

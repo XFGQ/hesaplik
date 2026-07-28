@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.name_utils import strip_context_words, strip_turkish_suffix
+from app.services.name_utils import strip_context_words, strip_honorific, strip_turkish_suffix
 
 
 @pytest.mark.parametrize(
@@ -14,9 +14,7 @@ from app.services.name_utils import strip_context_words, strip_turkish_suffix
         ("mehmetten", "mehmet"),
         ("bergamadan", "bergama"),
         ("ahmetin", "ahmet"),
-        ("ahmete", "ahmet"),
         ("mehmedin", "mehmet"),
-        ("dumana", "duman"),
         ("dumanın", "duman"),
     ],
 )
@@ -32,7 +30,35 @@ def test_strip_turkish_suffix_ekli_olmayan_isim_degismez():
 def test_strip_turkish_suffix_sadece_son_kelimeye_uygulanir():
     # Ad soyadsa yalnızca soyadın eki soyulur, adın kendisi değişmez.
     assert strip_turkish_suffix("ahmet yılmazın") == "ahmet yılmaz"
-    assert strip_turkish_suffix("furkan dumana") == "furkan duman"
+    assert strip_turkish_suffix("furkan dumandan") == "furkan duman"
+
+
+# ------------------------------------------------------------------
+# KRİTİK BUG (2026-07-28): tamponsuz yönelme eki (çıplak -e/-a) sesli
+# harfle biten gerçek isimlerle ayırt edilemiyordu ("esma" -> "esm" gibi
+# yanlış kesim, kişi hiç bulunamıyordu — para/kişi güvenliği ihlali).
+# Artık bu ek KASTEN sökülmez; ek kalsa bile pg_trgm fuzzy eşleştirme onu
+# tolere eder, ama isim yanlış kesilirse eşleşme tamamen kaçar.
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("esma", "esma"),
+        ("ayşe", "ayşe"),
+        ("fatma", "fatma"),
+        ("hatice", "hatice"),
+        ("emine", "emine"),
+    ],
+)
+def test_strip_turkish_suffix_sesliyle_biten_isimler_korunur(raw, expected):
+    assert strip_turkish_suffix(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["ahmete", "dumana", "mehmete", "furkana"])
+def test_strip_turkish_suffix_tamponsuz_yonelme_eki_artik_sokulmez(raw):
+    # Riskli tek harflik -e/-a eki artık KORUNUR (yanlış kesmektense hiç
+    # kesme) — bu, önceki davranıştan kasıtlı bir sapmadır.
+    assert strip_turkish_suffix(raw) == raw
 
 
 def test_strip_turkish_suffix_bos_girdi():
@@ -93,3 +119,54 @@ def test_strip_turkish_suffix_baglam_kelimesi_ve_ek_birlikte():
     assert strip_turkish_suffix("ahmetin hesabının dökümünü") == "ahmet"
     assert strip_turkish_suffix("mehmetin durumu") == "mehmet"
     assert strip_turkish_suffix("ahmet yılmaz") == "ahmet yılmaz"
+
+
+# ------------------------------------------------------------------
+# Hitap kelimesi ayıklama (CLAUDE.md > "Kişi bilgi sorgusu + hitap
+# kelimeleri"): "esma abla", "ahmet usta" gibi hitaplar gerçek isim değil,
+# sondaysa ayıklanır.
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("esma abla", "esma"),
+        ("ahmet usta", "ahmet"),
+        ("mehmet bey", "mehmet"),
+        ("ayşe hanım", "ayşe"),
+        ("ali amca", "ali"),
+        ("zeynep teyze", "zeynep"),
+        ("hasan hoca", "hasan"),
+        ("veli kardeş", "veli"),
+        ("fatma bacı", "fatma"),
+        ("ahmet ağabey", "ahmet"),
+        ("mehmet abi", "mehmet"),
+        ("kemal efendi", "kemal"),
+        ("hasan dayı", "hasan"),
+    ],
+)
+def test_strip_honorific_bilinen_hitaplar_ayiklanir(raw, expected):
+    assert strip_honorific(raw) == expected
+    # Tam zincir (strip_honorific + _strip_word) de aynı sonucu vermeli —
+    # tamponsuz yönelme eki bug'ı düzeltildiğinden ("esma" artık "esm"e
+    # kesilmiyor), sesli harfle biten isimler de tam zincirde korunur.
+    assert strip_turkish_suffix(raw) == expected
+
+
+def test_strip_honorific_bilinmeyen_soyada_dokunmaz():
+    # "şeker" bilinen hitap listesinde değil, gerçek bir soyad olarak
+    # korunmalı.
+    assert strip_honorific("esma şeker") == "esma şeker"
+    assert strip_turkish_suffix("esma şeker") == "esma şeker"
+
+
+def test_strip_honorific_tek_kelimeyken_ayiklanmaz():
+    # Tek başına bir hitap kelimesi bir isim olabilir ihtimaline karşı,
+    # yalnızca en az iki kelime varken (isim + hitap) ayıklama uygulanır.
+    assert strip_honorific("abla") == "abla"
+    assert strip_honorific("hanım") == "hanım"
+    assert strip_turkish_suffix("hanım") == "hanım"
+
+
+def test_strip_honorific_orta_kelimeye_dokunmaz():
+    # Hitap yalnızca SONDAYSA ayıklanır, ortadaki bir kelimeye dokunulmaz.
+    assert strip_honorific("abla ahmet") == "abla ahmet"

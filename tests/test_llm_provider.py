@@ -186,6 +186,44 @@ def test_json_rapor_tur_bilinmeyen_menu_doner():
     assert intent.kind == "report_menu"
 
 
+# --------------------------------------------------------------- kişi bilgisi
+# (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz, SOR"): islem="bilgi_menu"/
+# "iletisim", rapor ailesiyle aynı şema (islem/kisi), kişisiz fallback'i
+# anlamsız olduğu için (ikisi de zaten bir kişiyi hedefler) None döner.
+
+
+def test_json_bilgi_menu_kisi_ile_donusur():
+    data = {"kind": None, "islem": "bilgi_menu", "tur": None, "kisi": "esma"}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "info_menu"
+    assert intent.person_name == "esma"
+
+
+def test_json_bilgi_menu_kisisiz_none_doner():
+    data = {"kind": None, "islem": "bilgi_menu", "tur": None, "kisi": None}
+    assert parsed_intent_from_json(data) is None
+
+
+def test_json_iletisim_kisi_ile_donusur():
+    data = {"kind": None, "islem": "iletisim", "tur": None, "kisi": "esma"}
+    intent = parsed_intent_from_json(data)
+    assert intent.kind == "person_contact"
+    assert intent.person_name == "esma"
+
+
+def test_json_iletisim_kisisiz_none_doner():
+    data = {"kind": None, "islem": "iletisim", "tur": None, "kisi": None}
+    assert parsed_intent_from_json(data) is None
+
+
+def test_json_iletisim_isim_uydurulmussa_none_doner():
+    # Hallucination koruması (_verified_person_name) islem=="iletisim"
+    # yolunda da uygulanmalı.
+    data = {"kind": None, "islem": "iletisim", "tur": None, "kisi": "mehtap"}
+    intent = parsed_intent_from_json(data, "mehmetten telefon numarasını ver")
+    assert intent is None
+
+
 # --------------------------------------------------------------- OllamaProvider
 
 

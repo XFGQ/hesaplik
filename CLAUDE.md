@@ -475,3 +475,56 @@ serbest ifadeler için devreye girer.
 - Öncelik: 2080 Super çalışıyorsa onu kullan; timeout/erişilemezse yerel
   Ollama'ya düş; o da olmazsa regex + "elle gir". Katmanlı fallback.
 - Kod değişmez, provider config'ten seçilir (mevcut soyutlama).
+
+## Telegram'dan kişi eklerken detay sorma
+
+Telegram'dan yeni kişi oluşturulunca (borç/tahsilat sırasında "yeni kişi
+ekle" seçilince) sadece isim kaydediliyordu; il/ilçe/telefon boş kalıyordu.
+Kişi kartı eksik olunca ilçe filtreleri ("bergamalıları listele") çalışmaz.
+
+**Akış:** yeni kişi eklenirken adım adım (conversational) sor:
+1. Ad soyad (zaten cümleden çıkarılan isim; onayla veya düzelt).
+2. Telefon (opsiyonel, "geç" ile atlanabilir).
+3. İl (opsiyonel).
+4. İlçe (opsiyonel).
+Her adımda "geç"/"atla" butonu olsun (zorunlu değil, sadece isim yeterli).
+Bilgiler toplanınca kişi oluşturulur, SONRA bekleyen borç/tahsilat işlenir.
+
+Basit tutulmalı: soru-cevap akışı, kullanıcı istemezse "geç" der, minimum
+isimle kaydeder. Aşırı zorlama yok — hızlı giriş için "hepsini geç" imkânı.
+State bot tarafında (ConversationHandler veya chat_data) tutulur.
+
+## Kişi bilgi sorgusu + hitap kelimeleri
+
+**"{kişi} bilgi ver / bilgileri / kim / kimdir"** → kişinin kartını göster:
+ad soyad, telefon, il/ilçe, güncel bakiye, açık kalemler. Bakiye
+sorgusundan farkı: iletişim/konum bilgisi de gösterilir. Yeni niyet:
+person_info. Kişi eşleştirme güvenlik kurallarıyla (çoklu aday → sor).
+
+**Hitap kelimeleri isimden ayıklanır:** "abla, abi/ağabey, bey, hanım,
+amca, dayı, teyze, hala, usta, hoca, efendi, kardeş" gibi hitaplar isim
+değildir. "esma abla" → "esma", "ahmet usta" → "ahmet", "mehmet bey" →
+"mehmet". Bu ayıklama kişi adı çıkarımında (hem regex hem LLM sonrası)
+yapılır, "hesabının/durumu" gibi bağlam kelimeleriyle aynı temizleme
+katmanında. Dikkat: gerçek isimle karışmasın (nadiren isim olabilir ama
+hitap olarak kullanımı baskın; sona geldiğinde ayıkla).
+
+## DÜZELTME — "bilgi ver" belirsiz, SOR (2026-07-28)
+
+Önceki karar "bilgi ver → kişi kartı" yanlıştı. "bilgi ver" belirsiz:
+kullanıcı bakiye/borç de kastedebilir, iletişim bilgisi de. Bot VARSAYMAZ,
+sorar (anlamıyorsa sor ilkesi):
+
+"{kişi} bilgi ver / bilgi / bilgileri" → belirsiz → bot sorar:
+  "Ne bilgisi?" + butonlar:
+  [Bakiye / borç]  [Kişi bilgileri]  [Ekstre (PDF)]
+Seçime göre:
+  - Bakiye/borç → mevcut bakiye sorgusu (bakiye + açık kalemler)
+  - Kişi bilgileri → ad/telefon/il/ilçe kartı
+  - Ekstre → kişi ekstresi PDF
+
+Net niyetler doğrudan çalışır (sormadan):
+  "{kişi} bakiyesi/borcu/durumu" → bakiye
+  "{kişi} telefonu/numarası/adresi/nerede" → kişi bilgileri
+  "{kişi} ekstresi/dökümü" → ekstre PDF
+Sadece belirsiz "bilgi" için seçim sorulur.
