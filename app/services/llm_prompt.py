@@ -34,6 +34,11 @@ Kurallar:
 - person_name / kisi: METİNDE GEÇTİĞİ HALİYLE, AYNEN yaz. Çekim ekini SÖKME,
   harf ekleme/çıkarma/isim DEĞİŞTİRME yasak — bunu kod yapar. Örnek:
   "mehmedin" -> "mehmedin" (aynen, "mehmet" değil).
+- person_name / kisi SADECE GERÇEK İSİMDİR (1-2 kelime: ad, opsiyonel
+  soyad). "hesabı/hesabının/durumu/durumunun/dökümü/dökümünü/ekstresi/
+  raporu/bakiyesi" gibi komut/bağlam kelimeleri İSME DAHİL DEĞİL, bunları
+  isim öbeğine KATMA. "ahmetin hesabının dökümünü çıkar" -> kisi:"ahmetin"
+  (aynen, ama "hesabının"/"dökümünü" hariç) — "ahmetin hesabının" DEĞİL.
 - unit (balya/kg/çuval/adet) MAL ölçüsüdür; amount HER ZAMAN para (TL)'dır,
   karıştırma. "500 tl" -> unit yok, amount=500. amount/qty sayı (string,
   binlik ayraç değil).
@@ -68,6 +73,15 @@ Kurallar:
 
 "ahmetin hesap dökümünü ver" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"kisi","kisi":"ahmetin"}
+
+"ahmetin hesabının dökümünü çıkar" ->
+{"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"kisi","kisi":"ahmetin"}
+
+"mehmetin durumu ne" ->
+{"kind":"balance_query","person_name":"mehmetin","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"ali velinin ekstresi" ->
+{"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"kisi","kisi":"ali velinin"}
 
 "bugün hava çok güzel" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}

@@ -1,6 +1,6 @@
 import pytest
 
-from app.services.name_utils import strip_turkish_suffix
+from app.services.name_utils import strip_context_words, strip_turkish_suffix
 
 
 @pytest.mark.parametrize(
@@ -48,3 +48,48 @@ def test_strip_turkish_suffix_cok_kisa_kok_soyulmaz():
 
 def test_strip_turkish_suffix_buyuk_harf_ve_turkce_i_normalize_edilir():
     assert strip_turkish_suffix("AHMETİN") == "ahmet"
+
+
+# ------------------------------------------------------------------
+# Bağlam kelimesi ayıklama (CLAUDE.md 2026-07-28 bug'ı): LLM/regex bazen
+# isim öbeğine "hesabının", "durumu", "dökümünü" gibi komut kelimelerini de
+# katıyor — bunlar gerçek isim değil, ayıklanmalı.
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("ahmetin hesabının dökümünü", "ahmetin"),
+        ("Ahmetin Hesabının", "ahmetin"),
+        ("ahmetin hesabını", "ahmetin"),
+        ("mehmetin durumu", "mehmetin"),
+        ("mehmetin durumunu", "mehmetin"),
+        ("furkan ekstresi", "furkan"),
+        ("furkan raporu", "furkan"),
+        ("furkan bakiyesinin", "furkan"),
+        ("furkan borcunun", "furkan"),
+    ],
+)
+def test_strip_context_words_baglam_kelimesi_ayiklanir(raw, expected):
+    assert strip_context_words(raw) == expected
+
+
+def test_strip_context_words_normal_isim_bozulmaz():
+    # Komut kelimesi olmayan normal bir isim değişmeden kalmalı.
+    assert strip_context_words("ahmet yılmaz") == "ahmet yılmaz"
+    assert strip_context_words("ali veli") == "ali veli"
+
+
+def test_strip_context_words_iki_kelimeli_isim_korunur():
+    # "ekstresi" ayıklanır ama isim iki kelimeli kalır (bkz. "veli" bir
+    # bağlam kelimesi değil, isme dahil).
+    assert strip_context_words("ali velinin ekstresi") == "ali velinin"
+
+
+def test_strip_turkish_suffix_baglam_kelimesi_ve_ek_birlikte():
+    # Bağlam kelimesi ayıklama + ek soyma zinciri: "Ahmetin Hesabının" bug'ı
+    # (2026-07-28) — kişi adına yanlışlıkla katılan bağlam kelimeleri
+    # ayıklanır, SONRA gerçek ismin eki soyulur.
+    assert strip_turkish_suffix("Ahmetin Hesabının") == "ahmet"
+    assert strip_turkish_suffix("ahmetin hesabının dökümünü") == "ahmet"
+    assert strip_turkish_suffix("mehmetin durumu") == "mehmet"
+    assert strip_turkish_suffix("ahmet yılmaz") == "ahmet yılmaz"

@@ -23,13 +23,32 @@ Bu basit bir sezgisel sökücüdür, tam bir Türkçe morfolojik çözümleyici
 değil: nadir durumlarda (örn. kökü de "n" ile biten adlar) tamponlu/
 tamponsuz iyelik ayrımı belirsiz kalabilir; bu durumda daha UZUN kökü
 (daha az agresif soyma) tercih ederiz.
+
+Ayrıca burada BAĞLAM KELİMESİ ayıklama da yapılır (bkz. CLAUDE.md > "LLM
+serbest cümleden kişi adını yanlış çıkarıyor" bug'ı, 2026-07-28): LLM ya da
+regex bazen isim öbeğine "hesabının", "durumu", "dökümünü" gibi komut/bağlam
+kelimelerini de katıyor ("ahmetin hesabının dökümünü çıkar" -> kişi adı
+yanlışlıkla "ahmetin hesabının" oluyor). Bunlar gerçek isim DEĞİL, rapor/
+bakiye komutunun parçası — eşleştirmeden önce ayıklanır (bkz.
+strip_context_words). Bu ayıklama hem regex parser'dan hem LLM'den gelen
+isimde aynı şekilde uygulanır (tek giriş noktası: strip_turkish_suffix).
 """
 
 from __future__ import annotations
 
 from app.services.catalog import normalize
+from app.services.parser import BALANCE_KEYWORDS, REPORT_PERSON_KEYWORDS
 
 MIN_ROOT_LEN = 2
+
+# Genitif (-nın/-nin/-nun/-nün) hâlleri BALANCE_KEYWORDS/REPORT_PERSON_KEYWORDS'te
+# yok (o setler parser.py'nin kendi ihtiyaçları için dar tutulmuş) — burada
+# "ahmetin hesabının..." gibi tamlamalarda ayrıca gerekiyor.
+_CONTEXT_GENITIVE_EXTRAS = {
+    "hesabının", "durumunun", "bakiyesinin", "borcunun",
+    "ekstresinin", "raporunun", "dökümünün", "dokumunun",
+}
+CONTEXT_WORDS = BALANCE_KEYWORDS | REPORT_PERSON_KEYWORDS | _CONTEXT_GENITIVE_EXTRAS
 
 # Ünsüz yumuşaması: iyelik eki (-in/-ın/-un/-ün) sertleşmiş kökün üstüne
 # geldiğinde kökün son ünsüzü yumuşar (t->d, ç->c, p->b, k->ğ/g). Sökerken
@@ -96,10 +115,21 @@ def _strip_word(word: str) -> str:
     return word
 
 
-def strip_turkish_suffix(name: str) -> str:
-    """Adın normalize edilmiş halini, SON kelimesindeki yaygın Türkçe
-    çekim eki soyulmuş olarak döner. Boş girdide boş döner."""
+def strip_context_words(name: str) -> str:
+    """İsim öbeğinin içinden bağlam/komut kelimelerini ("hesabının",
+    "durumu", "ekstresi" vb., bkz. CONTEXT_WORDS) ayıklar. Yalnızca TAM
+    kelime eşleşmesiyle çalışır, gerçek isim kelimelerine dokunmaz —
+    "ahmet yılmaz" gibi normal bir isim bu fonksiyondan değişmeden çıkar."""
     norm = normalize(name or "")
+    words = [w for w in norm.split() if w not in CONTEXT_WORDS]
+    return " ".join(words)
+
+
+def strip_turkish_suffix(name: str) -> str:
+    """Adın normalize edilmiş halini, önce bağlam kelimelerinden arındırılmış
+    (bkz. strip_context_words) sonra SON kelimesindeki yaygın Türkçe çekim
+    eki soyulmuş olarak döner. Boş girdide boş döner."""
+    norm = strip_context_words(name)
     words = norm.split()
     if not words:
         return norm

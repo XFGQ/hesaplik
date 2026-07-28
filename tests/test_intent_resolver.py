@@ -43,6 +43,22 @@ async def tek_ahmet(session):
 
 
 @pytest_asyncio.fixture(loop_scope="session")
+async def ali_veli(session):
+    p = Person(full_name="Ali Veli")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def tek_mehmet(session):
+    p = Person(full_name="Mehmet")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
 async def mehmet_ve_mehtap(session):
     mehmet = Person(full_name="Mehmet")
     mehtap = Person(full_name="Mehtap")
@@ -211,3 +227,58 @@ async def test_ek_temizleme_sonrasi_da_coklu_aday_hangisi_diye_sorar(session, tw
     candidate_ids = {p.id for p in resolved.person_candidates}
     assert a.id in candidate_ids
     assert b.id in candidate_ids
+
+
+# ------------------------------------------------------------------
+# LLM serbest cümleden kişi adını yanlış çıkarıyor (CLAUDE.md 2026-07-28
+# bug'ı): "ahmetin hesabının dökümünü çıkar" -> LLM kişi adını "Ahmetin
+# Hesabının" olarak çıkarmıştı ("hesabının" bağlam kelimesi isme
+# katılmıştı). Artık strip_turkish_suffix bu bağlam kelimelerini ayıklar
+# (bkz. name_utils.strip_context_words), kaynak regex olsun LLM olsun fark
+# etmez — ikisi de aynı fonksiyondan geçer.
+
+async def test_baglam_kelimesi_katilan_isim_iki_ahmet_varsa_onay_ister(session, two_ahmets):
+    a, b = two_ahmets
+    # LLM'in ürettiği ham (bağlam kelimesi katılmış) kişi adı.
+    intent = ParsedIntent(kind="report_person", person_name="Ahmetin Hesabının")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert a.id in candidate_ids
+    assert b.id in candidate_ids
+
+
+async def test_baglam_kelimesi_katilan_isim_tek_kisiyle_net_eslesir(session, tek_mehmet):
+    intent = ParsedIntent(kind="balance_query", person_name="mehmetin durumu")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == tek_mehmet.id
+
+
+async def test_baglam_kelimesi_ayiklaninca_iki_kelimeli_isim_korunur(session, ali_veli):
+    # "ekstresi" ayıklanır ama "ali veli" iki kelimeli isim olarak kalmalı
+    # (bkz. name_utils.strip_context_words); soyaddaki iyelik eki
+    # (velinin -> ?) tam çözülemese de (bkz. name_utils modül notu: tamponlu/
+    # tamponsuz iyelik ayrımı bazen belirsiz kalır) isim İKİ KELİME olarak
+    # korunduğu ve gerçek Ali Veli'ye yeterince yakın kaldığı için sistem
+    # ya doğrudan eşleşir ya da onu aday olarak sunar — sessizce başka
+    # birine ya da "kişi yok"a düşmez.
+    intent = ParsedIntent(kind="report_person", person_name="ali velinin ekstresi")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status in (ResolutionStatus.READY, ResolutionStatus.NEEDS_CONFIRMATION)
+    if resolved.status == ResolutionStatus.READY:
+        assert resolved.person.id == ali_veli.id
+    else:
+        assert ali_veli.id in {p.id for p in resolved.person_candidates}
+
+
+async def test_baglam_kelimesi_olmayan_normal_isim_bozulmaz(session, two_ahmets):
+    a, b = two_ahmets
+    intent = ParsedIntent(kind="debt", person_name="ahmet yılmaz", amount=Decimal("100"))
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == a.id
