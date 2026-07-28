@@ -25,10 +25,11 @@ class Settings(BaseSettings):
     llm_model: str = "qwen2.5:7b"
     # İşlemcide model ~9 sn/cümle sürüyor, ama Ollama modeli boştayken
     # bellekten düşürüyor (varsayılan keep_alive ~5 dk) ve ilk istek modeli
-    # yeniden yüklemek zorunda kalıyor — bu da tek başına 30 sn'yi
-    # aşabiliyor (canlı Ollama ile doğrulanmış bir gözlem). Bu yüzden 30
-    # değil 60 sn: GPU (vLLM) gelince düşürülür.
-    llm_timeout: float = 60.0
+    # yeniden yüklemek zorunda kalıyor — soğuk başlangıçta 60sn+ ölçüldü
+    # (CLAUDE.md > "Bot yazıyor... göstergesi"). Bot başlangıcında ısınma
+    # çağrısı bunu büyük ölçüde önlüyor, ama pay bırakmak için 90 sn.
+    # GPU (vLLM) gelince düşürülür.
+    llm_timeout: float = 90.0
 
     @property
     def cors_origins_list(self) -> list[str]:

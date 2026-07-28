@@ -89,6 +89,70 @@ def test_tahsilat_urunlu():
     assert p.amount == Decimal("20000")
 
 
+def test_tahsilat_yonu_den_ekiyle_aldim():
+    # "aldı" (o aldı) = borç ama "aldım" (ben aldım) = tahsilat — fiil
+    # çekimi yönü zaten kodluyor (bkz. CLAUDE.md "LLM son çare").
+    p = parse("mehmetten 5000 aldım")
+    assert p.kind == "payment"
+    assert p.person_name == "mehmetten"
+    assert p.amount == Decimal("5000")
+    assert p.qty is None
+
+
+def test_tahsilat_bitisik_bin_carpimi_3milyon_degil():
+    # Kritik regresyon: "3bin" 3 milyon DEĞİL 3000 olmalı.
+    p = parse("aliden 3bin lira aldım")
+    assert p.kind == "payment"
+    assert p.person_name == "aliden"
+    assert p.amount == Decimal("3000")
+
+
+def test_borc_yonu_e_ekiyle_verdim():
+    p = parse("mehmete 3000 verdim")
+    assert p.kind == "debt"
+    assert p.person_name == "mehmete"
+    assert p.amount == Decimal("3000")
+    assert p.qty is None
+
+
+def test_borc_urunlu_bitisik_bin_ve_borc_isaretcisi():
+    p = parse("ahmet 20 balya saman aldı 15bin borç")
+    assert p.kind == "debt"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("20")
+    assert p.unit == "balya"
+    assert p.product == "saman"
+    assert p.amount == Decimal("15000")
+
+
+def test_tahsilat_odedi_tl_siz():
+    p = parse("ali 500 ödedi")
+    assert p.kind == "payment"
+    assert p.person_name == "ali"
+    assert p.amount == Decimal("500")
+    assert p.qty is None
+
+
+def test_tahsilat_uc_sahis_verdi():
+    p = parse("ahmet 20 balya aldı")
+    assert p.kind == "debt"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("20")
+
+
+def test_tahsilat_tahsil_ettim():
+    p = parse("mehmetten tahsil ettim 2000 tl")
+    assert p.kind == "payment"
+    assert p.person_name == "mehmetten"
+    assert p.amount == Decimal("2000")
+
+
+def test_borc_verdik_coguldan():
+    p = parse("ahmete 1000 verdik")
+    assert p.kind == "debt"
+    assert p.amount == Decimal("1000")
+
+
 def test_bakiye_sorgusu_borcu_ne():
     p = parse("ahmet borcu ne")
     assert p.kind == "balance_query"

@@ -1,5 +1,6 @@
 from decimal import Decimal
 
+import pytest
 import pytest_asyncio
 
 from app.models import Person
@@ -31,6 +32,39 @@ async def two_furkans(session):
     session.add_all([a, b])
     await session.flush()
     return a, b
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def tek_ahmet(session):
+    p = Person(full_name="Ahmet")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def ali_veli(session):
+    p = Person(full_name="Ali Veli")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def tek_mehmet(session):
+    p = Person(full_name="Mehmet")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def mehmet_ve_mehtap(session):
+    mehmet = Person(full_name="Mehmet")
+    mehtap = Person(full_name="Mehtap")
+    session.add_all([mehmet, mehtap])
+    await session.flush()
+    return mehmet, mehtap
 
 
 async def test_birebir_eslesme_kullanilir(session, two_ahmets):
@@ -148,3 +182,103 @@ async def test_bakiye_sorgusunda_da_tek_kelime_iki_furkan_onay_ister(session, tw
     candidate_ids = {p.id for p in resolved.person_candidates}
     assert duman.id in candidate_ids
     assert yilmaz.id in candidate_ids
+
+
+# ------------------------------------------------------------------
+# KRİTİK — LLM isim bozuyor (CLAUDE.md 2026-07-27): Türkçe ek temizleme
+# LLM'e bırakıldığında "mehmetten" -> "mehtap" gibi harf uydurmalar ve
+# "ahmetin" gibi eki temizlenemeyen isimler kişiyi bulamıyordu. Artık ek
+# temizleme koddadır (name_utils.strip_turkish_suffix), LLM/regex ne
+# döndürürse döndürsün burada uygulanır.
+
+async def test_mehmetten_mehmete_eslesir_mehtaba_asla(session, mehmet_ve_mehtap):
+    mehmet, mehtap = mehmet_ve_mehtap
+    intent = ParsedIntent(kind="payment", person_name="mehmetten", amount=Decimal("5000"))
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == mehmet.id
+    assert resolved.person.id != mehtap.id
+
+
+@pytest.mark.parametrize("raw_name", ["ahmetin", "ahmet in", "ahmete", "ahmetten"])
+async def test_ahmet_ek_varyantlari_tutarli_sekilde_ayni_kisiye_isaret_eder(
+    session, tek_ahmet, raw_name
+):
+    intent = ParsedIntent(kind="balance_query", person_name=raw_name)
+    resolved = await resolve(session, intent)
+
+    assert resolved.status in (ResolutionStatus.READY, ResolutionStatus.NEEDS_CONFIRMATION), raw_name
+    if resolved.status == ResolutionStatus.READY:
+        assert resolved.person.id == tek_ahmet.id, raw_name
+    else:
+        candidate_ids = {p.id for p in resolved.person_candidates}
+        assert candidate_ids == {tek_ahmet.id}, raw_name
+
+
+async def test_ek_temizleme_sonrasi_da_coklu_aday_hangisi_diye_sorar(session, two_ahmets):
+    # "ahmetin" -> "ahmet"e soyulur ama iki Ahmet varsa yine otomatik
+    # birine bağlanmaz, ikisi de aday olarak sunulur.
+    a, b = two_ahmets
+    intent = ParsedIntent(kind="balance_query", person_name="ahmetin")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert a.id in candidate_ids
+    assert b.id in candidate_ids
+
+
+# ------------------------------------------------------------------
+# LLM serbest cümleden kişi adını yanlış çıkarıyor (CLAUDE.md 2026-07-28
+# bug'ı): "ahmetin hesabının dökümünü çıkar" -> LLM kişi adını "Ahmetin
+# Hesabının" olarak çıkarmıştı ("hesabının" bağlam kelimesi isme
+# katılmıştı). Artık strip_turkish_suffix bu bağlam kelimelerini ayıklar
+# (bkz. name_utils.strip_context_words), kaynak regex olsun LLM olsun fark
+# etmez — ikisi de aynı fonksiyondan geçer.
+
+async def test_baglam_kelimesi_katilan_isim_iki_ahmet_varsa_onay_ister(session, two_ahmets):
+    a, b = two_ahmets
+    # LLM'in ürettiği ham (bağlam kelimesi katılmış) kişi adı.
+    intent = ParsedIntent(kind="report_person", person_name="Ahmetin Hesabının")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert a.id in candidate_ids
+    assert b.id in candidate_ids
+
+
+async def test_baglam_kelimesi_katilan_isim_tek_kisiyle_net_eslesir(session, tek_mehmet):
+    intent = ParsedIntent(kind="balance_query", person_name="mehmetin durumu")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == tek_mehmet.id
+
+
+async def test_baglam_kelimesi_ayiklaninca_iki_kelimeli_isim_korunur(session, ali_veli):
+    # "ekstresi" ayıklanır ama "ali veli" iki kelimeli isim olarak kalmalı
+    # (bkz. name_utils.strip_context_words); soyaddaki iyelik eki
+    # (velinin -> ?) tam çözülemese de (bkz. name_utils modül notu: tamponlu/
+    # tamponsuz iyelik ayrımı bazen belirsiz kalır) isim İKİ KELİME olarak
+    # korunduğu ve gerçek Ali Veli'ye yeterince yakın kaldığı için sistem
+    # ya doğrudan eşleşir ya da onu aday olarak sunar — sessizce başka
+    # birine ya da "kişi yok"a düşmez.
+    intent = ParsedIntent(kind="report_person", person_name="ali velinin ekstresi")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status in (ResolutionStatus.READY, ResolutionStatus.NEEDS_CONFIRMATION)
+    if resolved.status == ResolutionStatus.READY:
+        assert resolved.person.id == ali_veli.id
+    else:
+        assert ali_veli.id in {p.id for p in resolved.person_candidates}
+
+
+async def test_baglam_kelimesi_olmayan_normal_isim_bozulmaz(session, two_ahmets):
+    a, b = two_ahmets
+    intent = ParsedIntent(kind="debt", person_name="ahmet yılmaz", amount=Decimal("100"))
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == a.id
