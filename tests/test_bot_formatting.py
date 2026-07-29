@@ -6,9 +6,11 @@ from app.bot.main import (
     _format_balance,
     _format_list_messages,
     _format_person_card,
+    _format_record_confirmation,
     _format_search_messages,
 )
-from app.models import Person, TxKind
+from app.models import Person, Product, TxKind
+from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance
 from app.services.queries import PersonBalanceRow, PersonTransactionRow
 
@@ -197,3 +199,73 @@ def test_format_search_messages_eslesenler():
     assert "🔍 'ahmet' (2 kişi)" in msgs[0]
     assert "Ahmet Yılmaz — 1.500,00 TL borçlu" in msgs[0]
     assert "Ahmet Kaya — 200,00 TL alacaklı" in msgs[0]
+
+
+# --------------------------------------------------------------- kayıt onay mesajı (CLAUDE.md >
+# "Bot kayıt akışı" Grup 2, madde 1: önceki->güncel bakiye)
+
+
+def _resolved(kind, person, qty=None, unit=None, product=None, amount=None) -> ResolvedIntent:
+    return ResolvedIntent(
+        status=ResolutionStatus.READY,
+        kind=kind,
+        person=person,
+        qty=qty,
+        unit=unit,
+        product=product,
+        amount=amount,
+    )
+
+
+def test_format_record_confirmation_urunlu_borc():
+    person = Person(full_name="Furkan Duman")
+    saman = Product(name="Saman", base_unit="balya")
+    resolved = _resolved(
+        "debt", person, qty=Decimal("30"), unit="balya", product=saman, amount=Decimal("5000.00")
+    )
+    before = Balance(person_id=1, balance_try=Decimal("10000.00"))
+    after = Balance(person_id=1, balance_try=Decimal("15000.00"))
+
+    text = _format_record_confirmation(resolved, before, after)
+
+    assert text == (
+        "✅ Furkan Duman\n"
+        "30 balya Saman · 5.000,00 TL borç eklendi\n"
+        "Önceki bakiye: 10.000,00 TL\n"
+        "Güncel bakiye: 15.000,00 TL borçlu"
+    )
+
+
+def test_format_record_confirmation_urunsuz_tahsilat():
+    person = Person(full_name="Ahmet Yılmaz")
+    resolved = _resolved("payment", person, amount=Decimal("4000.00"))
+    before = Balance(person_id=1, balance_try=Decimal("10000.00"))
+    after = Balance(person_id=1, balance_try=Decimal("6000.00"))
+
+    text = _format_record_confirmation(resolved, before, after)
+
+    assert "4.000,00 TL tahsilat eklendi" in text
+    assert "Önceki bakiye: 10.000,00 TL" in text
+    assert "Güncel bakiye: 6.000,00 TL borçlu" in text
+
+
+def test_format_record_confirmation_alacakli_durum():
+    person = Person(full_name="Ayşe Kaya")
+    resolved = _resolved("payment", person, amount=Decimal("1000.00"))
+    before = Balance(person_id=1, balance_try=Decimal("500.00"))
+    after = Balance(person_id=1, balance_try=Decimal("-500.00"))
+
+    text = _format_record_confirmation(resolved, before, after)
+
+    assert "Güncel bakiye: 500,00 TL alacaklı" in text
+
+
+def test_format_record_confirmation_sifir_durum():
+    person = Person(full_name="Sıfır Kişi")
+    resolved = _resolved("payment", person, amount=Decimal("500.00"))
+    before = Balance(person_id=1, balance_try=Decimal("500.00"))
+    after = Balance(person_id=1, balance_try=Decimal("0.00"))
+
+    text = _format_record_confirmation(resolved, before, after)
+
+    assert "Güncel bakiye: 0,00 TL sıfır" in text

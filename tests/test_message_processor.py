@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest_asyncio
 from sqlalchemy import func, select
 
-from app.models import Person, RawMessage, Transaction, TxKind, TxSource
+from app.models import Person, Product, RawMessage, Transaction, TxKind, TxSource
 from app.services import llm_provider, message_processor
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.message_processor import ProcessOutcome
@@ -633,3 +633,114 @@ async def test_arama_ile_komutlu_bakiye_sorgusu_karismaz(session, ahmet):
 
     assert result.outcome == ProcessOutcome.BALANCE
     assert result.resolved.person.id == ahmet.id
+
+
+# ------------------------------------------------------------------
+# Grup 2 (CLAUDE.md > "Bot kayıt akışı"): önceki->güncel bakiye, kısa kayıt
+# biçimi, create_person, çoklu kişi + kayıt.
+
+
+async def test_kayit_onceki_ve_guncel_bakiye_hesaplanir(session, ahmet):
+    text1 = "ahmet yılmaz 10000 tl borç yazdım"
+    raw1 = await _make_raw(session, text1, 70)
+    result1 = await message_processor.process_raw_message(session, raw1, text1)
+
+    assert result1.outcome == ProcessOutcome.RECORDED
+    assert result1.balance_before.balance_try == Decimal("0.00")
+    assert result1.balance.balance_try == Decimal("10000.00")
+
+    text2 = "ahmet yılmaz 4000 tl ödedi"
+    raw2 = await _make_raw(session, text2, 71)
+    result2 = await message_processor.process_raw_message(session, raw2, text2)
+
+    assert result2.outcome == ProcessOutcome.RECORDED
+    assert result2.balance_before.balance_try == Decimal("10000.00")
+    assert result2.balance.balance_try == Decimal("6000.00")
+
+
+async def test_kisa_kayit_bicimi_borc_olarak_kaydedilir(session, ahmet):
+    text = "ahmet yılmaz 30 saman 5000tl"
+    raw = await _make_raw(session, text, 72)
+
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    assert result.resolved.kind == "debt"
+    tx = await session.get(Transaction, result.transaction_id)
+    assert tx.kind == TxKind.DEBIT
+    assert tx.amount_try == Decimal("5000.00")
+    assert len(tx.lines) == 1
+    assert tx.lines[0].qty == Decimal("30")
+
+
+async def test_coklu_kisi_kisa_kayit_bicimiyle_hangisi_sorar(session):
+    a = Person(full_name="Ahmet Yılmaz")
+    b = Person(full_name="Ahmet Yıldız")
+    session.add_all([a, b])
+    await session.flush()
+
+    text = "ahmet 30 saman 5000tl"
+    raw = await _make_raw(session, text, 73)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    assert result.resolved.kind == "debt"
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids
+
+    # Aday seçilince (bot'ta _finish_pending'in yaptığı gibi) kayıt yapılır
+    # VE onay mesajı için önceki/güncel bakiye hesaplanır.
+    saman = Product(name="Saman", base_unit="adet")
+    session.add(saman)
+    await session.flush()
+    picked = ResolvedIntent(
+        status=ResolutionStatus.READY,
+        kind="debt",
+        person=a,
+        qty=Decimal("30"),
+        product=saman,
+        amount=Decimal("5000"),
+    )
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+
+    assert follow_up.outcome == ProcessOutcome.RECORDED
+    assert follow_up.resolved.person.id == a.id
+    assert follow_up.balance_before.balance_try == Decimal("0.00")
+    assert follow_up.balance.balance_try == Decimal("5000.00")
+
+
+async def test_create_person_yeni_kisi_akisini_baslatir(session):
+    text = "ahmet duman kayıt et"
+    raw = await _make_raw(session, text, 75)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
+    assert result.resolved.kind == "create_person"
+    assert result.resolved.person_name_raw == "ahmet duman"
+    assert (await session.execute(select(func.count(Person.id)))).scalar_one() == 0
+
+
+async def test_create_person_kisi_zaten_varsa_borc_olusturmaz(session, ahmet):
+    text = "ahmet yılmaz kayıt et"
+    raw = await _make_raw(session, text, 76)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.CREATE_PERSON
+    assert result.resolved.person.id == ahmet.id
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+
+async def test_create_person_coklu_aday_hangisi_sorar(session):
+    a = Person(full_name="Ahmet Yılmaz")
+    b = Person(full_name="Ahmet Yıldız")
+    session.add_all([a, b])
+    await session.flush()
+
+    text = "ahmet yı kayıt et"
+    raw = await _make_raw(session, text, 77)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    assert result.resolved.kind == "create_person"
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids

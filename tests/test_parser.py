@@ -884,3 +884,100 @@ def test_arama_tek_kelime_rapor_ise_arama_sayilmaz():
 def test_arama_tek_sayi_arama_sayilmaz():
     p = parse("500")
     assert p is None
+
+
+# --------------------------------------------------------------- Grup 2 (CLAUDE.md > "Bot
+# kayıt akışı"), madde 2: kısa kayıt biçimi — fiil YOKSA ama {isim} {adet}
+# {ürün} {tutar} yapısı net ise borç varsayılır.
+
+
+def test_kisa_kayit_bicimi_fiilsiz_borc():
+    p = parse("ahmet 30 saman 5000tl")
+    assert p.kind == "debt"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("30")
+    assert p.unit is None
+    assert p.product == "saman"
+    assert p.amount == Decimal("5000")
+
+
+def test_kisa_kayit_bicimi_birimli():
+    p = parse("ahmet 30 balya saman 5000 tl")
+    assert p.kind == "debt"
+    assert p.qty == Decimal("30")
+    assert p.unit == "balya"
+    assert p.product == "saman"
+    assert p.amount == Decimal("5000")
+
+
+def test_kisa_kayit_bicimi_soyadli_isim():
+    p = parse("furkan duman 20 kg arpa 2000tl")
+    assert p.kind == "debt"
+    assert p.person_name == "furkan duman"
+    assert p.product == "arpa"
+
+
+def test_kisa_kayit_bicimi_urun_eksikse_belirsiz_llme_birak():
+    # Yapı net değil: isim + tutar var ama adet/ürün yok — uydurmadan pes et.
+    p = parse("ahmet 5000tl")
+    assert p is None
+
+
+def test_kisa_kayit_bicimi_adet_eksikse_belirsiz_llme_birak():
+    p = parse("ahmet saman 5000tl")
+    assert p is None
+
+
+def test_kisa_kayit_bicimi_fiil_varsa_bu_yoldan_gitmez():
+    # Fiil zaten var, normal debt akışı çalışır (regresyon değil, sadece
+    # kısa-kayıt fonksiyonunun devreye girmediğini doğrular).
+    p = parse("ahmet 30 balya saman aldı 5000 tl borç")
+    assert p.kind == "debt"
+    assert p.qty == Decimal("30")
+
+
+# --------------------------------------------------------------- Grup 2, madde 4: yeni kişi
+# OLUŞTURMA türevleri — SADECE kişi ekleme, borç YOK.
+
+
+def test_create_person_adinda_yeni_kisi_olustur():
+    p = parse("ahmet adında yeni kişi oluştur")
+    assert p.kind == "create_person"
+    assert p.person_name == "ahmet"
+    assert p.amount is None
+
+
+def test_create_person_adinda_kisi_kayit_et():
+    p = parse("ahmet adında kişi kayıt et")
+    assert p.kind == "create_person"
+    assert p.person_name == "ahmet"
+
+
+def test_create_person_soyadli_kayit_et():
+    p = parse("ahmet duman kayıt et")
+    assert p.kind == "create_person"
+    assert p.person_name == "ahmet duman"
+
+
+def test_create_person_olustur():
+    p = parse("ahmet yıldırım oluştur")
+    assert p.kind == "create_person"
+    assert p.person_name == "ahmet yıldırım"
+
+
+def test_create_person_yeni_kisi():
+    p = parse("ahmet yıldırım yeni kişi")
+    assert p.kind == "create_person"
+    assert p.person_name == "ahmet yıldırım"
+
+
+def test_create_person_yeni_isim():
+    p = parse("ahmet yıldırım yeni isim")
+    assert p.kind == "create_person"
+    assert p.person_name == "ahmet yıldırım"
+
+
+def test_create_person_borc_ile_karismaz():
+    # Normal bir borç cümlesi create_person'a yanlışlıkla düşmemeli.
+    p = parse("ahmet 20 balya saman aldı 15000 tl borç")
+    assert p.kind == "debt"

@@ -562,3 +562,29 @@ Yani tek kelime = arama: isimde/soyadda/ilçede eşleşenleri listele.
 
 Anlaşılmayan her şey LLM'e (qwen) düşer. Regex kapsamı geniş olmalı ki
 LLM nadiren devreye girsin (yavaş).
+
+## Bot kayıt akışı — Grup 2 (2026-07-28)
+
+**Kayıt onay mesajı önceki→güncel bakiye göstersin:**
+Borç/tahsilat kaydedilince mesaj net olsun:
+"✅ Furkan Duman
+ 30 balya saman · 5.000 TL borç eklendi
+ Önceki bakiye: 10.000 TL
+ Güncel bakiye: 15.000 TL borçlu"
+Yani: ne eklendi + önceki bakiye + yeni bakiye. Kullanıcı değişimi görsün.
+
+**Kayıt komut türevleri (regex):**
+- "ahmet 30 saman 5000tl" → borç kaydı (kısa biçim, "aldı/borç" olmasa da
+  isim+adet+ürün+tutar varsa borç varsay; belirsizse LLM'e).
+- Çoklu Ahmet → "hangisi?" sor, seçilince kaydet, sonra onay mesajı.
+
+**Yeni kişi oluşturma türevleri:**
+"ahmet adında yeni kişi oluştur", "ahmet adında kişi kayıt et",
+"ahmet duman kayıt et", "ahmet yıldırım oluştur", "ahmet yıldırım yeni isim/
+kişi" → yeni kişi ekleme akışını başlat (SADECE kişi, borç yok).
+
+**Kişi ekleme akışı bilgi sorma + skip (zaten var, koru/iyileştir):**
+Yeni kişi eklenince adım adım: ad soyad (onayla) → telefon (Geç) → il (Geç)
+→ ilçe (Geç). Her adımda [Geç] butonu. İlk adımda [Hepsini geç] = sadece
+isimle hızlı kayıt. Borç/tahsilat sırasında kişi yoksa: önce bu akış, sonra
+bekleyen işlem işlenir.

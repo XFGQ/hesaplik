@@ -48,6 +48,7 @@ _LIST_SCOPE_BY_KIND = {
 
 class ProcessOutcome(str, enum.Enum):
     RECORDED = "recorded"
+    CREATE_PERSON = "create_person"
     BALANCE = "balance"
     LIST = "list"
     SEARCH = "search"
@@ -69,6 +70,7 @@ class ProcessResult:
     resolved: ResolvedIntent
     transaction_id: int | None = None
     balance: Balance | None = None
+    balance_before: Balance | None = None
     persons: list[PersonBalanceRow] | None = None
     transactions: list[PersonTransactionRow] | None = None
     transactions_total: int | None = None
@@ -168,16 +170,36 @@ async def handle_resolved(
         # bilgileri/ekstre ayrı callback'lerde üretilir.
         return ProcessResult(outcome=ProcessOutcome.INFO_MENU, resolved=resolved)
 
+    if resolved.kind == "create_person":
+        # SADECE kişi oluşturma, borç/tahsilat kaydı YOK (CLAUDE.md > "Bot
+        # kayıt akışı — Grup 2"). Kişi "create_person" ile NO_AMOUNT_KINDS
+        # üzerinden normal person-resolution akışından geçtiği için burada
+        # iki farklı durum aynı outcome'a düşer:
+        #   - Kişi zaten mevcutsa (birebir eşleşme) resolve() PERSON_NOT_FOUND'a
+        #     hiç gitmeden READY döner: bot bunu "zaten kayıtlı" diye
+        #     yorumlar (bkz. app/bot/main.py > _reply_result).
+        #   - Kişi yeniyse PERSON_NOT_FOUND -> Evet/Hayır -> adım adım bilgi
+        #     toplama akışı sonunda BURAYA, yeni oluşturulmuş kişiyle gelinir
+        #     (bkz. _complete_new_person): bot "eklendi" der.
+        return ProcessResult(outcome=ProcessOutcome.CREATE_PERSON, resolved=resolved)
+
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net
         # olsa da LLM sonucu düşük güven sayılır, doğrudan kaydetmeden
         # önce kullanıcıdan "bunu mu demek istediniz?" onayı istenir.
         return ProcessResult(outcome=ProcessOutcome.LLM_CONFIRMATION, resolved=resolved)
 
+    # Onay mesajı önceki->güncel bakiyeyi gösterir (CLAUDE.md > "Bot kayıt
+    # akışı — Grup 2"): kayıttan ÖNCEKİ bakiye burada, kayıttan hemen sonra.
+    balance_before = await balance_of(session, resolved.person.id)
     tx = await record_resolved(session, raw, resolved, text)
     bal = await balance_of(session, resolved.person.id)
     return ProcessResult(
-        outcome=ProcessOutcome.RECORDED, resolved=resolved, transaction_id=tx.id, balance=bal
+        outcome=ProcessOutcome.RECORDED,
+        resolved=resolved,
+        transaction_id=tx.id,
+        balance=bal,
+        balance_before=balance_before,
     )
 
 
