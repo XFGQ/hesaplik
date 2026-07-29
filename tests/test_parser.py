@@ -623,3 +623,264 @@ def test_nerede_oturuyor_person_contact_doner():
 def test_isimsiz_telefonu_none_doner():
     p = parse("telefonu ne")
     assert p is None
+
+
+# --------------------------------------------------------------- Grup 1 (CLAUDE.md > "Bot
+# sorgu anlama — kapsamlı genişletme"), madde 1: BARE (çekimsiz) bakiye anahtar
+# kelimeleri — "furkan bakiye", "durum furkan" gibi kelime sırası esnek tüm
+# türevler. İnflected hâller (borcu/hesabı/bakiyesi/durumu) yukarıda zaten
+# test edildi; burada YALNIZCA yeni bare kelimeler (bakiye, borç, borc,
+# durum, hesap, cari, cariye, alacak, alacağı) ve ters sıra (madde 1'de
+# istenen "en az 20 varyasyon").
+
+
+def test_bakiye_bare_isim_sonra_bakiye():
+    p = parse("furkan bakiye")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_bakiye_sonra_isim():
+    p = parse("bakiye furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_borc():
+    p = parse("furkan borc")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_borc_turkce():
+    p = parse("furkan borç")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_borc_sonra_isim():
+    p = parse("borç furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_durum():
+    p = parse("furkan durum")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_durum_sonra_isim():
+    p = parse("durum furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_hesap():
+    p = parse("furkan hesap")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_hesap_sonra_isim():
+    p = parse("hesap furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_cari():
+    p = parse("furkan cari")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_cari_sonra_isim():
+    p = parse("cari furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_cariye():
+    p = parse("furkan cariye")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_cariye_sonra_isim():
+    p = parse("cariye furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_alacak():
+    p = parse("furkan alacak")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_alacak_sonra_isim():
+    p = parse("alacak furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_isim_sonra_alacagi():
+    p = parse("furkan alacağı")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_alacagi_sonra_isim():
+    p = parse("alacağı furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_toplam_borc_isimden_sonra():
+    p = parse("furkan toplam borç")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_toplam_borc_isimden_once():
+    p = parse("toplam borç furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_guncel_bakiye_isimden_sonra():
+    p = parse("furkan güncel bakiye")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_guncel_bakiye_isimden_once():
+    p = parse("güncel bakiye furkan")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_bakiye_bare_soyadli_isim():
+    p = parse("furkan duman bakiye")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan duman"
+
+
+# Güvenlik freni: bare anahtar kelimenin HER İKİ tarafında da (dolgu hariç)
+# kelime kalırsa net bir "isim + anahtar" kalıbı değildir, uydurulmaz.
+def test_bakiye_bare_iki_taraf_da_doluysa_none():
+    # Regresyon: "durum" artık bare bir bakiye anahtar kelimesi ama bu tümce
+    # alakasız bir serbest cümle — mevcut davranış (None, LLM'e bırak)
+    # korunmalı (bkz. test_rapor_belirsiz_durum_raporu_regex_pes_eder).
+    p = parse("bana bir durum raporu hazırla")
+    assert p is None
+
+
+def test_bakiye_bare_borc_fiiliyle_beraberse_denenmez():
+    # "borç" hem bare bakiye anahtarı hem tutar işaretçisi/kind sinyali —
+    # gerçek bir borç cümlesinde (fiil + tutar var) bakiye sorgusuna
+    # dönüşmemeli, normal debt akışı çalışmalı.
+    p = parse("ahmet 20 balya saman aldı 15000 tl borç")
+    assert p.kind == "debt"
+
+
+def test_bakiye_bare_tutarli_borc_denenmez():
+    # Fiil yok ama tutar var: "furkan 5000 borç" yine bir borç cümlesidir,
+    # bakiye sorgusu değil.
+    p = parse("furkan 5000 borç")
+    assert p.kind == "debt"
+    assert p.amount == Decimal("5000")
+
+
+# --------------------------------------------------------------- Grup 1, madde 4: fiilsiz
+# liste sorguları ("kişiler", "tüm kişiler", "kişileri say", "sistemdeki
+# kişiler", "kimler var") ve fiilsiz ilçe sorgusu ("bergamalılar").
+
+
+def test_sorgu_bare_kisiler():
+    p = parse("kişiler")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_bare_tum_kisiler():
+    p = parse("tüm kişiler")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_bare_kisileri_say():
+    p = parse("kişileri say")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_bare_sistemdeki_kisiler():
+    p = parse("sistemdeki kişiler")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_bare_kimler_var():
+    p = parse("kimler var")
+    assert p.kind == "list_all"
+
+
+def test_sorgu_bare_bergamalilar():
+    p = parse("bergamalılar")
+    assert p.kind == "list_district"
+    assert p.district == "bergama"
+
+
+def test_sorgu_bare_borclular_district_sanilmaz():
+    # "borçlular" da "-lar" ile bitiyor ama bu bilinen bir liste kelimesi,
+    # ilçe eki SANILMAMALI (district="borç" gibi anlamsız bir sonuç
+    # üretmemeli). Fiilsiz haliyle bu kelime henüz desteklenmiyor (yalnızca
+    # "borçluları listele" destekleniyor), bu yüzden None dönmesi beklenir.
+    p = parse("borçlular")
+    assert p is None
+
+
+# --------------------------------------------------------------- Grup 1, madde 5: tek kelime
+# = arama (komut/fiil yoksa). "{isim} bakiye" gibi komutlu ifadelerden
+# FARKLI olarak burada TEK kelime ve hiçbir anahtar/fiil yok.
+
+
+def test_arama_tek_isim():
+    p = parse("ahmet")
+    assert p.kind == "search"
+    assert p.query == "ahmet"
+
+
+def test_arama_tek_soyad():
+    p = parse("duman")
+    assert p.kind == "search"
+    assert p.query == "duman"
+
+
+def test_arama_ilce_adi_eksiz():
+    p = parse("bergama")
+    assert p.kind == "search"
+    assert p.query == "bergama"
+
+
+def test_arama_ile_komutlu_ifade_farkli():
+    # "ahmet bakiye" iki kelime VE komutlu (bare "bakiye" anahtarı) —
+    # arama DEĞİL, doğrudan bakiye sorgusu olmalı.
+    p = parse("ahmet bakiye")
+    assert p.kind == "balance_query"
+    assert p.query is None
+
+
+def test_arama_tek_kelime_fiil_ise_arama_sayilmaz():
+    # "aldı" tek başına bir fiil/komut — arama moduna düşmemeli (madde 5:
+    # "hiçbir komut/fiil yoksa"). Kayıt için de yetersiz (isim yok), None.
+    p = parse("aldı")
+    assert p is None
+
+
+def test_arama_tek_kelime_rapor_ise_arama_sayilmaz():
+    # "rapor" bilinen bir komut (report_menu), arama değil.
+    p = parse("rapor")
+    assert p.kind == "report_menu"
+
+
+def test_arama_tek_sayi_arama_sayilmaz():
+    p = parse("500")
+    assert p is None
