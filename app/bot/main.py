@@ -180,6 +180,44 @@ def _format_item_summary(resolved: ResolvedIntent) -> str:
     return f"{_fmt_decimal(resolved.amount)} TL"
 
 
+def _format_record_summary(resolved: ResolvedIntent) -> str:
+    """Kayıt onay mesajındaki özet satırı: kalem VARSA hem kalemi hem tutarı
+    birlikte gösterir ("30 balya saman · 5.000,00 TL") — _format_item_summary
+    (yalnızca LLM önizlemesinde kullanılır, bkz. _format_llm_preview) ikisini
+    ayrı ayrı gösterir, burada CLAUDE.md > "Bot kayıt akışı — Grup 2"
+    örneğindeki gibi İKİSİ birden gerekiyor."""
+    amount_str = f"{_fmt_try(resolved.amount)} TL"
+    if resolved.product is not None and resolved.qty is not None:
+        unit = f"{resolved.unit} " if resolved.unit else ""
+        item = f"{_fmt_decimal(resolved.qty)} {unit}{resolved.product.name}".strip()
+        return f"{item} · {amount_str}"
+    return amount_str
+
+
+def _format_record_confirmation(
+    resolved: ResolvedIntent, balance_before: Balance, balance_after: Balance
+) -> str:
+    """Kayıt onay mesajı: ÖNCEKİ ve GÜNCEL bakiyeyi birlikte gösterir
+    (CLAUDE.md > "Bot kayıt akışı — Grup 2") — kullanıcı değişimi görsün.
+    "Önceki bakiye" yalnızca tutarı gösterir, "Güncel bakiye" ayrıca
+    borçlu/alacaklı/sıfır durumunu da ekler (CLAUDE.md'deki örnekle aynı
+    asimetri: önceki yalnızca referans, güncel kullanıcının asıl ilgilendiği
+    değer)."""
+    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
+    if balance_after.balance_try > 0:
+        durum = "borçlu"
+    elif balance_after.balance_try < 0:
+        durum = "alacaklı"
+    else:
+        durum = "sıfır"
+    return (
+        f"✅ {resolved.person.full_name}\n"
+        f"{_format_record_summary(resolved)} {kind_word} eklendi\n"
+        f"Önceki bakiye: {_fmt_try(abs(balance_before.balance_try))} TL\n"
+        f"Güncel bakiye: {_fmt_try(abs(balance_after.balance_try))} TL {durum}"
+    )
+
+
 # Kısa ay adı (report.py'deki tarih biçimiyle aynı, yıl olmadan — bakiye
 # tablosu güncel yılı zaten göstermeye gerek duymaz).
 _AY_KISA = {
@@ -603,11 +641,7 @@ async def _reply_result(
     resolved = result.resolved
 
     if result.outcome == ProcessOutcome.RECORDED:
-        kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
-        msg = (
-            f"{_dative(resolved.person.full_name)} {_format_item_summary(resolved)} "
-            f"{kind_word} eklendi.\nYeni bakiye: {_fmt_decimal(result.balance.balance_try)} TL."
-        )
+        msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
         context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
         await update.message.reply_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
         return
@@ -621,6 +655,15 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.PERSON_CONTACT:
         await update.message.reply_text(_format_person_card(resolved.person))
+        return
+
+    if result.outcome == ProcessOutcome.CREATE_PERSON:
+        # _reply_result yalnızca DÜZ METİNDEN gelen sonuçlar için çağrılır;
+        # yeni kişi oluşturma her zaman PERSON_NOT_FOUND -> Evet/Hayır ->
+        # adım adım akıştan (_complete_new_person) geçer. Bu yüzden bu
+        # outcome'a buradan gelinmesi, kişinin zaten mevcut olduğu
+        # (find_person_match birebir eşleşme bulduğu) anlamına gelir.
+        await update.message.reply_text(f"ℹ️ {resolved.person.full_name} zaten kayıtlı.")
         return
 
     if result.outcome == ProcessOutcome.INFO_MENU:
@@ -1023,11 +1066,14 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
         await query.edit_message_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
         return
 
-    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
-    msg = (
-        f"{_dative(person.full_name)} {_format_item_summary(resolved)} "
-        f"{kind_word} eklendi.\nYeni bakiye: {_fmt_decimal(result.balance.balance_try)} TL."
-    )
+    if result.outcome == ProcessOutcome.CREATE_PERSON:
+        # Adaylardan biri seçildi (mevcut kişi) — "hangisi?" sorusuna cevap
+        # verildi, yeni bir kişi oluşturulmadı (bkz. _reply_result'taki aynı
+        # outcome yorumu).
+        await query.edit_message_text(f"ℹ️ {person.full_name} zaten kayıtlı.")
+        return
+
+    msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
     await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
 
@@ -1082,11 +1128,14 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
         await msg.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
         return
 
-    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
-    text = (
-        f"{_dative(person.full_name)} {_format_item_summary(resolved)} "
-        f"{kind_word} eklendi.\nYeni bakiye: {_fmt_decimal(result.balance.balance_try)} TL."
-    )
+    if result.outcome == ProcessOutcome.CREATE_PERSON:
+        # Bu akışta `person` az önce oluşturuldu (yukarıda) — burada her
+        # zaman "yeni eklendi" anlamına gelir (bkz. _reply_result'taki
+        # "zaten kayıtlı" yorumuyla karşılaştır: orası asla yeni oluşturmaz).
+        await msg.reply_text(f"✅ {person.full_name} eklendi.")
+        return
+
+    text = _format_record_confirmation(resolved, result.balance_before, result.balance)
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
     await msg.reply_text(text, reply_markup=_undo_keyboard(result.transaction_id))
 
@@ -1123,11 +1172,7 @@ async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         await session.commit()
 
-    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
-    msg = (
-        f"{_dative(person.full_name)} {_format_item_summary(resolved)} "
-        f"{kind_word} eklendi.\nYeni bakiye: {_fmt_decimal(result.balance.balance_try)} TL."
-    )
+    msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
     await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
 
