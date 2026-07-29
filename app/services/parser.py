@@ -206,6 +206,24 @@ STOPWORDS = DEBT_WORDS | PAYMENT_WORDS | {
     "için", "icin", "ettim",
 }
 
+# Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup 2"):
+# "ahmet adında yeni kişi oluştur", "ahmet duman kayıt et", "ahmet yıldırım
+# oluştur", "ahmet yıldırım yeni kişi/isim" — borç YOK, sadece kişi
+# eklensin isteniyor. Tetikleyici iki türlü olabilir:
+#   1. Açık bir eylem kelimesi ("oluştur" ya da "kayıt", "kayıt et"teki gibi).
+#   2. "adında" (isimlendirme kalıbı, tek başına yeterli).
+#   3. "yeni" + ("kişi"/"isim") ikilisi birlikte ("yeni kişi"/"yeni isim").
+# Tek başına "yeni" ya da "kişi" (madde 3'ün yarısı) tetiklemez — aksi halde
+# alakasız cümlelerde de yanlışlıkla eşleşirdi.
+CREATE_PERSON_ACTIONS = {"oluştur", "olustur", "kayıt", "kayit"}
+CREATE_PERSON_NAMING_WORD = "adında"
+CREATE_PERSON_NOUN_WORDS = {"kişi", "kisi", "isim"}
+# İsim öbeğinden ayıklanan dolgu/komut kelimeleri (isme KARIŞMAMALI).
+CREATE_PERSON_FILLERS = {
+    "adında", "adinda", "yeni", "kişi", "kisi", "isim", "et", "oluştur",
+    "olustur", "kayıt", "kayit",
+}
+
 _TR_ONES = {
     "bir": 1, "iki": 2, "üç": 3, "dört": 4, "beş": 5,
     "altı": 6, "yedi": 7, "sekiz": 8, "dokuz": 9,
@@ -426,6 +444,43 @@ def _detect_kind(tokens: list[str]) -> str | None:
     return None
 
 
+def _try_short_record(tokens: list[str]) -> ParsedIntent | None:
+    """Kısa kayıt biçimi (CLAUDE.md > "Bot kayıt akışı — Grup 2"): fiil
+    YOKSA ("aldı"/"borç"/"verdim" gibi hiçbir yön sinyali) ama cümlenin
+    yapısı net bir şekilde {isim} {adet} {ürün} {tutar} ise ("ahmet 30 saman
+    5000tl"), borç kaydı varsayılır — mal/para birine gitmiş, fiil
+    söylenmemiş olsa da bu yapı yalnızca "borç yazma"nın kısaltmasıdır.
+
+    Yalnızca _detect_kind hiçbir yön bulamadığında (kind=None) çağrılır,
+    bu yüzden burada AYRICA bir fiil/bare-"borç" kontrolüne gerek yok — ama
+    yine de savunma amaçlı tekrarlanır (bu fonksiyon başka bir bağlamdan da
+    çağrılırsa yanlışlıkla bir borç/tahsilat cümlesini ele almasın diye).
+
+    Adet, ürün ya da tutardan biri eksikse yapı net değildir — uydurmadan
+    None dönülür (LLM'e bırakılır); yön belirsizliği YALNIZCA bu dörtlünün
+    hepsi bir arada olduğunda güvenle "borç" sayılır."""
+    token_set = set(tokens)
+    if token_set & (DEBT_WORDS | PAYMENT_WORDS) or "borç" in token_set or "borc" in token_set:
+        return None
+
+    amount, remaining = _extract_amount(tokens)
+    if amount is None:
+        return None
+
+    qty, unit, product_tokens, person_tokens = _extract_qty_unit(remaining)
+    if qty is None or not product_tokens or not person_tokens:
+        return None
+
+    person = " ".join(person_tokens).strip()
+    product = " ".join(product_tokens).strip()
+    if not person or not product:
+        return None
+
+    return ParsedIntent(
+        kind="debt", person_name=person, qty=qty, unit=unit, product=product, amount=amount
+    )
+
+
 def _try_balance_query(tokens: list[str]) -> ParsedIntent | None:
     """Anahtar kelime ("borcu"/"hesabı"/"bakiyesi"/"durumu" ve ekli halleri)
     tek başına yeterlidir — bir soru/emir kelimesi ("ne", "söyle"...) şart
@@ -628,6 +683,33 @@ def _try_report_menu(tokens: list[str]) -> ParsedIntent | None:
     return None
 
 
+def _try_create_person_query(tokens: list[str]) -> ParsedIntent | None:
+    """Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup
+    2"): "ahmet adında yeni kişi oluştur", "ahmet adında kişi kayıt et",
+    "ahmet duman kayıt et", "ahmet yıldırım oluştur", "ahmet yıldırım yeni
+    kişi/isim" -> SADECE kişi ekleme niyeti, borç/tahsilat YOK.
+
+    Tetikleyici (bkz. modül üstü CREATE_PERSON_* yorumu): açık bir eylem
+    kelimesi (oluştur/kayıt), ya da "adında", ya da "yeni"+"kişi/isim"
+    ikilisi. İsim, tetikleyici/dolgu kelimeleri (CREATE_PERSON_FILLERS)
+    ayıklandıktan sonra geri kalan kelimelerdir — "ahmet duman kayıt et"
+    içindeki "duman" bir dolgu DEĞİL, soyad olduğu için korunur."""
+    token_set = set(tokens)
+    triggered = bool(
+        token_set & CREATE_PERSON_ACTIONS
+        or CREATE_PERSON_NAMING_WORD in token_set
+        or ("yeni" in token_set and token_set & CREATE_PERSON_NOUN_WORDS)
+    )
+    if not triggered:
+        return None
+
+    person_tokens = [t for t in tokens if t not in CREATE_PERSON_FILLERS]
+    person = " ".join(person_tokens).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="create_person", person_name=person)
+
+
 # Tek kelime = arama (CLAUDE.md > "Bot sorgu anlama" Grup 1, madde 5): eğer
 # kullanıcı tek bir kelime yazmışsa ve bu kelime hiçbir bilinen komut/fiil/
 # anahtar kelime DEĞİLSE, Telegram'ın kendi aramasıymış gibi davranılır —
@@ -644,8 +726,9 @@ _SINGLE_WORD_RESERVED = (
     | REPORT_MENU_FILLERS | REPORT_GENERAL_QUALIFIERS | REPORT_GENERAL_NOUNS
     | REPORT_DAILY_QUALIFIERS | REPORT_DAILY_NOUNS
     | REPORT_PERSON_KEYWORDS | REPORT_PERSON_PRE_FILLERS
+    | CREATE_PERSON_ACTIONS | CREATE_PERSON_NOUN_WORDS
     | _NUMBER_WORDS
-    | {"rapor", "sistemdeki", "kimler"}
+    | {"rapor", "sistemdeki", "kimler", CREATE_PERSON_NAMING_WORD}
 )
 
 
@@ -699,6 +782,14 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if report_menu is not None:
         return report_menu
 
+    # Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup 2"):
+    # borç/tahsilat DEĞİL, sadece kişi ekleme niyeti. Rapor kontrollerinden
+    # sonra (rapor anahtar kelimeleriyle çakışma riski yok ama sıra tutarlı
+    # kalsın diye) ve bakiye/kişi-bilgisi kontrollerinden önce denenir.
+    create_person = _try_create_person_query(tokens)
+    if create_person is not None:
+        return create_person
+
     # Kişi bilgisi: net iletişim niyeti (telefonu/adresi/nerede) önce
     # denenir, ancak belirsiz "bilgi ver" ondan sonra — ikisi de bir isim
     # gerektirir ve anahtar kelime kümeleri çakışmaz.
@@ -738,6 +829,12 @@ def parse(raw_text: str) -> ParsedIntent | None:
     # sinyali "borç" olan cümlelerde (fiil hiç yoksa) kind kaybolurdu.
     kind = _detect_kind(tokens)
     if kind is None:
+        # Kısa kayıt biçimi (CLAUDE.md > "Bot kayıt akışı — Grup 2"): fiil
+        # yok ama {isim} {adet} {ürün} {tutar} yapısı net — borç varsay.
+        short_record = _try_short_record(tokens)
+        if short_record is not None:
+            return short_record
+
         # Tek kelime = arama (madde 5): hiçbir komut/fiil/anahtar kelime
         # eşleşmediyse ve mesaj tek bir kelimeyse, Telegram arama gibi
         # davranılır (bkz. _try_single_word_search). "furkan bakiye" gibi

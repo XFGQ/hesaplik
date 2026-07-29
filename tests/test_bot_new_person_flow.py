@@ -177,3 +177,30 @@ async def test_yeni_kisi_akisi_duzelt_ismi_degistirir_ve_gecleri_atlar(session, 
     assert person.phone is None
     assert person.city is None
     assert person.district is None
+
+
+# --------------------------------------------------------------- create_person (CLAUDE.md >
+# "Bot kayıt akışı" Grup 2, madde 4/5): SADECE kişi ekleme, borç YOK.
+
+
+async def test_create_person_akisi_borc_olusturmaz_ve_eklendi_mesaji(session, patch_session_local):
+    raw = await _make_raw(session, "ahmet duman kayıt et", "np-5")
+    pending = _pending(raw.id, kind="create_person", amount=None, name_raw="ahmet duman")
+
+    context = FakeContext()
+    query = FakeQuery()
+    context.chat_data["pending"] = pending
+
+    await bot_main._begin_new_person_flow(query, context)
+    await bot_main._new_person_skip_all(query, context)
+
+    assert "new_person_flow" not in context.chat_data
+    count = (
+        await session.execute(select(func.count(Person.id)).where(Person.full_name == "Ahmet Duman"))
+    ).scalar_one()
+    assert count == 1
+
+    tx_count = (await session.execute(select(func.count(Transaction.id)))).scalar_one()
+    assert tx_count == 0
+
+    query.message.reply_text.assert_awaited_with("✅ Ahmet Duman eklendi.")
