@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import html
 import logging
 import time
 from decimal import Decimal
@@ -41,7 +42,7 @@ from telegram import (
     InlineKeyboardMarkup,
     Update,
 )
-from telegram.constants import ChatAction
+from telegram.constants import ChatAction, ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -53,13 +54,13 @@ from telegram.ext import (
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Person, Product, RawMessage
+from app.models import Person, Product, RawMessage, TxKind
 from app.services import catalog, llm_provider, message_processor, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
-from app.services.message_processor import ProcessOutcome, ProcessResult
-from app.services.queries import PersonBalanceRow
+from app.services.message_processor import BALANCE_TABLE_LIMIT, ProcessOutcome, ProcessResult
+from app.services.queries import PersonBalanceRow, PersonTransactionRow, list_person_transactions
 from app.services.telegram_intake import save_raw_message
 
 logger = logging.getLogger(__name__)
@@ -179,19 +180,59 @@ def _format_item_summary(resolved: ResolvedIntent) -> str:
     return f"{_fmt_decimal(resolved.amount)} TL"
 
 
-def _format_balance(person: Person, bal: Balance) -> str:
-    amount = _fmt_decimal(abs(bal.balance_try))
+# Kısa ay adı (report.py'deki tarih biçimiyle aynı, yıl olmadan — bakiye
+# tablosu güncel yılı zaten göstermeye gerek duymaz).
+_AY_KISA = {
+    1: "Oca", 2: "Şub", 3: "Mar", 4: "Nis", 5: "May", 6: "Haz",
+    7: "Tem", 8: "Ağu", 9: "Eyl", 10: "Eki", 11: "Kas", 12: "Ara",
+}
+
+
+def _tarih_kisa(dt) -> str:
+    d = dt.astimezone(report.TR_TZ)
+    return f"{d.day} {_AY_KISA[d.month]}"
+
+
+def _format_balance(
+    person: Person,
+    bal: Balance,
+    txs: list[PersonTransactionRow],
+    txs_total: int,
+) -> str:
+    """Bakiye sorgusu düz metin değil, hizalı bir TABLO döner (CLAUDE.md >
+    "Bot sorgu anlama" Grup 1, madde 2): her hareket için tarih/ürün-adet/
+    tutar, sonda güncel bakiye. Telegram'da <pre> (monospace) ile hizalı
+    gösterilir — çağıran taraf reply_text'i ParseMode.HTML ile göndermeli.
+    Çok hareket varsa yalnızca en SON BALANCE_TABLE_LIMIT kayıt gösterilir,
+    kalanı "...ve N kayıt daha" ile özetlenir."""
+    lines = [html.escape(person.full_name), "─" * 24]
+
+    if not txs:
+        lines.append("Hareket yok.")
+    for t in txs:
+        tarih = _tarih_kisa(t.occurred_at)
+        if t.lines:
+            aciklama = " · ".join(
+                f"{html.escape(name)} {_fmt_decimal(qty)} {html.escape(unit)}" for name, qty, unit in t.lines
+            )
+        else:
+            aciklama = "Tahsilat" if t.kind == TxKind.CREDIT else "Borç"
+        isaret = "+" if t.kind == TxKind.DEBIT else "−"
+        tutar = f"{isaret}{_fmt_try(t.amount_try)}"
+        lines.append(f"{tarih:<7}{aciklama:<28}{tutar}")
+
+    if txs_total > len(txs):
+        lines.append(f"...ve {txs_total - len(txs)} kayıt daha")
+
+    lines.append("─" * 24)
     if bal.balance_try > 0:
-        durum = f"{amount} TL borcu var"
+        lines.append(f"Güncel bakiye: {_fmt_try(bal.balance_try)} TL borçlu")
     elif bal.balance_try < 0:
-        durum = f"{amount} TL alacaklı"
+        lines.append(f"Güncel bakiye: {_fmt_try(-bal.balance_try)} TL alacaklı")
     else:
-        durum = "hesabı sıfır"
-    text = f"{person.full_name}: {durum}."
-    if bal.items:
-        items = "\n".join(f"  {name}: {_fmt_decimal(qty)} {unit}" for name, qty, unit in bal.items)
-        text += f"\nAçık kalemler:\n{items}"
-    return text
+        lines.append("Güncel bakiye: hesabı sıfır")
+
+    return "📋 <pre>" + "\n".join(lines) + "</pre>"
 
 
 def _format_person_card(person: Person) -> str:
@@ -291,6 +332,18 @@ def _format_list_messages(kind: str, district: str | None, rows: list[PersonBala
             return [_LIST_EMPTY_MESSAGES[kind]]
 
     header = f"📋 {title} ({len(rows)} kişi)"
+    body = "\n".join(_format_person_row(r) for r in rows)
+    return _split_for_telegram(f"{header}\n{body}")
+
+
+def _format_search_messages(term: str | None, rows: list[PersonBalanceRow]) -> list[str]:
+    """Tek kelime = arama (CLAUDE.md > "Bot sorgu anlama" Grup 1, madde 5):
+    "hangisi?" diye SORMAZ, isim/soyad/ilçede eşleşen HERKESİ bakiyeleriyle
+    listeler — liste sorguları (_format_list_messages) ile aynı görünüm."""
+    if not rows:
+        return [f"'{term}' ile eşleşen kişi yok."]
+
+    header = f"🔍 '{term}' ({len(rows)} kişi)"
     body = "\n".join(_format_person_row(r) for r in rows)
     return _split_for_telegram(f"{header}\n{body}")
 
@@ -560,7 +613,10 @@ async def _reply_result(
         return
 
     if result.outcome == ProcessOutcome.BALANCE:
-        await update.message.reply_text(_format_balance(resolved.person, result.balance))
+        await update.message.reply_text(
+            _format_balance(resolved.person, result.balance, result.transactions or [], result.transactions_total or 0),
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if result.outcome == ProcessOutcome.PERSON_CONTACT:
@@ -574,6 +630,11 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.LIST:
         for msg in _format_list_messages(resolved.kind, resolved.district, result.persons or []):
+            await update.message.reply_text(msg)
+        return
+
+    if result.outcome == ProcessOutcome.SEARCH:
+        for msg in _format_search_messages(resolved.query, result.persons or []):
             await update.message.reply_text(msg)
         return
 
@@ -778,8 +839,9 @@ async def _handle_info_balance(query, context: ContextTypes.DEFAULT_TYPE) -> Non
             await query.edit_message_text("Kişi bulunamadı.")
             return
         bal = await balance_of(session, person.id)
+        txs, total = await list_person_transactions(session, person.id, limit=BALANCE_TABLE_LIMIT)
 
-    await query.edit_message_text(_format_balance(person, bal))
+    await query.edit_message_text(_format_balance(person, bal, txs, total), parse_mode=ParseMode.HTML)
 
 
 async def _handle_info_card(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -935,7 +997,10 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     resolved, result = await _resolve_and_process(session, context, query.message.chat_id, person, pending)
 
     if result.outcome == ProcessOutcome.BALANCE:
-        await query.edit_message_text(_format_balance(person, result.balance))
+        await query.edit_message_text(
+            _format_balance(person, result.balance, result.transactions or [], result.transactions_total or 0),
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if result.outcome == ProcessOutcome.REPORT_PERSON:
@@ -992,7 +1057,10 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
         await session.commit()
 
     if result.outcome == ProcessOutcome.BALANCE:
-        await msg.reply_text(_format_balance(person, result.balance))
+        await msg.reply_text(
+            _format_balance(person, result.balance, result.transactions or [], result.transactions_total or 0),
+            parse_mode=ParseMode.HTML,
+        )
         return
 
     if result.outcome == ProcessOutcome.REPORT_PERSON:
