@@ -56,8 +56,13 @@ LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
 NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily", "search"}
 # person_contact/info_menu (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
 # SOR") de kişi gerektirir ama tutar gerektirmez, balance_query/
-# report_person ile aynı kategoride.
-NO_AMOUNT_KINDS = {"balance_query", "report_person", "person_contact", "info_menu"}
+# report_person ile aynı kategoride. "create_person" de burada (CLAUDE.md >
+# "Bot kayıt akışı — Grup 2"): amaç zaten kişiyi bulmak/oluşturmak, tutar
+# hiç gerekmez. Aynı find_person_match akışından geçtiği için mevcut
+# güvenlik davranışları BEDAVA gelir — birebir eşleşme READY (zaten var),
+# fuzzy adaylar NEEDS_CONFIRMATION ("hangisi?" + "+ Yeni kişi ekle" butonu),
+# hiç eşleşme yoksa PERSON_NOT_FOUND (Evet/Hayır -> adım adım oluşturma).
+NO_AMOUNT_KINDS = {"balance_query", "report_person", "person_contact", "info_menu", "create_person"}
 
 
 @dataclass(slots=True)
