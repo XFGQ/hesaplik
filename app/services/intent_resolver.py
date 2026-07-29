@@ -51,8 +51,9 @@ LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
 # günlük/genel seçimini buton ile sorar), report_general/report_daily
 # (tür zaten net, PDF doğrudan üretilir). Kişiye özel ekstre isteği
 # (report_person) kişi çözümü gerektirdiği için burada değil, balance_query
-# gibi NO_AMOUNT_KINDS'te.
-NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily"}
+# gibi NO_AMOUNT_KINDS'te. "search" de kişi gerektirmez — belirli bir kişiye
+# değil, bir arama terimine (query) bağlanır (bkz. queries.search_persons).
+NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily", "search"}
 # person_contact/info_menu (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
 # SOR") de kişi gerektirir ama tutar gerektirmez, balance_query/
 # report_person ile aynı kategoride.
@@ -72,6 +73,7 @@ class ResolvedIntent:
     product: Product | None = None
     amount: Decimal | None = None
     district: str | None = None
+    query: str | None = None
 
 
 async def find_person_match(
@@ -127,7 +129,9 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED)
 
     if intent.kind in NO_PERSON_KINDS:
-        return ResolvedIntent(status=ResolutionStatus.READY, kind=intent.kind, district=intent.district)
+        return ResolvedIntent(
+            status=ResolutionStatus.READY, kind=intent.kind, district=intent.district, query=intent.query
+        )
 
     if intent.kind not in NO_AMOUNT_KINDS and intent.amount is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)

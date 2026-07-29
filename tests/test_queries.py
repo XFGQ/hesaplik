@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.models import Person, Product, TxSource
+from app.models import Person, Product, TxKind, TxSource
 from app.services import queries
 from app.services.ledger import LineInput, TxMeta, add_debt, add_payment
 
@@ -97,3 +97,110 @@ async def test_acik_kalemler_listeye_dahil(session):
 async def test_gecersiz_filtre_hata_verir(session):
     with pytest.raises(ValueError):
         await queries.list_persons_with_balance(session, scope="unknown")
+
+
+# --------------------------------------------------------------- search_persons (CLAUDE.md >
+# "Bot sorgu anlama" Grup 1, madde 5: tek kelime arama)
+
+
+async def test_search_persons_isimde_gecen_herkes(session):
+    await _person(session, "Ahmet Yılmaz")
+    await _person(session, "Ahmet Kaya")
+    await _person(session, "Mehmet Duman")
+
+    rows = await queries.search_persons(session, "ahmet")
+
+    assert {r.person.full_name for r in rows} == {"Ahmet Yılmaz", "Ahmet Kaya"}
+
+
+async def test_search_persons_soyadda_gecenler(session):
+    await _person(session, "Furkan Duman")
+    await _person(session, "Ahmet Yılmaz")
+
+    rows = await queries.search_persons(session, "duman")
+
+    assert [r.person.full_name for r in rows] == ["Furkan Duman"]
+
+
+async def test_search_persons_ilcede_gecenler(session):
+    await _person(session, "Bergamalı Ahmet", district="Bergama")
+    await _person(session, "İzmirli Mehmet", district="İzmir")
+
+    rows = await queries.search_persons(session, "bergama")
+
+    assert [r.person.full_name for r in rows] == ["Bergamalı Ahmet"]
+
+
+async def test_search_persons_eslesme_yoksa_bos_liste(session):
+    await _person(session, "Ahmet Yılmaz")
+
+    rows = await queries.search_persons(session, "zzz-yok")
+
+    assert rows == []
+
+
+async def test_search_persons_bos_terim_bos_liste(session):
+    await _person(session, "Ahmet Yılmaz")
+
+    assert await queries.search_persons(session, "") == []
+    assert await queries.search_persons(session, "   ") == []
+
+
+async def test_search_persons_bakiyeleriyle_doner(session):
+    ahmet = await _person(session, "Ahmet Yılmaz")
+    await add_debt(session, ahmet.id, [], meta(), amount_override=Decimal("1000"))
+
+    rows = await queries.search_persons(session, "ahmet")
+
+    assert rows[0].balance_try == Decimal("1000.00")
+
+
+# --------------------------------------------------------------- list_person_transactions
+# (CLAUDE.md > "Bot sorgu anlama" Grup 1, madde 2: bakiye tablo çıktısı)
+
+
+async def test_list_person_transactions_kronolojik_sirali(session):
+    kisi = await _person(session, "Kronoloji Kişi")
+    await add_debt(session, kisi.id, [], meta(), amount_override=Decimal("1000"))
+    await add_payment(session, kisi.id, Decimal("400"), meta())
+
+    rows, total = await queries.list_person_transactions(session, kisi.id)
+
+    assert total == 2
+    assert [r.kind for r in rows] == [TxKind.DEBIT, TxKind.CREDIT]
+    assert rows[0].amount_try == Decimal("1000.00")
+    assert rows[1].amount_try == Decimal("400.00")
+
+
+async def test_list_person_transactions_limit_ve_toplam(session):
+    kisi = await _person(session, "Çok Hareketli Kişi")
+    for i in range(5):
+        await add_debt(session, kisi.id, [], meta(), amount_override=Decimal("100"))
+
+    rows, total = await queries.list_person_transactions(session, kisi.id, limit=3)
+
+    assert total == 5
+    assert len(rows) == 3
+
+
+async def test_list_person_transactions_kalemli_hareket(session):
+    kisi = await _person(session, "Kalemli Kişi")
+    saman = Product(name="Saman", base_unit="balya")
+    session.add(saman)
+    await session.flush()
+    await add_debt(
+        session, kisi.id, [LineInput(product_id=saman.id, qty=Decimal("20"), line_total=Decimal("1000"))], meta()
+    )
+
+    rows, _total = await queries.list_person_transactions(session, kisi.id)
+
+    assert rows[0].lines == [("Saman", Decimal("20"), "balya")]
+
+
+async def test_list_person_transactions_hareketsiz_kisi(session):
+    kisi = await _person(session, "Hareketsiz Kişi")
+
+    rows, total = await queries.list_person_transactions(session, kisi.id)
+
+    assert rows == []
+    assert total == 0

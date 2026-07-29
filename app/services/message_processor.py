@@ -23,9 +23,20 @@ from app.models import RawMessage, Transaction, TxSource
 from app.services import llm_provider, parser, report
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
-from app.services.queries import PersonBalanceRow, list_persons_with_balance
+from app.services.queries import (
+    PersonBalanceRow,
+    PersonTransactionRow,
+    list_person_transactions,
+    list_persons_with_balance,
+    search_persons,
+)
 
 TELEGRAM_ACTOR = "telegram-bot"
+
+# Bakiye sorgusunda Telegram'a gönderilen tablo en fazla bu kadar hareket
+# gösterir, gerisi "...ve N kayıt daha" ile özetlenir (CLAUDE.md > "Bot
+# sorgu anlama" Grup 1, madde 2).
+BALANCE_TABLE_LIMIT = 15
 
 _LIST_SCOPE_BY_KIND = {
     "list_all": "all",
@@ -39,6 +50,7 @@ class ProcessOutcome(str, enum.Enum):
     RECORDED = "recorded"
     BALANCE = "balance"
     LIST = "list"
+    SEARCH = "search"
     REPORT_MENU = "report_menu"
     REPORT_DAILY = "report_daily"
     REPORT_GENERAL = "report_general"
@@ -58,6 +70,8 @@ class ProcessResult:
     transaction_id: int | None = None
     balance: Balance | None = None
     persons: list[PersonBalanceRow] | None = None
+    transactions: list[PersonTransactionRow] | None = None
+    transactions_total: int | None = None
     report_pdf: bytes | None = None
     report_stats: report.DailyStats | report.GeneralStats | None = None
 
@@ -119,11 +133,22 @@ async def handle_resolved(
         )
         return ProcessResult(outcome=ProcessOutcome.LIST, resolved=resolved, persons=rows)
 
+    if resolved.kind == "search":
+        rows = await search_persons(session, resolved.query or "")
+        return ProcessResult(outcome=ProcessOutcome.SEARCH, resolved=resolved, persons=rows)
+
     assert resolved.person is not None
 
     if resolved.kind == "balance_query":
         bal = await balance_of(session, resolved.person.id)
-        return ProcessResult(outcome=ProcessOutcome.BALANCE, resolved=resolved, balance=bal)
+        txs, total = await list_person_transactions(session, resolved.person.id, limit=BALANCE_TABLE_LIMIT)
+        return ProcessResult(
+            outcome=ProcessOutcome.BALANCE,
+            resolved=resolved,
+            balance=bal,
+            transactions=txs,
+            transactions_total=total,
+        )
 
     if resolved.kind == "report_person":
         isletme = await report.isletme_adi(session)
