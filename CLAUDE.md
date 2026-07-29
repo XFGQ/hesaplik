@@ -528,3 +528,37 @@ Net niyetler doğrudan çalışır (sormadan):
   "{kişi} telefonu/numarası/adresi/nerede" → kişi bilgileri
   "{kişi} ekstresi/dökümü" → ekstre PDF
 Sadece belirsiz "bilgi" için seçim sorulur.
+
+## Bot sorgu anlama — kapsamlı genişletme (2026-07-28, Grup 1)
+
+Kullanıcı botun HER sorgu türevini anlamasını istiyor. Regex birincil,
+anlaşılmayan LLM'e. Tüm bu kalıplar REGEX'te olmalı (LLM'e gitmemeli):
+
+**Bakiye (hepsi aynı sonuç — bakiye + açık kalemler tablosu):**
+"furkan bakiye", "furkan borc/borç", "furkan borcu ne", "furkan durum",
+"furkan durumu", "furkan durumu ne", "furkan durum ne", "furkan hesap",
+"furkan cari/cariye", "furkan güncel bakiye", "furkan alacak/alacağı",
+"furkan toplam borç", ve TERS SIRA: "durum furkan", "bakiye furkan".
+Kelime sırası esnek: {isim} {anahtar} veya {anahtar} {isim}.
+
+**Bakiye çıktısı TABLO halinde:** id/tarih/ürün/adet/fiyat/tutar sütunlu,
+sonda güncel bakiye. Telegram'da monospace hizalı okunur liste.
+
+**Bilgi menüsü (belirsiz):** "furkan bilgi" → "Ne bilgisi?" +
+[Bakiye/borç] [Kişi bilgileri] [Ekstre PDF] butonları (zaten var, koru).
+
+**Ekstre/döküm:** "furkan hesap dökümü", "furkan dökümanı", "furkan ekstre",
+"furkan güncel bakiye pdf" → kişi ekstresi PDF.
+
+**Listeler:** "kişiler"/"kişileri say"/"sistemdeki kişiler"/"tüm kişiler" →
+herkes + güncel bakiye. "bergamalılar"/"bergama" (tek kelime) → o ilçe.
+
+**Telegram arama gibi davransın:** tek kelime yazınca:
+- "ahmet" (tek başına, komut yok) → tüm Ahmet'leri listele ("hangi ahmet?"
+  değil, hepsini bakiyeleriyle göster — arama gibi)
+- "duman" → soyadı Duman olanları listele
+- "bergama" → Bergama ilçesindekiler
+Yani tek kelime = arama: isimde/soyadda/ilçede eşleşenleri listele.
+
+Anlaşılmayan her şey LLM'e (qwen) düşer. Regex kapsamı geniş olmalı ki
+LLM nadiren devreye girsin (yavaş).
