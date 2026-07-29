@@ -30,6 +30,22 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
             "borçluları listele" -> list_debtors
             "alacaklıları listele" -> list_creditors
             "{ilçe}lileri listele" -> list_district (ör. "bergamalıları listele")
+  Sorgu (Grup 1, CLAUDE.md > "Bot sorgu anlama — kapsamlı genişletme"):
+            "kişiler" / "kişileri say" / "sistemdeki kişiler" / "tüm kişiler" /
+              "kimler var" -> list_all (fiilsiz, bkz. _try_bare_list_all)
+            "bergamalılar" (fiilsiz, tek kelime) -> list_district (bkz.
+              _try_bare_district_query)
+            "{isim} bakiye/borç/borc/durum/hesap/cari/cariye/alacak/alacağı"
+              VEYA ters sıra "{anahtar} {isim}" -> balance_query (bkz.
+              BALANCE_KEYWORDS_BARE, _try_bare_balance_query). Bunlar
+              inflected (borcu/hesabı/...) hâllerden AYRI bir küme: bare
+              "borç"/"borc" zaten hem bir tutar işaretçisi hem "debt" kind
+              sinyali olduğu için (bkz. _AMOUNT_MARKERS, _detect_kind),
+              BALANCE_KEYWORDS'e (inflected, guard'ın kullandığı küme)
+              karıştırılırsa "...aldı 15000 tl borç" gibi normal borç
+              cümleleri yanlışlıkla çelişki sayılıp None dönerdi.
+            Tek kelime (komut/fiil YOKSA) -> search (Telegram arama gibi,
+              isim/soyad/ilçede geçen herkesi listeler, bkz. _try_single_word_search).
   Rapor (CLAUDE.md > "Rapor komutları — gelişmiş anlama"), en spesifikten
   en geneline sırayla denenir:
             "genel rapor" / "genel durum" / "tüm zamanların raporu" /
@@ -72,8 +88,27 @@ BALANCE_KEYWORDS = {
 }
 # Anahtar kelimeden önce ("ne kadar borcu var") ya da sonra ("borcu ne
 # kadar", "borcunu söyle") gelebilen, isme dahil edilmemesi gereken dolgu
-# kelimeleri.
-BALANCE_FILLERS = {"ne", "nedir", "kaç", "kadar", "söyle", "göster", "var"}
+# kelimeleri. "toplam"/"güncel" de buraya dahil: "toplam borç"/"güncel
+# bakiye" gibi nitelenmiş bare kalıplarda (bkz. BALANCE_KEYWORDS_BARE) isme
+# karışmaması gerekir.
+BALANCE_FILLERS = {"ne", "nedir", "kaç", "kadar", "söyle", "göster", "var", "toplam", "güncel"}
+
+# Bare (çekimsiz) bakiye anahtar kelimeleri (CLAUDE.md > "Bot sorgu anlama —
+# kapsamlı genişletme", Grup 1, madde 1): "furkan bakiye", "furkan durum",
+# "furkan hesap", "furkan cari(ye)", "furkan alacak/alacağı". BİLEREK
+# BALANCE_KEYWORDS'ten (inflected) AYRI bir küme: bare "borç"/"borc" aynı
+# zamanda bir tutar işaretçisi (_AMOUNT_MARKERS) ve _detect_kind'in "debt"
+# sinyali olduğu için, eğer bu ikisi aynı kümede olsaydı normal bir borç
+# cümlesi ("ahmet ... aldı 15000 tl borç") hem bir bakiye anahtar kelimesi
+# hem bir borç fiili içerdiği için (aldı + borç) çelişki sanılıp None
+# dönerdi (bkz. parse() içindeki BALANCE_KEYWORDS/DEBT_WORDS çelişki
+# kontrolü). Bu yüzden bare küme kendi ayrı, dikkatli fonksiyonuyla
+# (_try_bare_balance_query) işlenir: borç/tahsilat fiili ya da tutar
+# görülürse bare eşleşme hiç denenmez, debt/payment akışına bırakılır.
+BALANCE_KEYWORDS_BARE = {
+    "bakiye", "borç", "borc", "durum", "hesap", "cari", "cariye",
+    "alacak", "alacağı",
+}
 
 # Net iletişim/konum niyeti (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
 # SOR"): "telefonu/numarası/adresi/nerede oturuyor" gibi somut bir istek
@@ -139,10 +174,12 @@ REPORT_PERSON_EXCLUDED_PRECEDING = (
     REPORT_GENERAL_QUALIFIERS | REPORT_GENERAL_NOUNS | REPORT_DAILY_QUALIFIERS | REPORT_DAILY_NOUNS
 )
 
-# İlçe eki çözümü: sondan önce çoğul/belirtme (-leri/-ları/-i/-ı), sonra
-# "ile ilgili" eki (-li/-lı/-lu/-lü) soyulur. Uzun ekler önce denenir ki
-# "ahmetbeylerlileri" -> "leri" (değil "i") soyulsun.
-_DISTRICT_SUFFIX_OUTER = ("leri", "ları", "i", "ı")
+# İlçe eki çözümü: sondan önce çoğul/belirtme (-leri/-ları/-ler/-lar/-i/-ı),
+# sonra "ile ilgili" eki (-li/-lı/-lu/-lü) soyulur. Uzun ekler önce denenir
+# ki "ahmetbeylerlileri" -> "leri" (değil "i") soyulsun. "-ler"/"-lar" (fiilsiz
+# çoğul, "bergamalılar" gibi — CLAUDE.md > "Bot sorgu anlama" Grup 1, madde 4)
+# "-leri"/"-ları"dan (belirtme hâli) SONRA denenir ki bunlar öncelik kazansın.
+_DISTRICT_SUFFIX_OUTER = ("leri", "ları", "ler", "lar", "i", "ı")
 _DISTRICT_SUFFIX_INNER = ("li", "lı", "lu", "lü")
 
 
@@ -212,13 +249,15 @@ def _segment_number_word(word: str, _cache: dict[str, list[str] | None] = {}) ->
 class ParsedIntent:
     kind: str  # "debt" | "payment" | "balance_query" | "list_all" | "list_debtors" |
                # "list_creditors" | "list_district" | "report_menu" | "report_person" |
-               # "report_general" | "report_daily" | "person_contact" | "info_menu"
+               # "report_general" | "report_daily" | "person_contact" | "info_menu" |
+               # "search" (tek kelime, Telegram arama gibi — bkz. _try_single_word_search)
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
     product: str | None = None
     amount: Decimal | None = None
     district: str | None = None
+    query: str | None = None  # yalnızca kind == "search" için: aranan tek kelime
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -403,6 +442,51 @@ def _try_balance_query(tokens: list[str]) -> ParsedIntent | None:
     return ParsedIntent(kind="balance_query", person_name=person)
 
 
+def _try_bare_balance_query(tokens: list[str]) -> ParsedIntent | None:
+    """Bare (çekimsiz) bakiye anahtar kelimeleri (BALANCE_KEYWORDS_BARE):
+    "furkan bakiye", "furkan durum", "furkan hesap", "furkan cari(ye)",
+    "furkan alacak/alacağı", "furkan borç/borc", "furkan toplam borç" —
+    kelime sırası esnek, anahtar isimden ÖNCE de gelebilir ("durum furkan",
+    "bakiye furkan").
+
+    İki güvenlik freni (bkz. modül üstü BALANCE_KEYWORDS_BARE yorumu):
+      1. Cümlede bir borç/tahsilat fiili (aldı/verdi/ödedi/...) ya da
+         herhangi bir sayı varsa hiç denenmez — bu, gerçek bir borç/tahsilat
+         cümlesi demektir ("furkan 5000 borç"), bakiye sorgusu değil.
+      2. Anahtar kelimenin YALNIZCA bir tarafında isim adayı olmalı, diğer
+         tarafta (dolgu hariç) hiçbir şey kalmamalı. Yoksa "bana bir durum
+         raporu hazırla" gibi alakasız uzun bir cümle ("durum" kelimesi
+         geçtiği için) yanlışlıkla "bana bir" diye anlamsız bir isimle
+         bakiye sorgusuna dönüşür — iki taraf da doluysa (ör. "durum"un
+         önünde VE arkasında hala kelime varsa) bu net bir isim+anahtar
+         kalıbı değildir, uydurmadan pes edilir (None, LLM'e bırakılır).
+    """
+    idx = next((i for i, tok in enumerate(tokens) if tok in BALANCE_KEYWORDS_BARE), None)
+    if idx is None:
+        return None
+
+    token_set = set(tokens)
+    if token_set & (DEBT_WORDS | PAYMENT_WORDS):
+        return None
+    if any(_consume_number(tokens, i) is not None for i in range(len(tokens))):
+        return None
+
+    before = [t for t in tokens[:idx] if t not in BALANCE_FILLERS]
+    after = [t for t in tokens[idx + 1:] if t not in BALANCE_FILLERS]
+
+    if before and not after:
+        person_tokens = before
+    elif after and not before:
+        person_tokens = after
+    else:
+        return None
+
+    person = " ".join(person_tokens).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="balance_query", person_name=person)
+
+
 def _try_person_contact_query(tokens: list[str]) -> ParsedIntent | None:
     """"{isim} telefonu/numarası/adresi" / "{isim} nerede oturuyor" -> net
     iletişim/konum niyeti, sormadan doğrudan kişi kartı gösterilir."""
@@ -446,6 +530,53 @@ def _try_list_query(tokens: list[str]) -> ParsedIntent | None:
     if word in LIST_CREDITORS_WORDS:
         return ParsedIntent(kind="list_creditors")
 
+    district = _strip_district_suffix(word)
+    if district:
+        return ParsedIntent(kind="list_district", district=district)
+    return None
+
+
+# Grup 1, madde 4 (CLAUDE.md > "Bot sorgu anlama"): "kişiler" gibi bir liste
+# isteği FİİLSİZ de gelebilir ("kişileri listele" değil sadece "kişiler").
+# "sistemdeki" bu bağlamda ek bir dolgu kelimesi (LIST_FILLERS zaten
+# tüm/tum/bütün/butun/hepsini/hepsi/lütfen/lutfen/bana içeriyor).
+_BARE_LIST_ALL_QUALIFIERS = LIST_FILLERS | {"sistemdeki"}
+# "kişileri say" / "kimler var": fiil yerine geçen sabit iki kelimelik
+# kalıplar, filler çıkarma mantığına uymadıkları için ayrı kontrol edilir.
+_BARE_LIST_ALL_FIXED_PHRASES = {
+    ("kişileri", "say"), ("kisileri", "say"),
+    ("kimler", "var"),
+}
+
+
+def _try_bare_list_all(tokens: list[str]) -> ParsedIntent | None:
+    """"kişiler", "tüm kişiler", "sistemdeki kişiler", "kişileri say",
+    "kimler var" -> list_all, hiçbir listele/sırala fiili olmadan."""
+    if tuple(tokens) in _BARE_LIST_ALL_FIXED_PHRASES:
+        return ParsedIntent(kind="list_all")
+
+    remaining = [t for t in tokens if t not in _BARE_LIST_ALL_QUALIFIERS]
+    if remaining and all(t in LIST_ALL_WORDS for t in remaining):
+        return ParsedIntent(kind="list_all")
+    return None
+
+
+# Bare ilçe sorgusu: "listele" fiili olmadan tek başına "bergamalılar" gibi
+# bir kelime de bir ilçe listesi isteği sayılır (madde 4). Ama LIST_ALL/
+# DEBTORS/CREDITORS kelimeleri de tesadüfen "-ler"/"-lar" ile bitebildiği
+# için ("kişiler", "borçlular", "alacaklılar") bunlar KESİNLİKLE hariç
+# tutulur — yoksa "borçlular" yanlışlıkla district="borç" sanılırdı.
+_DISTRICT_BARE_EXCLUDED = LIST_ALL_WORDS | LIST_DEBTORS_WORDS | LIST_CREDITORS_WORDS
+
+
+def _try_bare_district_query(tokens: list[str]) -> ParsedIntent | None:
+    """"bergamalılar" (tek kelime, fiilsiz) -> list_district. "bergamalıları
+    listele" ile aynı anlam, yalnızca fiil eksik."""
+    if len(tokens) != 1:
+        return None
+    word = tokens[0]
+    if word in _DISTRICT_BARE_EXCLUDED:
+        return None
     district = _strip_district_suffix(word)
     if district:
         return ParsedIntent(kind="list_district", district=district)
@@ -497,6 +628,35 @@ def _try_report_menu(tokens: list[str]) -> ParsedIntent | None:
     return None
 
 
+# Tek kelime = arama (CLAUDE.md > "Bot sorgu anlama" Grup 1, madde 5): eğer
+# kullanıcı tek bir kelime yazmışsa ve bu kelime hiçbir bilinen komut/fiil/
+# anahtar kelime DEĞİLSE, Telegram'ın kendi aramasıymış gibi davranılır —
+# isim/soyad/ilçede bu kelime geçen HERKES bakiyeleriyle listelenir (bkz.
+# app/services/queries.py > search_persons). Bilinen bir komut/fiil/anahtar
+# kelimeyse (ör. "rapor", "aldı", "kişiler") bu fonksiyona hiç gelinmez —
+# parse() içinde daha spesifik kontroller zaten önce çalışır ve eşleşirse
+# döner; buraya yalnızca HİÇBİRİ eşleşmediğinde (kind=None) düşülür.
+_SINGLE_WORD_RESERVED = (
+    DEBT_WORDS | PAYMENT_WORDS | CURRENCY_UNITS | UNITS | STOPWORDS
+    | BALANCE_KEYWORDS | BALANCE_KEYWORDS_BARE | BALANCE_FILLERS
+    | PERSON_CONTACT_KEYWORDS | INFO_MENU_KEYWORDS
+    | LIST_VERBS | LIST_FILLERS | LIST_ALL_WORDS | LIST_DEBTORS_WORDS | LIST_CREDITORS_WORDS
+    | REPORT_MENU_FILLERS | REPORT_GENERAL_QUALIFIERS | REPORT_GENERAL_NOUNS
+    | REPORT_DAILY_QUALIFIERS | REPORT_DAILY_NOUNS
+    | REPORT_PERSON_KEYWORDS | REPORT_PERSON_PRE_FILLERS
+    | _NUMBER_WORDS
+    | {"rapor", "sistemdeki", "kimler"}
+)
+
+
+def _try_single_word_search(word: str) -> ParsedIntent | None:
+    if word in _SINGLE_WORD_RESERVED:
+        return None
+    if _NUMBER_TOKEN.fullmatch(word):
+        return None
+    return ParsedIntent(kind="search", query=word)
+
+
 def parse(raw_text: str) -> ParsedIntent | None:
     text = " ".join((raw_text or "").split())
     if not text:
@@ -510,6 +670,14 @@ def parse(raw_text: str) -> ParsedIntent | None:
     listing = _try_list_query(tokens)
     if listing is not None:
         return listing
+
+    bare_list_all = _try_bare_list_all(tokens)
+    if bare_list_all is not None:
+        return bare_list_all
+
+    bare_district = _try_bare_district_query(tokens)
+    if bare_district is not None:
+        return bare_district
 
     # Rapor niyetleri en spesifikten en geneline denenir (genel/günlük/kişi
     # önce, tek başına "rapor" en sona): "genel raporu"/"günlük raporu" gibi
@@ -559,6 +727,10 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if balance is not None:
         return balance
 
+    bare_balance = _try_bare_balance_query(tokens)
+    if bare_balance is not None:
+        return bare_balance
+
     # Kind, tutar çıkarılmadan ÖNCE tespit edilir: "borç" hem bir fiil
     # sinyali hem de (bkz. _extract_amount) tutarın bitişiğindeki bir
     # işaretçi olarak tüketilebilir ("15bin borç" -> 15000). Sıra tersine
@@ -566,6 +738,15 @@ def parse(raw_text: str) -> ParsedIntent | None:
     # sinyali "borç" olan cümlelerde (fiil hiç yoksa) kind kaybolurdu.
     kind = _detect_kind(tokens)
     if kind is None:
+        # Tek kelime = arama (madde 5): hiçbir komut/fiil/anahtar kelime
+        # eşleşmediyse ve mesaj tek bir kelimeyse, Telegram arama gibi
+        # davranılır (bkz. _try_single_word_search). "furkan bakiye" gibi
+        # komutlu ifadeler zaten daha yukarıda (balance_query vb.) yakalanıp
+        # dönmüş olduğundan buraya hiç düşmez.
+        if len(tokens) == 1:
+            search = _try_single_word_search(tokens[0])
+            if search is not None:
+                return search
         return None
 
     amount, tokens = _extract_amount(tokens)

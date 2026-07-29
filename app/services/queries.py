@@ -13,6 +13,7 @@ from decimal import Decimal
 
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import Person, Product, Transaction, TransactionLine, TxKind, TxStatus
 from app.services.catalog import normalize
@@ -114,3 +115,71 @@ async def _open_items_map(
     for person_id, name, unit, q in (await session.execute(stmt)).all():
         out.setdefault(person_id, []).append((name, Decimal(q), unit))
     return out
+
+
+@dataclass(slots=True)
+class PersonTransactionRow:
+    """Bir kişinin tek bir hareketi: bakiye TABLO çıktısı için (CLAUDE.md >
+    "Bot sorgu anlama" Grup 1, madde 2). Ledger'daki Transaction'ın Telegram
+    metin tablosuna uygun, düz (session'dan bağımsız) bir görünümü."""
+
+    id: int
+    occurred_at: datetime
+    kind: TxKind
+    amount_try: Decimal
+    lines: list[tuple[str, Decimal, str]] = field(default_factory=list)
+
+
+async def list_person_transactions(
+    session: AsyncSession, person_id: int, limit: int | None = None
+) -> tuple[list[PersonTransactionRow], int]:
+    """Bir kişinin tüm onaylı hareketleri, kronolojik sırayla (eski->yeni).
+
+    `limit` verilirse yalnızca SON `limit` kayıt döner; ikinci değer her
+    zaman limitsiz TOPLAM sayıdır — çağıran taraf ("...ve N kayıt daha")
+    diyebilsin diye (bkz. app/bot/main.py)."""
+    stmt = (
+        select(Transaction)
+        .options(selectinload(Transaction.lines).selectinload(TransactionLine.product))
+        .where(Transaction.person_id == person_id, Transaction.status == TxStatus.CONFIRMED)
+        .order_by(Transaction.occurred_at.asc(), Transaction.id.asc())
+    )
+    txs = list((await session.execute(stmt)).scalars())
+    total = len(txs)
+    if limit is not None and total > limit:
+        txs = txs[-limit:]
+
+    rows = [
+        PersonTransactionRow(
+            id=t.id,
+            occurred_at=t.occurred_at,
+            kind=t.kind,
+            amount_try=t.amount_try,
+            lines=[(li.product.name, Decimal(li.qty), li.unit) for li in t.lines],
+        )
+        for t in txs
+    ]
+    return rows, total
+
+
+async def search_persons(session: AsyncSession, term: str) -> list[PersonBalanceRow]:
+    """Tek kelimelik serbest arama (CLAUDE.md > "Bot sorgu anlama" Grup 1,
+    madde 5): isim/soyad/ilçe içinde `term` geçen tüm aktif kişiler,
+    bakiyeleriyle. Telegram'ın kendi kişi aramasına benzer — "hangisi?" diye
+    sormaz, doğrudan eşleşen HERKESİ listeler.
+
+    Türkçe harflerde SQL ILIKE güvenilir olmadığı için (bkz.
+    list_persons_with_balance'daki ilçe filtresi ile aynı gerekçe), tüm
+    aktif kişiler çekilip Python tarafında normalize edilerek karşılaştırılır.
+    """
+    key = normalize(" ".join((term or "").split()))
+    if not key:
+        return []
+
+    rows = await list_persons_with_balance(session, scope="all")
+    return [
+        r
+        for r in rows
+        if key in normalize(r.person.full_name)
+        or (r.person.district and key in normalize(r.person.district))
+    ]

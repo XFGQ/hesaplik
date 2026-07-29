@@ -530,3 +530,106 @@ async def test_llm_kapaliyken_kural_parser_cozemezse_hic_cagrilmaz(session, monk
     result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
 
     assert result.outcome == ProcessOutcome.UNRECOGNIZED
+
+
+# ------------------------------------------------------------------
+# Grup 1 (CLAUDE.md > "Bot sorgu anlama — kapsamlı genişletme"): bare bakiye
+# anahtar kelimeleri, bakiye tablo verisi, fiilsiz liste sorguları ve tek
+# kelime arama.
+
+
+async def test_bakiye_bare_anahtar_kelime_ile_calisir(session, ahmet):
+    text1 = "ahmet yılmaz 1000 tl borç yazdım"
+    raw1 = await _make_raw(session, text1, 60)
+    await message_processor.process_raw_message(session, raw1, text1)
+
+    text2 = "ahmet yılmaz bakiye"
+    raw2 = await _make_raw(session, text2, 61)
+    result = await message_processor.process_raw_message(session, raw2, text2)
+
+    assert result.outcome == ProcessOutcome.BALANCE
+    assert result.balance.balance_try == Decimal("1000.00")
+
+
+async def test_bakiye_sorgusu_hareket_tablosu_doner(session, ahmet):
+    text1 = "ahmet yılmaz 1000 tl borç yazdım"
+    raw1 = await _make_raw(session, text1, 62)
+    await message_processor.process_raw_message(session, raw1, text1)
+
+    text2 = "ahmet yılmaz 400 tl ödedi"
+    raw2 = await _make_raw(session, text2, 63)
+    await message_processor.process_raw_message(session, raw2, text2)
+
+    text3 = "ahmet yılmaz durum"
+    raw3 = await _make_raw(session, text3, 64)
+    result = await message_processor.process_raw_message(session, raw3, text3)
+
+    assert result.outcome == ProcessOutcome.BALANCE
+    assert result.transactions_total == 2
+    assert len(result.transactions) == 2
+    assert result.transactions[0].amount_try == Decimal("1000.00")
+    assert result.transactions[1].amount_try == Decimal("400.00")
+
+
+async def test_sorgu_bare_kisiler_listele(session, ahmet):
+    text = "kişiler"
+    raw = await _make_raw(session, text, 65)
+
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.LIST
+    assert [r.person.id for r in result.persons] == [ahmet.id]
+
+
+async def test_sorgu_bare_bergamalilar_ilceye_gore(session):
+    bergama = Person(full_name="Bergamalı Ahmet", district="Bergama")
+    izmir = Person(full_name="İzmirli Mehmet", district="İzmir")
+    session.add_all([bergama, izmir])
+    await session.flush()
+
+    text = "bergamalılar"
+    raw = await _make_raw(session, text, 66)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.LIST
+    assert result.resolved.district == "bergama"
+    assert [r.person.id for r in result.persons] == [bergama.id]
+
+
+async def test_arama_tek_kelime_isimde_gecen_herkesi_listeler(session):
+    yilmaz = Person(full_name="Ahmet Yılmaz")
+    kaya = Person(full_name="Ahmet Kaya")
+    mehmet = Person(full_name="Mehmet Duman")
+    session.add_all([yilmaz, kaya, mehmet])
+    await session.flush()
+
+    text = "ahmet"
+    raw = await _make_raw(session, text, 67)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.SEARCH
+    assert result.resolved.query == "ahmet"
+    assert {r.person.id for r in result.persons} == {yilmaz.id, kaya.id}
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert raw.transaction_id is None
+
+
+async def test_arama_eslesme_yoksa_bos_liste(session):
+    text = "zzzyokbirisi"
+    raw = await _make_raw(session, text, 68)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.SEARCH
+    assert result.persons == []
+
+
+async def test_arama_ile_komutlu_bakiye_sorgusu_karismaz(session, ahmet):
+    # "ahmet yılmaz bakiye" iki kelime + komutlu (bare "bakiye" anahtarı) —
+    # arama değil bakiye sorgusu olmalı (madde 5'teki DİKKAT notu).
+    text = "ahmet yılmaz bakiye"
+    raw = await _make_raw(session, text, 69)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.BALANCE
+    assert result.resolved.person.id == ahmet.id
