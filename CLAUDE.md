@@ -588,3 +588,39 @@ Yeni kişi eklenince adım adım: ad soyad (onayla) → telefon (Geç) → il (G
 → ilçe (Geç). Her adımda [Geç] butonu. İlk adımda [Hepsini geç] = sadece
 isimle hızlı kayıt. Borç/tahsilat sırasında kişi yoksa: önce bu akış, sonra
 bekleyen işlem işlenir.
+
+## Bot kişi silme = arşivleme — Grup 3 (2026-07-28, KRİTİK)
+
+**HİÇBİR ŞEY GERÇEKTEN SİLİNMEZ.** "Sil" = arşivle. Tüm veri korunur,
+yanlışlıkla silinirse geri getirilebilir. Bu para güvenliğiyle ilgili,
+en dikkatli iş.
+
+**"furkanı sil" / "furkanı sil yeniden oluştur" akışı:**
+1. Furkan'ın TÜM bilgilerini arşiv tablosuna log'la:
+   - kişi kartı (ad, telefon, il, ilçe, oluşturma tarihi)
+   - TÜM işlemleri (borç/tahsilat, ürün, adet, tutar, tarih)
+   - o anki bakiye
+   - arşivleyen (chat_id), arşiv tarihi, sebep
+2. Sonra defterde kişiyi pasifleştir (is_active=false, soft delete) —
+   satır DB'de kalır ama listede/bakiyede görünmez.
+3. "yeniden oluştur" varyasyonu: arşivle + AYNI isimle temiz yeni kişi aç
+   (bakiye sıfır, borç/alacak yok). "sadece sil" varyasyonu: arşivle + pasifle,
+   yeni açma.
+Kullanıcıya teknik detay gösterme ("arşivlendi" yeter, "log tablosu" deme).
+
+**Onay:** silme YAZARAK onay ister (mevcut kural): işletme adının ilk
+kelimesi (örn "DUMAN"). Bakiye sıfır değilse mesajda uyar ("Furkan'ın
+10.000 TL borcu var, arşivlenecek"). Onaysız silinmez.
+
+**Geri getirme:** arşivden geri getirme SADECE komut satırı/web admin
+(kaza riski). Bot'tan geri getirme YOK (yanlışlıkla tetiklenmesin).
+Arşiv tablosu tüm veriyi tuttuğu için istenirse elle geri yüklenebilir.
+
+**Mevcut altyapı:** archived_transactions tablosu zaten var (hareket
+arşivi için). Kişi arşivi için archived_persons tablosu eklenir (kişi
+kartı + o anki bakiye + tüm işlemlerin snapshot'ı JSONB). Kişi silmede
+hem kişi hem işlemleri arşivlenir.
+
+**Türevler (regex):** "furkanı sil", "furkan sil", "furkanı kaldır",
+"furkanı arşivle", "furkanı sil yeniden oluştur", "furkanı sıfırla".
+Çoklu kişi → "hangisi?" (güvenlik). Kişi eşleştirme kurallarıyla.
