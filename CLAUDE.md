@@ -588,3 +588,84 @@ Yeni kişi eklenince adım adım: ad soyad (onayla) → telefon (Geç) → il (G
 → ilçe (Geç). Her adımda [Geç] butonu. İlk adımda [Hepsini geç] = sadece
 isimle hızlı kayıt. Borç/tahsilat sırasında kişi yoksa: önce bu akış, sonra
 bekleyen işlem işlenir.
+
+## Bot kişi silme = arşivleme — Grup 3 (2026-07-28, KRİTİK)
+
+**HİÇBİR ŞEY GERÇEKTEN SİLİNMEZ.** "Sil" = arşivle. Tüm veri korunur,
+yanlışlıkla silinirse geri getirilebilir. Bu para güvenliğiyle ilgili,
+en dikkatli iş.
+
+**"furkanı sil" / "furkanı sil yeniden oluştur" akışı:**
+1. Furkan'ın TÜM bilgilerini arşiv tablosuna log'la:
+   - kişi kartı (ad, telefon, il, ilçe, oluşturma tarihi)
+   - TÜM işlemleri (borç/tahsilat, ürün, adet, tutar, tarih)
+   - o anki bakiye
+   - arşivleyen (chat_id), arşiv tarihi, sebep
+2. Sonra defterde kişiyi pasifleştir (is_active=false, soft delete) —
+   satır DB'de kalır ama listede/bakiyede görünmez.
+3. "yeniden oluştur" varyasyonu: arşivle + AYNI isimle temiz yeni kişi aç
+   (bakiye sıfır, borç/alacak yok). "sadece sil" varyasyonu: arşivle + pasifle,
+   yeni açma.
+Kullanıcıya teknik detay gösterme ("arşivlendi" yeter, "log tablosu" deme).
+
+**Onay:** silme YAZARAK onay ister (mevcut kural): işletme adının ilk
+kelimesi (örn "DUMAN"). Bakiye sıfır değilse mesajda uyar ("Furkan'ın
+10.000 TL borcu var, arşivlenecek"). Onaysız silinmez.
+
+**Geri getirme:** arşivden geri getirme SADECE komut satırı/web admin
+(kaza riski). Bot'tan geri getirme YOK (yanlışlıkla tetiklenmesin).
+Arşiv tablosu tüm veriyi tuttuğu için istenirse elle geri yüklenebilir.
+
+**Mevcut altyapı:** archived_transactions tablosu zaten var (hareket
+arşivi için). Kişi arşivi için archived_persons tablosu eklenir (kişi
+kartı + o anki bakiye + tüm işlemlerin snapshot'ı JSONB). Kişi silmede
+hem kişi hem işlemleri arşivlenir.
+
+**Türevler (regex):** "furkanı sil", "furkan sil", "furkanı kaldır",
+"furkanı arşivle", "furkanı sil yeniden oluştur", "furkanı sıfırla".
+Çoklu kişi → "hangisi?" (güvenlik). Kişi eşleştirme kurallarıyla.
+
+## Silme mesajı + kişi düzenleme — Grup 4 (2026-07-30)
+
+**"Arşivlendi" yerine "silindi" de:** Kullanıcıya arka plan teknik detayı
+gösterme. Arşivleme onayı ve sonucu "silindi" dilini kullansın:
+- Onay: "{kişi} silinecek. Bakiyesi {X} TL. Onaylıyorsan {ONAY} yaz."
+- Sonuç: "{kişi} silindi." (arka planda arşivleniyor, kullanıcı bilmez)
+Kod içi mantık ve tablo adları "arşiv" kalır (doğru terim), sadece
+KULLANICIYA GÖSTERİLEN metin "silindi" olur.
+
+**Kişi düzenleme komutları (yeni):**
+"{kişi} düzenle", "{kişi} adlı kişiyi düzenle", "{kişi} isim değiştir/
+düzenle/değişiklik", "{kişi} telefon düzenle/değişiklik", "{kişi} ilçe {X}
+yap", "{kişi} isim {yeni} yap", "{kişinin} ismi {yeni} yap" → düzenleme.
+
+İki mod:
+1. NET komut ("mehmet ilçe ahmetbeyler yap", "mehmetin ismi akif yap") →
+   o alanı güncelle, onay iste veya direkt yap + "güncellendi".
+2. BELİRSİZ ("mehmet düzenle", "mehmet isim değiştir") → ne düzenleneceğini
+   sor: [Ad soyad] [Telefon] [İl] [İlçe] [Adres] butonları, seçince yeni
+   değeri iste, güncelle.
+
+Düzenlenebilir alanlar: full_name, phone, city, district, address, note.
+Kişi eşleştirme güvenlik kurallarıyla (çoklu kişi → hangisi?). Değişiklik
+audit_log'a (kim, ne zaman, alan, eski→yeni). Yazım hatası toleransı:
+"düzenlee", "dğeişiklik" gibi hataları da yakala.
+
+## Düzenleme mesajları — eski değer göster, ne değişti belirt (2026-07-30)
+
+**Güncelleme sonucu net olsun:** "güncellendi" yetmez, hangi alan ne oldu
+söylensin:
+- "Mehmet Kaya'nın ilçesi Ahmetbeyler olarak güncellendi."
+- "Mehmet Kaya'nın telefonu 555... olarak güncellendi."
+- İsim değişiminde: "Mehmet Kaya'nın adı Akif olarak güncellendi."
+Format: "{kişi}'nin {alan} {yeni değer} olarak güncellendi."
+
+**Düzenlerken eski değeri göster:** Belirsiz düzenleme menüsünden bir alan
+seçilince, yeni değeri sormadan ÖNCE mevcut değeri göster:
+- "İlçe bilgisi: Bergama
+   Yeni ilçe için yazın:"
+- "Telefon: 535556578
+   Yeni telefon için yazın:"
+- Alan boşsa: "İlçe bilgisi: (boş)\nYeni ilçe için yazın:"
+Kullanıcı eski değeri görüp ona göre yenisini yazar. Her alan için geçerli
+(ad soyad, telefon, il, ilçe, adres, not).

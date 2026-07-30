@@ -744,3 +744,148 @@ async def test_create_person_coklu_aday_hangisi_sorar(session):
     assert result.resolved.kind == "create_person"
     candidate_ids = {p.id for p in result.resolved.person_candidates}
     assert {a.id, b.id} == candidate_ids
+
+
+# ------------------------------------------------------------------
+# Grup 3 (CLAUDE.md > "Bot kişi silme = arşivleme"): "furkanı sil" gibi bir
+# komut hiçbir şeyi burada hemen silmez — kişi netleşince (READY) yalnızca
+# onay mesajında gösterilecek bakiye hesaplanır, gerçek arşivleme bot
+# tarafında yazarak-onaydan sonra yapılır (bkz. tests/test_bot_archive_flow.py).
+
+
+async def test_archive_person_kisi_netse_onay_icin_bakiye_hesaplanir(session, ahmet):
+    text1 = "ahmet yılmaz 1000 tl borç yazdım"
+    raw1 = await _make_raw(session, text1, 80)
+    await message_processor.process_raw_message(session, raw1, text1)
+
+    # Çıplak accusative eki ("yılmazı") kasten sökülmez (bkz. name_utils.py
+    # > "esma" bug'ı), bu yüzden iki kelimeli isimde tam eşleşme için ekSİZ
+    # yazım kullanılır — iki kelimeli girdide fuzzy asla otomatik bağlanmaz.
+    text2 = "ahmet yılmaz sil"
+    raw2 = await _make_raw(session, text2, 81)
+    result = await message_processor.process_raw_message(session, raw2, text2)
+
+    assert result.outcome == ProcessOutcome.ARCHIVE_CONFIRM
+    assert result.resolved.kind == "archive_person"
+    assert result.resolved.person.id == ahmet.id
+    assert result.balance.balance_try == Decimal("1000.00")
+    # Hiçbir şey gerçekten arşivlenmedi/silinmedi — yalnızca onay bekleniyor.
+    await session.refresh(ahmet)
+    assert ahmet.is_active is True
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 1
+
+
+async def test_archive_and_recreate_kisi_netse_onay_icin_bakiye_hesaplanir(session, ahmet):
+    text = "ahmet yılmaz sil yeniden oluştur"
+    raw = await _make_raw(session, text, 82)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.ARCHIVE_CONFIRM
+    assert result.resolved.kind == "archive_and_recreate"
+    assert result.resolved.person.id == ahmet.id
+    assert result.balance.balance_try == Decimal("0.00")
+
+
+async def test_archive_person_coklu_aday_hangisi_sorar(session):
+    a = Person(full_name="Furkan Duman")
+    b = Person(full_name="Furkan Yılmaz")
+    session.add_all([a, b])
+    await session.flush()
+
+    text = "furkanı sil"
+    raw = await _make_raw(session, text, 83)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    assert result.resolved.kind == "archive_person"
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids
+
+    # Aday seçilince (bot'ta _finish_pending'in yaptığı gibi) yine yalnızca
+    # onay bekleyen ARCHIVE_CONFIRM'e gidilir, hiçbir şey hemen arşivlenmez.
+    picked = ResolvedIntent(status=ResolutionStatus.READY, kind="archive_person", person=a)
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+    assert follow_up.outcome == ProcessOutcome.ARCHIVE_CONFIRM
+    assert follow_up.resolved.person.id == a.id
+
+
+async def test_archive_person_bulunamayan_kisi(session):
+    text = "hiç yok böyle biri sil"
+    raw = await _make_raw(session, text, 84)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
+    assert result.resolved.kind == "archive_person"
+
+
+# ------------------------------------------------------------------
+# Grup 4 (CLAUDE.md > "Silme mesajı + kişi düzenleme"): NET komut (alan+değer
+# belli) -> EDIT_PERSON_CONFIRM, BELİRSİZ komut -> EDIT_PERSON_MENU. Gerçek
+# güncelleme burada değil, bot tarafında onaydan sonra yapılır.
+
+
+async def test_edit_person_net_komut_onay_icin_bekletilir(session, ahmet):
+    text = "ahmet yılmaz ilçe ahmetbeyler yap"
+    raw = await _make_raw(session, text, 90)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM
+    assert result.resolved.person.id == ahmet.id
+    assert result.resolved.field_name == "district"
+    assert result.resolved.new_value == "ahmetbeyler"
+    # Hiçbir şey gerçekten güncellenmedi.
+    await session.refresh(ahmet)
+    assert ahmet.district is None
+
+
+async def test_edit_person_belirsiz_komut_menu_ister(session, ahmet):
+    text = "ahmet yılmaz düzenle"
+    raw = await _make_raw(session, text, 91)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.EDIT_PERSON_MENU
+    assert result.resolved.person.id == ahmet.id
+    assert result.resolved.field_name is None
+    assert result.resolved.new_value is None
+
+
+async def test_edit_person_yazim_hatali_komut_da_menu_ister(session, ahmet):
+    text = "ahmet yılmaz düzenlee"
+    raw = await _make_raw(session, text, 92)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.EDIT_PERSON_MENU
+    assert result.resolved.person.id == ahmet.id
+
+
+async def test_edit_person_coklu_aday_hangisi_sorar(session):
+    a = Person(full_name="Furkan Duman")
+    b = Person(full_name="Furkan Yılmaz")
+    session.add_all([a, b])
+    await session.flush()
+
+    text = "furkan ilçe bergama yap"
+    raw = await _make_raw(session, text, 93)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    assert result.resolved.kind == "edit_person"
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids
+
+    picked = ResolvedIntent(
+        status=ResolutionStatus.READY, kind="edit_person", person=a,
+        field_name="district", new_value="bergama",
+    )
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+    assert follow_up.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM
+    assert follow_up.resolved.person.id == a.id
+
+
+async def test_edit_person_bulunamayan_kisi(session):
+    text = "hiç yok böyle biri düzenle"
+    raw = await _make_raw(session, text, 94)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
+    assert result.resolved.kind == "edit_person"
