@@ -12,8 +12,10 @@ soyad ayırt edicidir: fuzzy eşleşme ne kadar güçlü olursa olsun asla
 otomatik bağlanmaz — kısmi eşleşmeler aday olarak sunulur, kullanıcı karar
 verir. Şüphede sor: yanlış kişiye borç yazmak bir sorudan çok daha pahalı.
 
-Ürün: catalog.resolve_or_create — yalnızca kişi netleşince (READY) çağrılır;
-belirsiz durumda henüz yeni ürün açılmaz.
+Ürün: catalog.resolve_product_or_suggest — yalnızca kişi netleşince (READY)
+çağrılır; belirsiz durumda henüz yeni ürün açılmaz. Ürün adı da bulanıksa
+(CLAUDE.md > "Ürün yazım düzeltme (fuzzy)", Grup 5 — "samaan" gibi yazım
+hataları) PRODUCT_NEEDS_CONFIRMATION dönülür, otomatik bağlanmaz/oluşturulmaz.
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ class ResolutionStatus(str, enum.Enum):
     READY = "ready"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
+    PRODUCT_NEEDS_CONFIRMATION = "product_needs_confirmation"
     UNRECOGNIZED = "unrecognized"
 
 
@@ -92,6 +95,7 @@ class ResolvedIntent:
     query: str | None = None
     field_name: str | None = None  # yalnızca kind == "edit_person"
     new_value: str | None = None  # yalnızca kind == "edit_person", NET komutta dolu
+    product_suggestion: Product | None = None  # yalnızca status == PRODUCT_NEEDS_CONFIRMATION
 
 
 async def find_person_match(
@@ -184,7 +188,22 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
 
     product = None
     if intent.product and intent.kind not in NO_AMOUNT_KINDS:
-        product, _created = await catalog.resolve_or_create(session, intent.product, intent.unit)
+        product, suggestion = await catalog.resolve_product_or_suggest(session, intent.product, intent.unit)
+        if suggestion is not None:
+            # Ürün adı bulanık ("samaan" gibi) — otomatik bağlanmaz/oluşturulmaz,
+            # kullanıcıya sorulmalı (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)").
+            return ResolvedIntent(
+                status=ResolutionStatus.PRODUCT_NEEDS_CONFIRMATION,
+                kind=intent.kind,
+                person=person,
+                qty=intent.qty,
+                unit=intent.unit,
+                product_name_raw=intent.product,
+                product_suggestion=suggestion,
+                amount=intent.amount,
+                field_name=intent.field,
+                new_value=intent.new_value,
+            )
 
     return ResolvedIntent(
         status=ResolutionStatus.READY,

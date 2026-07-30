@@ -669,3 +669,30 @@ seçilince, yeni değeri sormadan ÖNCE mevcut değeri göster:
 - Alan boşsa: "İlçe bilgisi: (boş)\nYeni ilçe için yazın:"
 Kullanıcı eski değeri görüp ona göre yenisini yazar. Her alan için geçerli
 (ad soyad, telefon, il, ilçe, adres, not).
+
+## Tek mesajda çoklu istek + ürün yazım düzeltme — Grup 5 (2026-07-30)
+
+**Tek mesajda birden çok işlem:**
+Kullanıcı bir mesajda birden çok işlem yazabilir:
+"mehmetten 5000 aldım aliye 500 mal gitti" veya satır satır.
+Sistem:
+- Mesajı işlemlere böl: satır sonu (\n), " ve ", ya da art arda gelen
+  ayrı isim+işlem kalıpları.
+- Her işlemi SIRAYLA işle, her biri için AYRI cevap/onay gönder.
+- İlki: işle + bilgilendir. Sonra ikincisi: işle + bilgilendir.
+- Bölme belirsizse (emin değilse) TEK işlem say, normal akış. Aşırı bölme
+  yapma — yanlış bölmektense tek bırak (yanlış bölme para hatası yapar).
+- Her işlem kişi eşleştirme güvenlik kurallarından ayrı ayrı geçer; biri
+  "hangisi?" sorarsa o cevaplanınca devam.
+- Çoklu tespit yalnızca NET, kesin ayrılabilen durumlarda. Şüphe → tek.
+
+**Ürün yazım düzeltme (fuzzy):**
+"samaan", "saman 15", "smaan" gibi hatalı ürün adları YENİ ürün olarak
+kaydedilmemeli. Mevcut catalog fuzzy eşleştirme (pg_trgm) ile:
+- Yeni ürün adı, mevcut bir ürüne yüksek benzerlikteyse (örn "samaan"→
+  "saman") KULLANICIYA SOR: "samaan → saman mı demek istediniz? Evet/Hayır/
+  Yeni ürün". Sessizce bağlama (yanlış ürün tehlikeli) ama sessizce yeni
+  ürün de açma (çöp birikir).
+- "saman 15" gibi içinde sayı/çöp olan adları temizle veya sor.
+- Eşik: SIMILARITY_STRONG üstü → öneri sun, altı → yeni ürün onayı iste.
+- Fuzzy eşleştirme KASITEN otomatik değil, öneri. Kullanıcı onaylar.

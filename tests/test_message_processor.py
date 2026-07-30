@@ -889,3 +889,95 @@ async def test_edit_person_bulunamayan_kisi(session):
 
     assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
     assert result.resolved.kind == "edit_person"
+
+
+# ------------------------------------------------------------------
+# Grup 5 (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)"): hatalı ürün adları
+# ("samaan", "saman 15") sessizce yeni ürün olarak açılmamalı — kişi
+# netleştikten sonra ürün belirsizse PRODUCT_NEEDS_CONFIRMATION dönmeli,
+# hiçbir kayıt/ürün oluşturulmamalı.
+
+
+async def test_urun_tam_eslesirse_kayit_sormadan_tamamlanir(session, ahmet):
+    saman = Product(name="Saman", base_unit="balya")
+    session.add(saman)
+    await session.flush()
+
+    text = "ahmet yılmaz 20 balya saman aldı 5000 tl borç"
+    raw = await _make_raw(session, text, 95)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    tx = await session.get(Transaction, result.transaction_id)
+    assert tx.lines[0].product_id == saman.id
+    assert (await session.execute(select(func.count(Product.id)))).scalar_one() == 1
+
+
+async def test_urun_yazim_hatasi_onay_bekletir_kayit_yapmaz(session, ahmet):
+    saman = Product(name="Saman", base_unit="balya")
+    session.add(saman)
+    await session.flush()
+
+    text = "ahmet yılmaz 20 balya samaan aldı 5000 tl borç"
+    raw = await _make_raw(session, text, 96)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION
+    assert result.resolved.person.id == ahmet.id
+    assert result.resolved.product_name_raw == "samaan"
+    assert result.resolved.product_suggestion.id == saman.id
+    assert result.resolved.product is None
+
+    await session.refresh(raw)
+    assert raw.processed_at is None
+    assert raw.transaction_id is None
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+    assert (await session.execute(select(func.count(Product.id)))).scalar_one() == 1  # yeni ürün açılmadı
+
+
+async def test_urun_saman_15_rakamla_onay_bekletir(session, ahmet):
+    saman = Product(name="Saman", base_unit="balya")
+    session.add(saman)
+    await session.flush()
+
+    text = "ahmet yılmaz 20 balya saman 15 aldı 5000 tl borç"
+    raw = await _make_raw(session, text, 97)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION
+    assert result.resolved.product_suggestion.id == saman.id
+
+
+async def test_urun_hic_benzemezse_sormadan_yeni_urun_kaydedilir(session, ahmet):
+    text = "ahmet yılmaz 20 balya tuz aldı 5000 tl borç"
+    raw = await _make_raw(session, text, 98)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    tx = await session.get(Transaction, result.transaction_id)
+    urun = await session.get(Product, tx.lines[0].product_id)
+    assert urun.name == "tuz"
+
+
+async def test_urun_onerisi_evet_ile_mevcut_uruna_baglanir(session, ahmet):
+    # Bot'ta "Evet" butonuna basılınca (kişi zaten netleşmiş, öneri
+    # bağlanır) — handle_resolved doğrudan öneri ürünüyle çağrılır (bkz.
+    # app/bot/main.py > _handle_product_confirm'in yaptığı gibi).
+    saman = Product(name="Saman", base_unit="balya")
+    session.add(saman)
+    await session.flush()
+
+    text = "ahmet yılmaz 20 balya samaan aldı 5000 tl borç"
+    raw = await _make_raw(session, text, 99)
+    result = await message_processor.process_raw_message(session, raw, text)
+    assert result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION
+
+    picked = ResolvedIntent(
+        status=ResolutionStatus.READY, kind="debt", person=ahmet,
+        qty=Decimal("20"), unit="balya", product=saman, amount=Decimal("5000"),
+    )
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text, source="rule")
+    assert follow_up.outcome == ProcessOutcome.RECORDED
+    tx = await session.get(Transaction, follow_up.transaction_id)
+    assert tx.lines[0].product_id == saman.id
+    assert (await session.execute(select(func.count(Product.id)))).scalar_one() == 1
