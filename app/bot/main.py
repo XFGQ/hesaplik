@@ -60,7 +60,7 @@ from telegram.ext import (
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Person, Product, RawMessage, TxKind
-from app.services import catalog, llm_provider, message_processor, person_archive, person_edit, report
+from app.services import catalog, llm_provider, message_processor, message_splitter, person_archive, person_edit, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
@@ -101,6 +101,28 @@ _QUERY_ONLY_KINDS = (
     "balance_query", "report_person", "person_contact", "info_menu",
     "archive_person", "archive_and_recreate", "edit_person",
 )
+
+# Tek mesajda birden çok işlem (CLAUDE.md > "Tek mesajda birden çok istek",
+# Grup 5): işlemler SIRAYLA işlenir. Bir işlem kullanıcıdan onay/seçim
+# beklemeye başlarsa (chat_data'ya "pending" benzeri bir anahtar yazan her
+# outcome) SIRADAKİ işlem OTOMATİK işlenmez — karmaşık bir kuyruk kurulmaz
+# (CLAUDE.md: "ilk sürümde onay gerektirmeyen net işlemler sırayla
+# işlensin, onay gerekeni ayrıca ele al"). Bu küme, chat_data'da bekleyen
+# bir şey BIRAKMADAN tamamlanan outcome'ların AÇIK listesidir (allowlist) —
+# ileride eklenecek yeni bir outcome buraya eklenmediği sürece güvenli
+# tarafta kalır: çoklu-işlem döngüsü onda durur, otomatik devam etmez.
+_COMPLETES_WITHOUT_INPUT = frozenset({
+    ProcessOutcome.RECORDED,
+    ProcessOutcome.CREATE_PERSON,
+    ProcessOutcome.BALANCE,
+    ProcessOutcome.LIST,
+    ProcessOutcome.SEARCH,
+    ProcessOutcome.REPORT_DAILY,
+    ProcessOutcome.REPORT_GENERAL,
+    ProcessOutcome.REPORT_PERSON,
+    ProcessOutcome.PERSON_CONTACT,
+    ProcessOutcome.UNRECOGNIZED,
+})
 
 _BACK_VOWELS = "aıou"
 _FRONT_VOWELS = "eiöü"
@@ -683,8 +705,101 @@ async def _handle_edit_field_value_text(
     name = await _apply_edit_person_field(flow["person_id"], flow["field"], value)
     if name is None:
         await update.message.reply_text("Kişi bulunamadı.")
+        await _advance_queue(context, update.message)
         return
     await update.message.reply_text(_format_edit_result(name, flow["field"], value))
+    await _advance_queue(context, update.message)
+
+
+# --------------------------------------------------------------- ürün yazım düzeltme (fuzzy)
+#
+# "ahmet 20 samaan aldı 5000 tl borç" gibi bir kayıtta ürün adı mevcut bir
+# ürüne yakınsa ("saman") sessizce yeni ürün AÇILMAZ — kullanıcıya sorulur:
+# "'samaan' → 'saman' mı? [Evet] [Hayır, yeni ürün] [İptal]" (CLAUDE.md >
+# "Ürün yazım düzeltme (fuzzy)", Grup 5). Kişi bu noktada zaten netleşmiş
+# durumda (chat_data["product_confirm"] person_id taşır), yalnızca ürün
+# bekletiliyor — kayıt hiç yapılmadı, onay/redde göre tamamlanır.
+
+
+def _product_suggestion_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Evet", callback_data="product:yes")],
+            [InlineKeyboardButton("Hayır, yeni ürün", callback_data="product:new")],
+            [InlineKeyboardButton("İptal", callback_data="product:cancel")],
+        ]
+    )
+
+
+def _format_product_suggestion(raw_name: str, suggestion_name: str) -> str:
+    return f"'{raw_name}' → '{suggestion_name}' mı?"
+
+
+async def _prompt_product_confirm(
+    reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, raw_message_id: int, raw_text: str
+) -> None:
+    """`reply` hem Message.reply_text hem CallbackQuery.edit_message_text
+    olabilir (bkz. _prompt_archive_confirm'daki aynı desen). Kişi zaten
+    netleşmiş (resolved.person dolu); yalnızca ürün bekletiliyor."""
+    context.chat_data["product_confirm"] = {
+        "kind": resolved.kind,
+        "person_id": resolved.person.id,
+        "qty": resolved.qty,
+        "unit": resolved.unit,
+        "product_name_raw": resolved.product_name_raw,
+        "suggestion_id": resolved.product_suggestion.id,
+        "amount": resolved.amount,
+        "raw_message_id": raw_message_id,
+        "raw_text": raw_text,
+    }
+    msg = _format_product_suggestion(resolved.product_name_raw, resolved.product_suggestion.name)
+    await reply(msg, reply_markup=_product_suggestion_keyboard())
+
+
+async def _handle_product_confirm(query, context: ContextTypes.DEFAULT_TYPE, use_suggestion: bool) -> None:
+    """"Evet" -> öneriye bağla (yeni ürün AÇMADAN). "Hayır, yeni ürün" ->
+    kullanıcının yazdığı ham adla gerçekten yeni ürün açar (kullanıcı öneriyi
+    reddettiği için artık otomatik temizleme/eşleştirme uygulanmaz)."""
+    pending = context.chat_data.pop("product_confirm", None)
+    if not pending:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, pending["person_id"])
+        if person is None:
+            await query.edit_message_text("Kişi bulunamadı.")
+            await _advance_queue(context, query.message)
+            return
+
+        if use_suggestion:
+            product = await session.get(Product, pending["suggestion_id"])
+        else:
+            product, _created = await catalog.resolve_or_create(
+                session, pending["product_name_raw"], pending["unit"]
+            )
+
+        resolved = ResolvedIntent(
+            status=ResolutionStatus.READY,
+            kind=pending["kind"],
+            person=person,
+            qty=pending["qty"],
+            unit=pending["unit"],
+            product_name_raw=pending["product_name_raw"],
+            product=product,
+            amount=pending["amount"],
+        )
+
+        raw = await session.get(RawMessage, pending["raw_message_id"])
+        result = await message_processor.handle_resolved(
+            session, raw, resolved, pending["raw_text"], source="rule"
+        )
+        await session.commit()
+
+    msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
+    context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
+    await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+    await _advance_queue(context, query.message)
 
 
 # --------------------------------------------------------------- yeni kişi — adım adım bilgi toplama
@@ -860,6 +975,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _handle_edit_field_value_text(update, context, edit_field_flow, text)
         return
 
+    # Tek mesajda birden çok işlem olabilir (CLAUDE.md > "Tek mesajda
+    # birden çok istek", Grup 5): bölme SADECE her parça bağımsız olarak
+    # geçerli bir işleme parse edilebiliyorsa yapılır, şüphede tek bırakılır
+    # (bkz. app/services/message_splitter.py). Tek parça varsa (çoğunlukla)
+    # aşağıdaki akış TEK bir mesaj gibi davranır — davranış değişmez.
+    pieces = message_splitter.split_into_requests(text)
+    is_multi = len(pieces) > 1
+
+    if is_multi:
+        await update.message.reply_text(f"{len(pieces)} işlem algılandı, sırayla işliyorum:")
+
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
     # belli olmadığından baştan gösterilir. Regex anında çözerse tek bir
     # typing zararsız; LLM'e düşerse (~13 sn) periyodik yenilenir.
@@ -867,16 +993,36 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Aynı session boyunca: save_raw_message hemen commit edilir (mesaj
     # asla kaybolmaz), sonra aynı session'da işlenir — raw nesnesi başka
     # bir session'a taşınırsa flush() processed_at/transaction_id
-    # güncellemesini göremez.
-    async with typing_action(context.bot, chat_id):
-        async with SessionLocal() as session:
-            raw = await save_raw_message(session, update.to_dict())
-            await session.commit()
+    # güncellemesini göremez. Çoklu işlemde TÜM parçalar için AYNI raw
+    # kullanılır (gelen tek bir Telegram güncellemesi) — her parça ayrı
+    # process_raw_message çağrısıyla kendi Transaction'ını oluşturur.
+    async with SessionLocal() as session:
+        raw = await save_raw_message(session, update.to_dict())
+        await session.commit()
 
-            result = await message_processor.process_raw_message(session, raw, text)
-            await session.commit()
+        for idx, piece in enumerate(pieces):
+            async with typing_action(context.bot, chat_id):
+                result = await message_processor.process_raw_message(session, raw, piece)
+                await session.commit()
 
-    await _reply_result(update, context, result, raw, text)
+            await _reply_outcome(context, result, raw, piece, update.message, is_multi)
+
+            # Bu işlem kullanıcıdan onay/seçim bekliyorsa (ör. "hangisi?",
+            # ürün önerisi, silme onayı) sıradaki parça OTOMATİK işlenmez —
+            # kalan parçalar bir KUYRUĞA (chat_data["pending_queue"]) konur.
+            # Kullanıcı bu onayı cevaplayınca (bkz. _advance_queue, ilgili
+            # onay/seçim callback'lerinin/işleyicilerinin sonunda çağrılır)
+            # kuyruktaki bir sonraki parça OTOMATİK işlenir — art arda birden
+            # çok onay gerekse bile hiçbiri atlanmaz (CLAUDE.md > "Tek
+            # mesajda birden çok istek").
+            if result.outcome not in _COMPLETES_WITHOUT_INPUT:
+                remaining = pieces[idx + 1 :]
+                if remaining:
+                    context.chat_data["pending_queue"] = {
+                        "raw_message_id": raw.id,
+                        "remaining": remaining,
+                    }
+                break
 
 
 async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -921,12 +1067,14 @@ async def _handle_archive_confirm_text(
 
     if _turkce_buyuk((text or "").strip()) != pending["onay_kelimesi"]:
         await update.message.reply_text("İşlem iptal edildi.")
+        await _advance_queue(context, update.message)
         return
 
     async with SessionLocal() as session:
         person = await session.get(Person, pending["person_id"])
         if person is None or not person.is_active:
             await update.message.reply_text("Kişi bulunamadı.")
+            await _advance_queue(context, update.message)
             return
         name = person.full_name
 
@@ -946,81 +1094,95 @@ async def _handle_archive_confirm_text(
         await update.message.reply_text(f"{name} silindi, temiz hesap açıldı.")
     else:
         await update.message.reply_text(f"{name} silindi.")
+    await _advance_queue(context, update.message)
 
 
-async def _reply_result(
-    update: Update,
+async def _reply_outcome(
     context: ContextTypes.DEFAULT_TYPE,
     result: ProcessResult,
     raw: RawMessage,
     text: str,
+    message,
+    is_multi: bool = False,
 ) -> None:
+    """`_reply_result`in gövdesi — `update` yerine genel bir `message`
+    nesnesi alır (`update.message` ya da `query.message`, ikisi de
+    reply_text/reply_document/chat_id sağlar). Bu sayede hem düz metinden
+    (on_text) hem onay sonrası kuyruk devamından (_advance_queue) AYNI
+    fonksiyon kullanılabilir (CLAUDE.md > "Tek mesajda birden çok istek").
+    `is_multi`: bu parça çoklu-işlem bölmesinin bir parçasıysa True — yalnızca
+    UNRECOGNIZED mesajının hangi metni işaret ettiği belirtilsin diye
+    kullanılır, tek parçalı akışta (is_multi=False) mesaj DEĞİŞMEZ."""
     resolved = result.resolved
 
     if result.outcome == ProcessOutcome.RECORDED:
         msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
         context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
-        await update.message.reply_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+        await message.reply_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
         return
 
     if result.outcome == ProcessOutcome.BALANCE:
-        await update.message.reply_text(
+        await message.reply_text(
             _format_balance(resolved.person, result.balance, result.transactions or [], result.transactions_total or 0),
             parse_mode=ParseMode.HTML,
         )
         return
 
     if result.outcome == ProcessOutcome.PERSON_CONTACT:
-        await update.message.reply_text(_format_person_card(resolved.person))
+        await message.reply_text(_format_person_card(resolved.person))
         return
 
     if result.outcome == ProcessOutcome.CREATE_PERSON:
-        # _reply_result yalnızca DÜZ METİNDEN gelen sonuçlar için çağrılır;
+        # _reply_outcome yalnızca DÜZ METİNDEN gelen sonuçlar için çağrılır;
         # yeni kişi oluşturma her zaman PERSON_NOT_FOUND -> Evet/Hayır ->
         # adım adım akıştan (_complete_new_person) geçer. Bu yüzden bu
         # outcome'a buradan gelinmesi, kişinin zaten mevcut olduğu
         # (find_person_match birebir eşleşme bulduğu) anlamına gelir.
-        await update.message.reply_text(f"ℹ️ {resolved.person.full_name} zaten kayıtlı.")
+        await message.reply_text(f"ℹ️ {resolved.person.full_name} zaten kayıtlı.")
         return
 
     if result.outcome == ProcessOutcome.INFO_MENU:
         context.chat_data["info_menu"] = {"person_id": resolved.person.id}
-        await update.message.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
+        await message.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
         return
 
     if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
-        await _prompt_archive_confirm(update.message.reply_text, context, resolved, result.balance)
+        await _prompt_archive_confirm(message.reply_text, context, resolved, result.balance)
         return
 
     if result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
-        await _prompt_edit_confirm(update.message.reply_text, context, resolved)
+        await _prompt_edit_confirm(message.reply_text, context, resolved)
         return
 
     if result.outcome == ProcessOutcome.EDIT_PERSON_MENU:
-        await _prompt_edit_field_menu(update.message.reply_text, context, resolved)
+        await _prompt_edit_field_menu(message.reply_text, context, resolved)
+        return
+
+    if result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION:
+        await _prompt_product_confirm(message.reply_text, context, resolved, raw.id, text)
         return
 
     if result.outcome == ProcessOutcome.LIST:
         for msg in _format_list_messages(resolved.kind, resolved.district, result.persons or []):
-            await update.message.reply_text(msg)
+            await message.reply_text(msg)
         return
 
     if result.outcome == ProcessOutcome.SEARCH:
         for msg in _format_search_messages(resolved.query, result.persons or []):
-            await update.message.reply_text(msg)
+            await message.reply_text(msg)
         return
 
     if result.outcome == ProcessOutcome.REPORT_MENU:
-        await update.message.reply_text(
+        await message.reply_text(
             "Hangi raporu istersin?", reply_markup=_report_menu_keyboard()
         )
         return
 
     if result.outcome == ProcessOutcome.REPORT_DAILY:
         assert result.report_pdf is not None and result.report_stats is not None
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-        await update.message.reply_document(
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        await message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_gunluk_{report.today_tr().isoformat()}.pdf",
             caption=_format_daily_report_caption(result.report_stats),
@@ -1029,8 +1191,8 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.REPORT_GENERAL:
         assert result.report_pdf is not None and result.report_stats is not None
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-        await update.message.reply_document(
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        await message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_genel_{report.today_tr().isoformat()}.pdf",
             caption=_format_general_report_caption(result.report_stats),
@@ -1039,8 +1201,8 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.REPORT_PERSON:
         assert result.report_pdf is not None and result.balance is not None
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_DOCUMENT)
-        await update.message.reply_document(
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
+        await message.reply_document(
             document=result.report_pdf,
             filename=f"rapor_ekstre_{report.slugify(resolved.person.full_name)}.pdf",
             caption=_format_person_report_caption(resolved.person, result.balance),
@@ -1049,7 +1211,7 @@ async def _reply_result(
 
     if result.outcome == ProcessOutcome.LLM_CONFIRMATION:
         context.chat_data["llm_confirm"] = _llm_pending_from_resolved(resolved, raw.id, text)
-        await update.message.reply_text(
+        await message.reply_text(
             _format_llm_preview(resolved), reply_markup=_llm_confirm_keyboard()
         )
         return
@@ -1057,23 +1219,79 @@ async def _reply_result(
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:
         isim = _title_tr(resolved.person_name_raw or "")
         if resolved.kind in _QUERY_ONLY_KINDS:
-            await update.message.reply_text(f"{isim} defterde yok.")
+            await message.reply_text(f"{isim} defterde yok.")
             return
         context.chat_data["pending"] = _pending_from_resolved(resolved, raw.id, text)
-        await update.message.reply_text(
+        await message.reply_text(
             f"{isim} defterde yok. Ekleyeyim mi?", reply_markup=_yes_no_keyboard()
         )
         return
 
     if result.outcome == ProcessOutcome.NEEDS_CONFIRMATION:
         context.chat_data["pending"] = _pending_from_resolved(resolved, raw.id, text)
-        await update.message.reply_text(
+        await message.reply_text(
             "Hangisini demek istedin?", reply_markup=_candidates_keyboard(resolved.person_candidates)
         )
         return
 
-    # UNRECOGNIZED — asla ikinci soru sorma, örnekle yönlendir.
-    await update.message.reply_text(ANLASILAMADI_METNI)
+    # UNRECOGNIZED — asla ikinci soru sorma, örnekle yönlendir. Çoklu işlem
+    # bölmesinin bir parçasıysa (is_multi) HANGİ parçanın anlaşılmadığı
+    # belirtilir (CLAUDE.md > "Tek mesajda birden çok istek" — bir parça
+    # anlaşılmazsa diğerleri yine de işlenir, bu yüzden kullanıcı hangisinin
+    # atlandığını görmeli); tek parçalı akışta mesaj DEĞİŞMEZ.
+    if is_multi:
+        await message.reply_text(f"Şu kısmı anlayamadım: '{text}'")
+    else:
+        await message.reply_text(ANLASILAMADI_METNI)
+
+
+async def _reply_result(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    result: ProcessResult,
+    raw: RawMessage,
+    text: str,
+    is_multi: bool = False,
+) -> None:
+    await _reply_outcome(context, result, raw, text, update.message, is_multi)
+
+
+async def _advance_queue(context: ContextTypes.DEFAULT_TYPE, message) -> None:
+    """Bir onay/seçim (Evet/Hayır/hangisi/İptal — hangisi fark etmez, kullanıcı
+    KARARINI verdiği an) tamamlandıktan SONRA çağrılır (CLAUDE.md > "Tek
+    mesajda birden çok istek"). chat_data["pending_queue"]'da kalan parça
+    varsa bir sonrakini işler; o da onay isterse kuyruk yine orada durur
+    (chat_data zaten güncellenmiş olur, bu fonksiyon bir dahaki onaydan
+    sonra tekrar çağrılınca kaldığı yerden devam eder). Kuyruk hiç yoksa
+    (tek parçalı bir mesajın onayıysa) hiçbir şey yapmaz. `message` hem
+    update.message hem query.message olabilir."""
+    queue = context.chat_data.get("pending_queue")
+    if not queue:
+        return
+
+    remaining = queue["remaining"]
+    if not remaining:
+        context.chat_data.pop("pending_queue", None)
+        await message.reply_text("Tüm işlemler tamamlandı.")
+        return
+
+    piece, *rest = remaining
+    # Bu parçayı kuyruktan ÖNCE tüket: aşağıdaki işlem kendisi de onay
+    # isterse (zincirleme), chat_data zaten doğru "rest" ile güncel olur —
+    # bir sonraki onay bu fonksiyonu tekrar çağırdığında kaldığı yerden
+    # devam eder.
+    context.chat_data["pending_queue"] = {**queue, "remaining": rest}
+
+    async with SessionLocal() as session:
+        raw = await session.get(RawMessage, queue["raw_message_id"])
+        async with typing_action(context.bot, message.chat_id):
+            result = await message_processor.process_raw_message(session, raw, piece)
+            await session.commit()
+
+        await _reply_outcome(context, result, raw, piece, message, is_multi=True)
+
+    if result.outcome in _COMPLETES_WITHOUT_INPUT:
+        await _advance_queue(context, message)  # zincirleme devam
 
 
 # --------------------------------------------------------------- callback'ler
@@ -1091,6 +1309,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "person:no":
         context.chat_data.pop("pending", None)
         await query.edit_message_text("Tamam, iptal ettim.")
+        await _advance_queue(context, query.message)
         return
     if data in ("person:yes", "person:new"):
         await _begin_new_person_flow(query, context)
@@ -1120,25 +1339,32 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "llm:fix":
         context.chat_data.pop("llm_confirm", None)
         await query.edit_message_text("Tamam, doğrusunu yazar mısın?")
+        await _advance_queue(context, query.message)
         return
     if data == "llm:cancel":
         context.chat_data.pop("llm_confirm", None)
         await query.edit_message_text("Tamam, iptal ettim.")
+        await _advance_queue(context, query.message)
         return
     if data == "report:daily":
         await _handle_report_daily(query, context)
+        await _advance_queue(context, query.message)
         return
     if data == "report:general":
         await _handle_report_general(query, context)
+        await _advance_queue(context, query.message)
         return
     if data == "info:balance":
         await _handle_info_balance(query, context)
+        await _advance_queue(context, query.message)
         return
     if data == "info:card":
         await _handle_info_card(query, context)
+        await _advance_queue(context, query.message)
         return
     if data == "info:report":
         await _handle_info_report(query, context)
+        await _advance_queue(context, query.message)
         return
     if data == "edit:yes":
         await _handle_edit_confirm_yes(query, context)
@@ -1146,10 +1372,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "edit:no":
         context.chat_data.pop("edit_confirm", None)
         await query.edit_message_text("Tamam, değişiklik yapılmadı.")
+        await _advance_queue(context, query.message)
         return
     if data.startswith("editfield:"):
         field = data.split(":", 1)[1]
         await _handle_edit_field_pick(query, context, field)
+        return
+    if data == "product:yes":
+        await _handle_product_confirm(query, context, use_suggestion=True)
+        return
+    if data == "product:new":
+        await _handle_product_confirm(query, context, use_suggestion=False)
+        return
+    if data == "product:cancel":
+        context.chat_data.pop("product_confirm", None)
+        await query.edit_message_text("İşlem iptal edildi.")
+        await _advance_queue(context, query.message)
         return
 
 
@@ -1336,6 +1574,7 @@ async def _new_person_skip_field(query, context: ContextTypes.DEFAULT_TYPE) -> N
 async def _new_person_cancel(query, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.chat_data.pop("new_person_flow", None)
     await query.edit_message_text("Kişi ekleme iptal edildi.")
+    await _advance_queue(context, query.message)
 
 
 async def _handle_person_pick(query, context: ContextTypes.DEFAULT_TYPE, person_id: int) -> None:
@@ -1368,9 +1607,20 @@ async def _resolve_and_process(
         new_value=pending.get("new_value"),
     )
     if pending["product_name"] and pending["kind"] != "balance_query":
-        product, _created = await catalog.resolve_or_create(
+        product, suggestion = await catalog.resolve_product_or_suggest(
             session, pending["product_name"], pending["unit"]
         )
+        if suggestion is not None:
+            # Ürün adı bulanık (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)") —
+            # burada kişi az önce netleşti (aday seçimi/yeni kişi akışı) ama
+            # ürün otomatik bağlanmaz, aynı PRODUCT_NEEDS_CONFIRMATION
+            # akışına (message_processor.handle_resolved ile aynı sonuç
+            # şeklinde) düşer.
+            resolved.status = ResolutionStatus.PRODUCT_NEEDS_CONFIRMATION
+            resolved.product_suggestion = suggestion
+            return resolved, ProcessResult(
+                outcome=ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION, resolved=resolved
+            )
         resolved.product = product
 
     raw = await session.get(RawMessage, pending["raw_message_id"])
@@ -1387,9 +1637,8 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
             _format_balance(person, result.balance, result.transactions or [], result.transactions_total or 0),
             parse_mode=ParseMode.HTML,
         )
-        return
 
-    if result.outcome == ProcessOutcome.REPORT_PERSON:
+    elif result.outcome == ProcessOutcome.REPORT_PERSON:
         assert result.report_pdf is not None and result.balance is not None
         await query.edit_message_reply_markup(reply_markup=None)
         await context.bot.send_chat_action(chat_id=query.message.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
@@ -1398,40 +1647,48 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
             filename=f"rapor_ekstre_{report.slugify(person.full_name)}.pdf",
             caption=_format_person_report_caption(person, result.balance),
         )
-        return
 
-    if result.outcome == ProcessOutcome.PERSON_CONTACT:
+    elif result.outcome == ProcessOutcome.PERSON_CONTACT:
         await query.edit_message_text(_format_person_card(person))
-        return
 
-    if result.outcome == ProcessOutcome.INFO_MENU:
+    elif result.outcome == ProcessOutcome.INFO_MENU:
         context.chat_data["info_menu"] = {"person_id": person.id}
         await query.edit_message_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
-        return
 
-    if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
+    elif result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
         await _prompt_archive_confirm(query.edit_message_text, context, resolved, result.balance)
-        return
 
-    if result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
+    elif result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
         await _prompt_edit_confirm(query.edit_message_text, context, resolved)
-        return
 
-    if result.outcome == ProcessOutcome.EDIT_PERSON_MENU:
+    elif result.outcome == ProcessOutcome.EDIT_PERSON_MENU:
         await _prompt_edit_field_menu(query.edit_message_text, context, resolved)
-        return
 
-    if result.outcome == ProcessOutcome.CREATE_PERSON:
+    elif result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION:
+        await _prompt_product_confirm(
+            query.edit_message_text, context, resolved, pending["raw_message_id"], pending["raw_text"]
+        )
+
+    elif result.outcome == ProcessOutcome.CREATE_PERSON:
         # Adaylardan biri seçildi (mevcut kişi) — "hangisi?" sorusuna cevap
         # verildi, yeni bir kişi oluşturulmadı (bkz. _reply_result'taki aynı
         # outcome yorumu).
         await query.edit_message_text(f"ℹ️ {person.full_name} zaten kayıtlı.")
-        return
 
-    msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
-    context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
-    await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+    else:
+        msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
+        context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
+        await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+
+    # Bu parça TAM olarak bitmişse (yeni bir onay/seçim beklemiyorsa) kuyrukta
+    # bekleyen bir sonraki parçaya geç (CLAUDE.md > "Tek mesajda birden çok
+    # istek") — ARCHIVE_CONFIRM/EDIT_PERSON_*/PRODUCT_NEEDS_CONFIRMATION/
+    # INFO_MENU gibi ZİNCİRLEME bir onay daha başlattıysa (aday seçildi ama
+    # şimdi ürün de belirsiz çıktı gibi) kuyruk İLERLETİLMEZ, bu parça hâlâ
+    # açık sayılır.
+    if result.outcome in _COMPLETES_WITHOUT_INPUT:
+        await _advance_queue(context, query.message)
 
 
 async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1463,9 +1720,8 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
             _format_balance(person, result.balance, result.transactions or [], result.transactions_total or 0),
             parse_mode=ParseMode.HTML,
         )
-        return
 
-    if result.outcome == ProcessOutcome.REPORT_PERSON:
+    elif result.outcome == ProcessOutcome.REPORT_PERSON:
         assert result.report_pdf is not None and result.balance is not None
         await context.bot.send_chat_action(chat_id=msg.chat_id, action=ChatAction.UPLOAD_DOCUMENT)
         await msg.reply_document(
@@ -1473,34 +1729,47 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
             filename=f"rapor_ekstre_{report.slugify(person.full_name)}.pdf",
             caption=_format_person_report_caption(person, result.balance),
         )
-        return
 
-    if result.outcome == ProcessOutcome.PERSON_CONTACT:
+    elif result.outcome == ProcessOutcome.PERSON_CONTACT:
         await msg.reply_text(_format_person_card(person))
-        return
 
-    if result.outcome == ProcessOutcome.INFO_MENU:
+    elif result.outcome == ProcessOutcome.INFO_MENU:
         context.chat_data["info_menu"] = {"person_id": person.id}
         await msg.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
-        return
 
-    if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
+    elif result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         # Nadir yol: "+ Yeni kişi ekle" ile arşivleme niyeti için az önce
         # oluşturulmuş bir kişi üzerinde çalışılıyor demektir.
         assert result.balance is not None
         await _prompt_archive_confirm(msg.reply_text, context, resolved, result.balance)
-        return
 
-    if result.outcome == ProcessOutcome.CREATE_PERSON:
+    elif result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
+        # Nadir yol: "+ Yeni kişi ekle" ile düzenleme niyeti için az önce
+        # oluşturulmuş bir kişi üzerinde çalışılıyor demektir.
+        await _prompt_edit_confirm(msg.reply_text, context, resolved)
+
+    elif result.outcome == ProcessOutcome.EDIT_PERSON_MENU:
+        await _prompt_edit_field_menu(msg.reply_text, context, resolved)
+
+    elif result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION:
+        await _prompt_product_confirm(msg.reply_text, context, resolved, pending["raw_message_id"], pending["raw_text"])
+
+    elif result.outcome == ProcessOutcome.CREATE_PERSON:
         # Bu akışta `person` az önce oluşturuldu (yukarıda) — burada her
         # zaman "yeni eklendi" anlamına gelir (bkz. _reply_result'taki
         # "zaten kayıtlı" yorumuyla karşılaştır: orası asla yeni oluşturmaz).
         await msg.reply_text(f"✅ {person.full_name} eklendi.")
-        return
 
-    text = _format_record_confirmation(resolved, result.balance_before, result.balance)
-    context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
-    await msg.reply_text(text, reply_markup=_undo_keyboard(result.transaction_id))
+    else:
+        text = _format_record_confirmation(resolved, result.balance_before, result.balance)
+        context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
+        await msg.reply_text(text, reply_markup=_undo_keyboard(result.transaction_id))
+
+    # bkz. _finish_pending'in sonundaki aynı not: yalnızca bu parça TAM
+    # bitmişse (zincirleme yeni bir onay başlatmadıysa) kuyruktaki bir
+    # sonraki parçaya geçilir.
+    if result.outcome in _COMPLETES_WITHOUT_INPUT:
+        await _advance_queue(context, msg)
 
 
 async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1516,6 +1785,7 @@ async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> 
         person = await session.get(Person, pending["person_id"])
         if person is None:
             await query.edit_message_text("Kişi bulunamadı.")
+            await _advance_queue(context, query.message)
             return
         product = await session.get(Product, pending["product_id"]) if pending["product_id"] else None
 
@@ -1538,6 +1808,7 @@ async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> 
     msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
     await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+    await _advance_queue(context, query.message)
 
 
 async def _handle_edit_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1552,8 +1823,10 @@ async def _handle_edit_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) ->
     name = await _apply_edit_person_field(pending["person_id"], pending["field"], pending["value"])
     if name is None:
         await query.edit_message_text("Kişi bulunamadı.")
+        await _advance_queue(context, query.message)
         return
     await query.edit_message_text(_format_edit_result(name, pending["field"], pending["value"]))
+    await _advance_queue(context, query.message)
 
 
 # --------------------------------------------------------------- kurulum
