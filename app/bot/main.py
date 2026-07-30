@@ -60,11 +60,12 @@ from telegram.ext import (
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Person, Product, RawMessage, TxKind
-from app.services import catalog, llm_provider, message_processor, person_archive, report
+from app.services import catalog, llm_provider, message_processor, person_archive, person_edit, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
 from app.services.message_processor import BALANCE_TABLE_LIMIT, ProcessOutcome, ProcessResult
+from app.services.person_edit import PersonEditError
 from app.services.queries import PersonBalanceRow, PersonTransactionRow, list_person_transactions
 from app.services.telegram_intake import save_raw_message
 
@@ -94,9 +95,11 @@ ANLASILAMADI_METNI = (
 # bunlar hiçbir şey kaydetmediği için yeni kişi açmak anlamsız. archive_*
 # de burada: olmayan birini arşivlemek/silmek anlamsız, "Ekleyeyim mi?"
 # sorusu kafa karıştırır (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3").
+# edit_person de aynı sebeple burada (CLAUDE.md > "Silme mesajı + kişi
+# düzenleme — Grup 4"): olmayan birinin bilgisini düzenlemek anlamsız.
 _QUERY_ONLY_KINDS = (
     "balance_query", "report_person", "person_contact", "info_menu",
-    "archive_person", "archive_and_recreate",
+    "archive_person", "archive_and_recreate", "edit_person",
 )
 
 _BACK_VOWELS = "aıou"
@@ -180,6 +183,29 @@ def _locative(name: str) -> str:
     vowels = _BACK_VOWELS + _FRONT_VOWELS
     last_vowel = next((c for c in reversed(lowered) if c in vowels), "e")
     suffix = "da" if last_vowel in _BACK_VOWELS else "de"
+    return f"{name}'{suffix}"
+
+
+def _genitive(name: str) -> str:
+    """İyelik onay mesajı için ("Mehmet'in ilçesi Ahmetbeyler yapılsın mı?")
+    — 4 yönlü ünlü uyumu (ın/in/un/ün), _dative/_locative'in 2 yönlü
+    (a/e) basitleştirmesinden farklı olarak burada gerekli çünkü ekin ilk
+    harfi (ı/i/u/ü) tek başına anlamı bozar ("Mehmet'ın" yanlış olurdu)."""
+    lowered = name.lower()
+    vowels = _BACK_VOWELS + _FRONT_VOWELS
+    last_vowel = next((c for c in reversed(lowered) if c in vowels), "e")
+    if last_vowel in "aı":
+        suffix = "ın"
+    elif last_vowel in "ei":
+        suffix = "in"
+    elif last_vowel in "ou":
+        suffix = "un"
+    else:  # ö/ü
+        suffix = "ün"
+    if lowered and lowered[-1] in vowels:
+        # İyelik ekinin tampon ünsüzü "n"dir (Kaya+nın), _dative/_locative'deki
+        # "y" tamponuyla (Kaya'ya) KARIŞTIRILMAMALI — farklı ek, farklı tampon.
+        suffix = "n" + suffix
     return f"{name}'{suffix}"
 
 
@@ -471,7 +497,7 @@ def _format_archive_confirm(person_full_name: str, bal: Balance, onay_kelimesi: 
         bakiye = "sıfır"
         uyari = ""
     return (
-        f"{person_full_name} arşivlenecek. Bakiyesi {bakiye}.{uyari}\n"
+        f"{person_full_name} silinecek. Bakiyesi {bakiye}.{uyari}\n"
         f"Onaylıyorsan {onay_kelimesi} yaz."
     )
 
@@ -488,6 +514,177 @@ async def _prompt_archive_confirm(reply, context: ContextTypes.DEFAULT_TYPE, res
         "onay_kelimesi": onay,
     }
     await reply(_format_archive_confirm(resolved.person.full_name, bal, onay))
+
+
+# --------------------------------------------------------------- kişi düzenleme
+#
+# "mehmet ilçe ahmetbeyler yap" gibi NET bir komut, alan ve yeni değer belli
+# olsa da hiçbir şeyi hemen güncellemez — kısa bir Evet/Hayır onayı ister
+# (chat_data["edit_confirm"]). "mehmet düzenle" gibi BELİRSİZ bir komutta ise
+# hangi alanın düzenleneceği belli olmadığından bot buton menüsü sunar
+# (chat_data["edit_field_flow"]), seçim yapılınca yeni değeri düz metinle
+# sorar. İkisinde de gerçek güncelleme person_edit.update_person_field ile
+# yapılır (CLAUDE.md > "Silme mesajı + kişi düzenleme — Grup 4").
+
+_FIELD_LABELS = {
+    "full_name": "adı",
+    "phone": "telefonu",
+    "city": "ili",
+    "district": "ilçesi",
+    "address": "adresi",
+    "note": "notu",
+}
+
+# Alan menüsünde eski değeri gösteren başlık ("İlçe bilgisi: Bergama") ve
+# değer isteme satırındaki ("Yeni ilçe için yazın:") ad — büyük/küçük harf
+# ayrı tutuluyor çünkü Türkçe "İ"/"i" ayrımı .lower()/.upper() ile güvenle
+# üretilemiyor (bkz. catalog.normalize, _turkce_buyuk).
+_FIELD_TITLE_NAMES = {
+    "full_name": "Ad soyad",
+    "phone": "Telefon",
+    "city": "İl",
+    "district": "İlçe",
+    "address": "Adres",
+    "note": "Not",
+}
+_FIELD_LOWER_NAMES = {
+    "full_name": "ad soyad",
+    "phone": "telefon",
+    "city": "il",
+    "district": "ilçe",
+    "address": "adres",
+    "note": "not",
+}
+
+
+def _edit_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[
+            InlineKeyboardButton("Evet", callback_data="edit:yes"),
+            InlineKeyboardButton("Hayır", callback_data="edit:no"),
+        ]]
+    )
+
+
+def _edit_field_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Ad soyad", callback_data="editfield:full_name")],
+            [InlineKeyboardButton("Telefon", callback_data="editfield:phone")],
+            [InlineKeyboardButton("İl", callback_data="editfield:city")],
+            [InlineKeyboardButton("İlçe", callback_data="editfield:district")],
+            [InlineKeyboardButton("Adres", callback_data="editfield:address")],
+        ]
+    )
+
+
+def _format_edit_confirm(person_full_name: str, field: str, value: str) -> str:
+    label = _FIELD_LABELS.get(field, field)
+    return f"{_genitive(person_full_name)} {label} {value} yapılsın mı?"
+
+
+def _format_edit_result(person_full_name: str, field: str, value: str) -> str:
+    """Güncelleme sonucu (CLAUDE.md > "Düzenleme mesajları — eski değer
+    göster, ne değişti belirt"): "güncellendi" tek başına yetmez, hangi alan
+    ne oldu belli olmalı — "Mehmet Kaya'nın ilçesi Ahmetbeyler olarak
+    güncellendi." Hem NET komut onayından hem alan menüsünden sonra kullanılır."""
+    label = _FIELD_LABELS.get(field, field)
+    return f"{_genitive(person_full_name)} {label} {value} olarak güncellendi."
+
+
+def _format_edit_field_prompt(field: str, current_value: str | None) -> str:
+    """Alan menüsünden bir alan seçilince, yeni değeri sormadan ÖNCE mevcut
+    değeri gösterir (CLAUDE.md aynı bölüm): "İlçe bilgisi: Bergama\nYeni
+    ilçe için yazın:". Alan boşsa "(boş)" gösterilir."""
+    title = _FIELD_TITLE_NAMES.get(field, field)
+    lower = _FIELD_LOWER_NAMES.get(field, field)
+    display = current_value if current_value else "(boş)"
+    return f"{title} bilgisi: {display}\nYeni {lower} için yazın:"
+
+
+# NET komutun değeri parser.normalize() ile küçük harfe çevrilmiş ham
+# metinden gelir ("mehmet il izmir yap" -> new_value="izmir") — özel isim
+# sayılan alanlarda (ad soyad, il, ilçe) bu _title_tr ile düzeltilir ki
+# hem onay mesajında hem kayıtta "İzmir"/"Ahmetbeyler" görünsün, "izmir"
+# değil. Adres/not/telefon serbest metin/rakam olduğundan dokunulmaz.
+_EDIT_TITLE_CASE_FIELDS = {"full_name", "city", "district"}
+
+
+def _edit_display_value(field: str, value: str) -> str:
+    return _title_tr(value) if field in _EDIT_TITLE_CASE_FIELDS else value
+
+
+async def _prompt_edit_confirm(reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent) -> None:
+    """NET komut (alan+değer belli) için Evet/Hayır onayı. `reply` hem
+    Message.reply_text hem CallbackQuery.edit_message_text olabilir (bkz.
+    _prompt_archive_confirm'daki aynı desen)."""
+    value = _edit_display_value(resolved.field_name, resolved.new_value)
+    context.chat_data["edit_confirm"] = {
+        "person_id": resolved.person.id,
+        "field": resolved.field_name,
+        "value": value,
+    }
+    msg = _format_edit_confirm(resolved.person.full_name, resolved.field_name, value)
+    await reply(msg, reply_markup=_edit_confirm_keyboard())
+
+
+async def _prompt_edit_field_menu(reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent) -> None:
+    """BELİRSİZ komut (alan/değer yok) için alan seçim menüsü."""
+    context.chat_data["edit_field_flow"] = {
+        "person_id": resolved.person.id,
+        "person_name": resolved.person.full_name,
+    }
+    await reply("Hangi bilgiyi düzenlemek istersin?", reply_markup=_edit_field_keyboard())
+
+
+async def _apply_edit_person_field(person_id: int, field: str, value: str) -> str | None:
+    """Günceller, kişinin (güncel) tam adını döner; kişi bulunamazsa None."""
+    async with SessionLocal() as session:
+        try:
+            person = await person_edit.update_person_field(
+                session, person_id, field, value, actor=message_processor.TELEGRAM_ACTOR
+            )
+        except PersonEditError:
+            await session.rollback()
+            return None
+        await session.commit()
+        return person.full_name
+
+
+async def _handle_edit_field_pick(query, context: ContextTypes.DEFAULT_TYPE, field: str) -> None:
+    """Alan seçilince yeni değeri sormadan ÖNCE mevcut değeri gösterir
+    (CLAUDE.md > "Düzenleme mesajları — eski değer göster, ne değişti
+    belirt") — kullanıcı eski değeri görüp ona göre yenisini yazar."""
+    flow = context.chat_data.get("edit_field_flow")
+    if not flow:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, flow["person_id"])
+    if person is None:
+        context.chat_data.pop("edit_field_flow", None)
+        await query.edit_message_text("Kişi bulunamadı.")
+        return
+
+    flow["field"] = field
+    await query.edit_message_text(_format_edit_field_prompt(field, getattr(person, field)))
+
+
+async def _handle_edit_field_value_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, flow: dict, text: str
+) -> None:
+    value = (text or "").strip()
+    if not value:
+        await update.message.reply_text("Değer boş olamaz, tekrar yazar mısın?")
+        return
+    context.chat_data.pop("edit_field_flow", None)
+
+    name = await _apply_edit_person_field(flow["person_id"], flow["field"], value)
+    if name is None:
+        await update.message.reply_text("Kişi bulunamadı.")
+        return
+    await update.message.reply_text(_format_edit_result(name, flow["field"], value))
 
 
 # --------------------------------------------------------------- yeni kişi — adım adım bilgi toplama
@@ -557,6 +754,8 @@ def _pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, raw_te
         "amount": resolved.amount,
         "raw_message_id": raw_message_id,
         "raw_text": raw_text,
+        "field": resolved.field_name,  # yalnızca edit_person için dolu
+        "new_value": resolved.new_value,  # yalnızca edit_person için dolu
     }
 
 
@@ -653,6 +852,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _handle_archive_confirm_text(update, context, archive_confirm, text)
         return
 
+    # Kişi düzenleme alan menüsünde bir alan seçilmişse ("field" anahtarı
+    # set edilmiş), gelen metin yeni değer olarak işlenir. Henüz alan
+    # seçilmemişse (yalnızca menü gösterildi) normal mesaj akışına düşer.
+    edit_field_flow = context.chat_data.get("edit_field_flow")
+    if edit_field_flow is not None and "field" in edit_field_flow:
+        await _handle_edit_field_value_text(update, context, edit_field_flow, text)
+        return
+
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
     # belli olmadığından baştan gösterilir. Regex anında çözerse tek bir
     # typing zararsız; LLM'e düşerse (~13 sn) periyodik yenilenir.
@@ -736,9 +943,9 @@ async def _handle_archive_confirm_text(
         await session.commit()
 
     if pending["kind"] == "archive_and_recreate":
-        await update.message.reply_text(f"{name} arşivlendi, temiz hesap açıldı.")
+        await update.message.reply_text(f"{name} silindi, temiz hesap açıldı.")
     else:
-        await update.message.reply_text(f"{name} arşivlendi.")
+        await update.message.reply_text(f"{name} silindi.")
 
 
 async def _reply_result(
@@ -784,6 +991,14 @@ async def _reply_result(
     if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
         await _prompt_archive_confirm(update.message.reply_text, context, resolved, result.balance)
+        return
+
+    if result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
+        await _prompt_edit_confirm(update.message.reply_text, context, resolved)
+        return
+
+    if result.outcome == ProcessOutcome.EDIT_PERSON_MENU:
+        await _prompt_edit_field_menu(update.message.reply_text, context, resolved)
         return
 
     if result.outcome == ProcessOutcome.LIST:
@@ -924,6 +1139,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     if data == "info:report":
         await _handle_info_report(query, context)
+        return
+    if data == "edit:yes":
+        await _handle_edit_confirm_yes(query, context)
+        return
+    if data == "edit:no":
+        context.chat_data.pop("edit_confirm", None)
+        await query.edit_message_text("Tamam, değişiklik yapılmadı.")
+        return
+    if data.startswith("editfield:"):
+        field = data.split(":", 1)[1]
+        await _handle_edit_field_pick(query, context, field)
         return
 
 
@@ -1138,6 +1364,8 @@ async def _resolve_and_process(
         unit=pending["unit"],
         product_name_raw=pending["product_name"],
         amount=pending["amount"],
+        field_name=pending.get("field"),
+        new_value=pending.get("new_value"),
     )
     if pending["product_name"] and pending["kind"] != "balance_query":
         product, _created = await catalog.resolve_or_create(
@@ -1184,6 +1412,14 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
         await _prompt_archive_confirm(query.edit_message_text, context, resolved, result.balance)
+        return
+
+    if result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
+        await _prompt_edit_confirm(query.edit_message_text, context, resolved)
+        return
+
+    if result.outcome == ProcessOutcome.EDIT_PERSON_MENU:
+        await _prompt_edit_field_menu(query.edit_message_text, context, resolved)
         return
 
     if result.outcome == ProcessOutcome.CREATE_PERSON:
@@ -1302,6 +1538,22 @@ async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> 
     msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
     await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+
+
+async def _handle_edit_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """NET komut onayında "Evet": alan+değer zaten belliydi
+    (chat_data["edit_confirm"]), burada person_edit.update_person_field
+    çağrılır (CLAUDE.md > "Silme mesajı + kişi düzenleme — Grup 4")."""
+    pending = context.chat_data.pop("edit_confirm", None)
+    if not pending:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    name = await _apply_edit_person_field(pending["person_id"], pending["field"], pending["value"])
+    if name is None:
+        await query.edit_message_text("Kişi bulunamadı.")
+        return
+    await query.edit_message_text(_format_edit_result(name, pending["field"], pending["value"]))
 
 
 # --------------------------------------------------------------- kurulum

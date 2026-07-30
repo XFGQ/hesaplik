@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.bot import main as bot_main
 from app.models import ArchivedPerson, Person, RawMessage
 from app.services import message_processor
+from app.services.ledger import Balance
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -68,6 +69,22 @@ async def furkan(session):
     return p
 
 
+# --------------------------------------------------------------- Grup 4 (CLAUDE.md
+# > "Silme mesajı + kişi düzenleme"): kullanıcıya gösterilen metin "arşiv"
+# değil "sil" dili kullanmalı — arka planda hâlâ arşivleniyor ama kullanıcı
+# bunu bilmez.
+
+
+def test_format_archive_confirm_silindi_dili_kullanir():
+    bal = Balance(person_id=1, balance_try=Decimal("1000.00"))
+    msg = bot_main._format_archive_confirm("Furkan Duman", bal, "HESAPLIK")
+
+    assert "silinecek" in msg
+    assert "arşiv" not in msg.lower()
+    assert "⚠️ Furkan Duman'in 1.000,00 TL borcu var." in msg
+    assert "Onaylıyorsan HESAPLIK yaz." in msg
+
+
 async def test_dogru_onay_kelimesi_kisiyi_arsivler(session, patch_session_local, furkan):
     context = FakeContext()
     update = FakeUpdate()
@@ -79,7 +96,7 @@ async def test_dogru_onay_kelimesi_kisiyi_arsivler(session, patch_session_local,
 
     await bot_main._handle_archive_confirm_text(update, context, context.chat_data.pop("archive_confirm"), "hesaplık")
 
-    update.message.reply_text.assert_awaited_with("Furkan Duman arşivlendi.")
+    update.message.reply_text.assert_awaited_with("Furkan Duman silindi.")
 
     await session.refresh(furkan)
     assert furkan.is_active is False
@@ -140,7 +157,7 @@ async def test_archive_and_recreate_dogru_onay_temiz_kisi_acar(session, patch_se
 
     await bot_main._handle_archive_confirm_text(update, context, pending, "hesaplık")
 
-    update.message.reply_text.assert_awaited_with("Furkan Duman arşivlendi, temiz hesap açıldı.")
+    update.message.reply_text.assert_awaited_with("Furkan Duman silindi, temiz hesap açıldı.")
 
     await session.refresh(furkan)
     assert furkan.is_active is False
