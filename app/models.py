@@ -217,6 +217,31 @@ class ArchivedTransaction(Base):
     archive_reason: Mapped[str | None] = mapped_column(Text)
 
 
+class ArchivedPerson(Base):
+    """Silinen kişilerin gittiği yer. `persons`'tan gerçekten silinmez
+    (yalnızca is_active=false yapılır); burada kart + o anki bakiye + tüm
+    işlemlerinin snapshot'ı kim/ne zaman/niçin bilgisiyle durur."""
+
+    __tablename__ = "archived_persons"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    original_person_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("persons.id"), nullable=False
+    )
+    full_name: Mapped[str] = mapped_column(Text, nullable=False)
+    phone: Mapped[str | None] = mapped_column(Text)
+    city: Mapped[str | None] = mapped_column(Text)
+    district: Mapped[str | None] = mapped_column(Text)
+    person_created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    balance_try: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    transactions_snapshot: Mapped[list] = mapped_column(JSONB, nullable=False)
+    archived_by: Mapped[str] = mapped_column(Text, nullable=False)
+    archived_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    archive_reason: Mapped[str | None] = mapped_column(Text)
+
+
 class Setting(Base):
     __tablename__ = "settings"
 
