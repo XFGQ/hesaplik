@@ -1042,3 +1042,138 @@ def test_archive_person_olustur_kelimesi_tek_basina_yeniden_olmadan_recreate_say
     # kritik (bkz. modül üstü ARCHIVE_* yorumu).
     p = parse("furkanı sil")
     assert p.kind == "archive_person"
+
+
+# --------------------------------------------------------------- Grup 4: kişi
+# düzenleme (CLAUDE.md > "Silme mesajı + kişi düzenleme"). NET komutlar alan+
+# değeri doğrudan taşır; BELİRSİZ komutlar bot'un alan menüsü sormasını tetikler.
+
+
+def test_edit_person_net_ilce_yap():
+    p = parse("mehmet ilçe ahmetbeyler yap")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+    assert p.field == "district"
+    assert p.new_value == "ahmetbeyler"
+
+
+def test_edit_person_net_ismi_iyelik_ekiyle():
+    # "mehmetin" ham bırakılır (ek soyma merkezi olarak intent_resolver'da).
+    p = parse("mehmetin ismi akif yap")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmetin"
+    assert p.field == "full_name"
+    assert p.new_value == "akif"
+
+
+def test_edit_person_net_isim_ekssiz():
+    p = parse("mehmet isim akif yap")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+    assert p.field == "full_name"
+    assert p.new_value == "akif"
+
+
+def test_edit_person_net_telefon_yap():
+    p = parse("mehmet telefon 5551234567 yap")
+    assert p.kind == "edit_person"
+    assert p.field == "phone"
+    assert p.new_value == "5551234567"
+
+
+def test_edit_person_net_il_yap():
+    p = parse("mehmet il izmir yap")
+    assert p.kind == "edit_person"
+    assert p.field == "city"
+    assert p.new_value == "izmir"
+
+
+def test_edit_person_net_ad_soyad_iki_kelimelik_alan():
+    p = parse("mehmet ad soyad akif yildiz yap")
+    assert p.kind == "edit_person"
+    assert p.field == "full_name"
+    assert p.new_value == "akif yildiz"
+
+
+def test_edit_person_net_atama_fiili_yoksa_none():
+    # "yap" olmadan NET kalıp tetiklenmemeli — belirsiz akışa da düşmez
+    # çünkü "ilçe" bir düzenleme tetikleyicisi (düzenle/değiştir) değil.
+    p = parse("mehmet ilçe ahmetbeyler")
+    assert p is None
+
+
+def test_edit_person_menu_duzenle():
+    p = parse("mehmet düzenle")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+    assert p.field is None
+    assert p.new_value is None
+
+
+def test_edit_person_menu_adli_kisiyi_duzenle():
+    p = parse("mehmet adlı kişiyi düzenle")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+    assert p.field is None
+
+
+def test_edit_person_menu_isim_degistir():
+    p = parse("mehmet isim değiştir")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+    assert p.field is None
+
+
+def test_edit_person_menu_telefon_duzenle_yine_tam_menu():
+    # Alan kelimesi ("telefon") geçse bile değer verilmediği için CLAUDE.md
+    # gereği yine TAM menü sorulur, doğrudan "yeni telefon?" sorulmaz.
+    p = parse("mehmet telefon düzenle")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+    assert p.field is None
+
+
+def test_edit_person_menu_isim_degisiklik():
+    p = parse("mehmet isim değişiklik")
+    assert p.kind == "edit_person"
+    assert p.field is None
+
+
+def test_edit_person_menu_yazim_hatasi_duzenlee():
+    p = parse("mehmet düzenlee")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+
+
+def test_edit_person_menu_yazim_hatasi_dzenle():
+    p = parse("mehmet dzenle")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+
+
+def test_edit_person_menu_yazim_hatasi_transpozisyon_degistir():
+    p = parse("mehmet dğeiştir")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+
+
+def test_edit_person_menu_yazim_hatasi_transpozisyon_degisiklik():
+    p = parse("mehmet dğeişiklik")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet"
+
+
+def test_edit_person_menu_soyadli_isim_korunur():
+    p = parse("mehmet yılmaz düzenle")
+    assert p.kind == "edit_person"
+    assert p.person_name == "mehmet yılmaz"
+
+
+def test_edit_person_borc_cumlesiyle_karismaz():
+    p = parse("ahmet 20 balya saman aldı 15000 tl borç")
+    assert p.kind == "debt"
+
+
+def test_edit_person_archive_ile_karismaz():
+    p = parse("furkanı sil")
+    assert p.kind == "archive_person"

@@ -59,6 +59,8 @@ class ProcessOutcome(str, enum.Enum):
     PERSON_CONTACT = "person_contact"
     INFO_MENU = "info_menu"
     ARCHIVE_CONFIRM = "archive_confirm"
+    EDIT_PERSON_CONFIRM = "edit_person_confirm"
+    EDIT_PERSON_MENU = "edit_person_menu"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -191,6 +193,17 @@ async def handle_resolved(
         # yalnızca onay mesajında gösterilecek bakiye hesaplanır.
         bal = await balance_of(session, resolved.person.id)
         return ProcessResult(outcome=ProcessOutcome.ARCHIVE_CONFIRM, resolved=resolved, balance=bal)
+
+    if resolved.kind == "edit_person":
+        # Kişi netleşti (READY) ama HENÜZ hiçbir şey güncellenmedi (CLAUDE.md
+        # > "Silme mesajı + kişi düzenleme — Grup 4"). NET komutta (alan VE
+        # değer belli, bkz. parser._try_edit_person_net) yalnızca Evet/Hayır
+        # onayı kalır; BELİRSİZ komutta (field_name None) bot alan menüsü
+        # sorar — gerçek güncelleme bot tarafında (person_edit.update_person_field)
+        # yapılır.
+        if resolved.field_name is not None and resolved.new_value is not None:
+            return ProcessResult(outcome=ProcessOutcome.EDIT_PERSON_CONFIRM, resolved=resolved)
+        return ProcessResult(outcome=ProcessOutcome.EDIT_PERSON_MENU, resolved=resolved)
 
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net

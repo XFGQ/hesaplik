@@ -260,6 +260,136 @@ def _try_archive_person_query(tokens: list[str]) -> ParsedIntent | None:
     kind = "archive_and_recreate" if recreate else "archive_person"
     return ParsedIntent(kind=kind, person_name=person)
 
+
+# Kişi DÜZENLEME türevleri (CLAUDE.md > "Silme mesajı + kişi düzenleme —
+# Grup 4"): iki bağımsız kalıp.
+#   1. NET: "{kişi} {alan} {değer} yap" — alan VE değer belli, doğrudan
+#      güncellenecek (bkz. _try_edit_person_net). "mehmetin ismi akif yap"
+#      gibi iyelik ekli kişi adı ("mehmetin") KASTEN soyulmaz — diğer tüm
+#      niyetlerde olduğu gibi ham bırakılır, ek temizleme merkezi olarak
+#      intent_resolver.find_person_match içinde (strip_turkish_suffix) yapılır.
+#   2. BELİRSİZ: "{kişi} düzenle" / "{kişi} isim değiştir" vb. — alan/değer
+#      YOK, bot [Ad soyad][Telefon][İl][İlçe][Adres] butonlarıyla sorar
+#      (bkz. _try_edit_person_menu). Bir alan kelimesi geçse bile ("telefon
+#      düzenle") değer verilmediği sürece yine TAM menü sorulur — CLAUDE.md
+#      bunu kasıtlı basit tutuyor, "hangi alan" ile "yeni değer ne" ayrı
+#      sorulmaz, hep aynı buton akışından geçilir.
+FIELD_WORDS = {
+    "isim": "full_name", "ismi": "full_name", "ad": "full_name",
+    "adı": "full_name", "adi": "full_name",
+    "telefon": "phone", "telefonu": "phone",
+    "numara": "phone", "numarası": "phone", "numarasi": "phone",
+    "il": "city", "ili": "city", "şehir": "city", "sehir": "city",
+    "şehri": "city", "sehri": "city",
+    "ilçe": "district", "ilce": "district", "ilçesi": "district", "ilcesi": "district",
+    "adres": "address", "adresi": "address",
+    "not": "note", "notu": "note",
+}
+# "ad soyad" iki kelimelik bir alan adı — tek kelimelik FIELD_WORDS'ten AYRI
+# ele alınır çünkü _try_edit_person_net tek tek token tarar.
+FIELD_PHRASES = {
+    ("ad", "soyad"): "full_name", ("ad", "soyadı"): "full_name", ("ad", "soyadi"): "full_name",
+}
+# Değer atama fiili: yalnızca bu kelimelerden BİRİYLE biten cümle NET kabul
+# edilir ("mehmet ilçe ahmetbeyler yap") — aksi halde uydurmadan pes edilir.
+EDIT_ASSIGN_VERBS = {"yap", "yapsın", "yapsin"}
+
+
+def _try_edit_person_net(tokens: list[str]) -> ParsedIntent | None:
+    """"{kişi} {alan} {değer} yap" -> alan+değer net, doğrudan güncelleme
+    niyeti. Cümle bir EDIT_ASSIGN_VERBS üyesiyle bitmiyorsa hiç denenmez."""
+    if not tokens or tokens[-1] not in EDIT_ASSIGN_VERBS:
+        return None
+    body = tokens[:-1]
+
+    field = None
+    field_end = None
+    person_tokens: list[str] = []
+    for i in range(len(body) - 1):
+        phrase = (body[i], body[i + 1])
+        if phrase in FIELD_PHRASES:
+            field = FIELD_PHRASES[phrase]
+            field_end = i + 2
+            person_tokens = body[:i]
+            break
+    if field is None:
+        idx = next((i for i, t in enumerate(body) if t in FIELD_WORDS), None)
+        if idx is None:
+            return None
+        field = FIELD_WORDS[body[idx]]
+        field_end = idx + 1
+        person_tokens = body[:idx]
+
+    value_tokens = body[field_end:]
+    person = " ".join(person_tokens).strip()
+    value = " ".join(value_tokens).strip()
+    if not person or not value:
+        return None
+    return ParsedIntent(kind="edit_person", person_name=person, field=field, new_value=value)
+
+
+# Yazım hatası toleransı (CLAUDE.md): "düzenlee", "dzenle", "dğeiştir",
+# "dğeişiklik" gibi varyasyonlar da yakalanmalı. Tam bir sözlük yerine
+# Damerau-Levenshtein mesafesiyle küçük bir kanonik listeye karşı fuzzy
+# karşılaştırma yapılır (bkz. _is_edit_trigger_word) — bitişik iki harfin
+# yer değiştirmesi (transposition) TEK bir düzenleme sayılır, düz
+# Levenshtein'de bu 2 sayılıp bazı gerçek yazım hatalarını (dğeiştir gibi)
+# eşik dışında bırakırdı.
+EDIT_TRIGGER_CANONICALS = ("düzenle", "değiştir", "değişiklik")
+_EDIT_TRIGGER_MAX_DISTANCE = 2
+# Uzunluk farkı bu değerden büyükse mesafe hesabına hiç girilmez (hem hız
+# hem de alakasız kısa/uzun kelimelerin yanlışlıkla eşleşmesini önlemek için).
+_EDIT_TRIGGER_LEN_GUARD = 2
+
+EDIT_MENU_FILLERS = {
+    "adlı", "adli", "kişiyi", "kisiyi", "kişi", "kisi", "soyad", "soyadı", "soyadi",
+}
+
+
+def _damerau_levenshtein(a: str, b: str) -> int:
+    la, lb = len(a), len(b)
+    d = [[0] * (lb + 1) for _ in range(la + 1)]
+    for i in range(la + 1):
+        d[i][0] = i
+    for j in range(lb + 1):
+        d[0][j] = j
+    for i in range(1, la + 1):
+        for j in range(1, lb + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(
+                d[i - 1][j] + 1,
+                d[i][j - 1] + 1,
+                d[i - 1][j - 1] + cost,
+            )
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + cost)
+    return d[la][lb]
+
+
+def _is_edit_trigger_word(word: str) -> bool:
+    for canon in EDIT_TRIGGER_CANONICALS:
+        if abs(len(word) - len(canon)) > _EDIT_TRIGGER_LEN_GUARD:
+            continue
+        if _damerau_levenshtein(word, canon) <= _EDIT_TRIGGER_MAX_DISTANCE:
+            return True
+    return False
+
+
+def _try_edit_person_menu(tokens: list[str]) -> ParsedIntent | None:
+    """"{kişi} düzenle", "{kişi} adlı kişiyi düzenle", "{kişi} isim
+    değiştir/düzenle/değişiklik", "{kişi} telefon düzenle" -> alan/değer
+    belirtilmemiş, bot tam menü sorar (field/new_value boş). Yalnızca cümle
+    TAM OLARAK bir tetikleyici kelimeyle BİTİYORSA denenir — aksi halde
+    "değiştirdi" gibi alakasız fiil çekimleri de yanlışlıkla tetiklenebilirdi."""
+    if not tokens or not _is_edit_trigger_word(tokens[-1]):
+        return None
+    person_tokens = [t for t in tokens[:-1] if t not in EDIT_MENU_FILLERS and t not in FIELD_WORDS]
+    person = " ".join(person_tokens).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="edit_person", person_name=person, field=None, new_value=None)
+
+
 _TR_ONES = {
     "bir": 1, "iki": 2, "üç": 3, "dört": 4, "beş": 5,
     "altı": 6, "yedi": 7, "sekiz": 8, "dokuz": 9,
@@ -304,7 +434,8 @@ class ParsedIntent:
     kind: str  # "debt" | "payment" | "balance_query" | "list_all" | "list_debtors" |
                # "list_creditors" | "list_district" | "report_menu" | "report_person" |
                # "report_general" | "report_daily" | "person_contact" | "info_menu" |
-               # "search" (tek kelime, Telegram arama gibi — bkz. _try_single_word_search)
+               # "search" (tek kelime, Telegram arama gibi — bkz. _try_single_word_search) |
+               # "archive_person" | "archive_and_recreate" | "edit_person"
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
@@ -312,6 +443,8 @@ class ParsedIntent:
     amount: Decimal | None = None
     district: str | None = None
     query: str | None = None  # yalnızca kind == "search" için: aranan tek kelime
+    field: str | None = None  # yalnızca kind == "edit_person": full_name/phone/city/district/address/note
+    new_value: str | None = None  # yalnızca kind == "edit_person", NET komutta dolu (bkz. _try_edit_person_net)
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -764,6 +897,7 @@ _SINGLE_WORD_RESERVED = (
     | REPORT_PERSON_KEYWORDS | REPORT_PERSON_PRE_FILLERS
     | CREATE_PERSON_ACTIONS | CREATE_PERSON_NOUN_WORDS
     | ARCHIVE_ACTION_WORDS | ARCHIVE_RECREATE_MARKERS
+    | set(FIELD_WORDS) | EDIT_ASSIGN_VERBS | set(EDIT_TRIGGER_CANONICALS) | EDIT_MENU_FILLERS
     | _NUMBER_WORDS
     | {"rapor", "sistemdeki", "kimler", CREATE_PERSON_NAMING_WORD, "yeniden"}
 )
@@ -826,6 +960,20 @@ def parse(raw_text: str) -> ParsedIntent | None:
     archive_person = _try_archive_person_query(tokens)
     if archive_person is not None:
         return archive_person
+
+    # Kişi DÜZENLEME (CLAUDE.md > "Silme mesajı + kişi düzenleme — Grup 4"):
+    # NET ("{kişi} {alan} {değer} yap") önce denenir, çünkü daha spesifik
+    # bir kalıptır (belirli bir fiil grubuyla bitmeli); BELİRSİZ ("{kişi}
+    # düzenle") daha geniş bir tetikleyici kümesine (fuzzy) dayanır. Archive
+    # kontrolünden SONRA denenir: "sıfırla" gibi bir ARCHIVE_ACTION_WORDS
+    # üyesi asla buraya karışmamalı (zaten yukarıda return ile ayrılıyor).
+    edit_person_net = _try_edit_person_net(tokens)
+    if edit_person_net is not None:
+        return edit_person_net
+
+    edit_person_menu = _try_edit_person_menu(tokens)
+    if edit_person_menu is not None:
+        return edit_person_menu
 
     # Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup 2"):
     # borç/tahsilat DEĞİL, sadece kişi ekleme niyeti. Rapor kontrollerinden

@@ -396,3 +396,53 @@ async def test_archive_and_recreate_de_ayni_guvenlikten_gecer(session, two_furka
     candidate_ids = {p.id for p in resolved.person_candidates}
     assert duman.id in candidate_ids
     assert yilmaz.id in candidate_ids
+
+
+# ------------------------------------------------------------------
+# Kişi düzenleme (CLAUDE.md > "Silme mesajı + kişi düzenleme — Grup 4"):
+# edit_person de tutar gerektirmez ve AYNI kişi eşleştirme güvenlik
+# akışından geçer (çoklu aday -> "hangisi?" sor).
+
+
+async def test_edit_person_tutar_gerekmez_ve_alan_deger_tasinir(session, furkan_duman):
+    intent = ParsedIntent(
+        kind="edit_person", person_name="furkan duman", field="district", new_value="ahmetbeyler"
+    )
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == furkan_duman.id
+    assert resolved.field_name == "district"
+    assert resolved.new_value == "ahmetbeyler"
+
+
+async def test_edit_person_belirsiz_menu_field_none_tasinir(session, furkan_duman):
+    intent = ParsedIntent(kind="edit_person", person_name="furkan duman", field=None, new_value=None)
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.field_name is None
+    assert resolved.new_value is None
+
+
+async def test_edit_person_coklu_aday_hangisi_sorar(session, two_furkans):
+    duman, yilmaz = two_furkans
+    intent = ParsedIntent(kind="edit_person", person_name="furkan", field="phone", new_value="555")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    candidate_ids = {p.id for p in resolved.person_candidates}
+    assert duman.id in candidate_ids
+    assert yilmaz.id in candidate_ids
+    # Aday seçimi sonrası akışın alan/değeri kaybetmemesi için pending'e
+    # taşınabilmesi gerekir.
+    assert resolved.field_name == "phone"
+    assert resolved.new_value == "555"
+
+
+async def test_edit_person_bulunamayan_kisi(session):
+    intent = ParsedIntent(kind="edit_person", person_name="hic yok boyle biri", field="city", new_value="izmir")
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
+    assert resolved.person_name_raw == "hic yok boyle biri"

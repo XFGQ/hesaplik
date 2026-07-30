@@ -816,3 +816,76 @@ async def test_archive_person_bulunamayan_kisi(session):
 
     assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
     assert result.resolved.kind == "archive_person"
+
+
+# ------------------------------------------------------------------
+# Grup 4 (CLAUDE.md > "Silme mesajı + kişi düzenleme"): NET komut (alan+değer
+# belli) -> EDIT_PERSON_CONFIRM, BELİRSİZ komut -> EDIT_PERSON_MENU. Gerçek
+# güncelleme burada değil, bot tarafında onaydan sonra yapılır.
+
+
+async def test_edit_person_net_komut_onay_icin_bekletilir(session, ahmet):
+    text = "ahmet yılmaz ilçe ahmetbeyler yap"
+    raw = await _make_raw(session, text, 90)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM
+    assert result.resolved.person.id == ahmet.id
+    assert result.resolved.field_name == "district"
+    assert result.resolved.new_value == "ahmetbeyler"
+    # Hiçbir şey gerçekten güncellenmedi.
+    await session.refresh(ahmet)
+    assert ahmet.district is None
+
+
+async def test_edit_person_belirsiz_komut_menu_ister(session, ahmet):
+    text = "ahmet yılmaz düzenle"
+    raw = await _make_raw(session, text, 91)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.EDIT_PERSON_MENU
+    assert result.resolved.person.id == ahmet.id
+    assert result.resolved.field_name is None
+    assert result.resolved.new_value is None
+
+
+async def test_edit_person_yazim_hatali_komut_da_menu_ister(session, ahmet):
+    text = "ahmet yılmaz düzenlee"
+    raw = await _make_raw(session, text, 92)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.EDIT_PERSON_MENU
+    assert result.resolved.person.id == ahmet.id
+
+
+async def test_edit_person_coklu_aday_hangisi_sorar(session):
+    a = Person(full_name="Furkan Duman")
+    b = Person(full_name="Furkan Yılmaz")
+    session.add_all([a, b])
+    await session.flush()
+
+    text = "furkan ilçe bergama yap"
+    raw = await _make_raw(session, text, 93)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.NEEDS_CONFIRMATION
+    assert result.resolved.kind == "edit_person"
+    candidate_ids = {p.id for p in result.resolved.person_candidates}
+    assert {a.id, b.id} == candidate_ids
+
+    picked = ResolvedIntent(
+        status=ResolutionStatus.READY, kind="edit_person", person=a,
+        field_name="district", new_value="bergama",
+    )
+    follow_up = await message_processor.handle_resolved(session, raw, picked, text)
+    assert follow_up.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM
+    assert follow_up.resolved.person.id == a.id
+
+
+async def test_edit_person_bulunamayan_kisi(session):
+    text = "hiç yok böyle biri düzenle"
+    raw = await _make_raw(session, text, 94)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.PERSON_NOT_FOUND
+    assert result.resolved.kind == "edit_person"
