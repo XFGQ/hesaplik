@@ -61,6 +61,7 @@ class ProcessOutcome(str, enum.Enum):
     ARCHIVE_CONFIRM = "archive_confirm"
     EDIT_PERSON_CONFIRM = "edit_person_confirm"
     EDIT_PERSON_MENU = "edit_person_menu"
+    PRODUCT_NEEDS_CONFIRMATION = "product_needs_confirmation"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -112,6 +113,11 @@ async def handle_resolved(
         return ProcessResult(outcome=ProcessOutcome.NEEDS_CONFIRMATION, resolved=resolved)
     if resolved.status == ResolutionStatus.PERSON_NOT_FOUND:
         return ProcessResult(outcome=ProcessOutcome.PERSON_NOT_FOUND, resolved=resolved)
+    if resolved.status == ResolutionStatus.PRODUCT_NEEDS_CONFIRMATION:
+        # Ürün adı bulanık (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)") —
+        # kişi zaten netleşti ama ürün otomatik bağlanmadı/oluşturulmadı,
+        # bot Evet/Hayır yeni ürün/İptal sormalı (bkz. app/bot/main.py).
+        return ProcessResult(outcome=ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION, resolved=resolved)
 
     if resolved.kind == "report_menu":
         return ProcessResult(outcome=ProcessOutcome.REPORT_MENU, resolved=resolved)

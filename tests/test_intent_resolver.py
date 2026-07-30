@@ -446,3 +446,71 @@ async def test_edit_person_bulunamayan_kisi(session):
 
     assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
     assert resolved.person_name_raw == "hic yok boyle biri"
+
+
+# ------------------------------------------------------------------
+# Ürün yazım düzeltme (fuzzy) (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)",
+# Grup 5): kişi netleştikten sonra ürün adı bulanıksa (mevcut bir ürüne
+# yakınsa) resolve() otomatik bağlamaz/oluşturmaz, PRODUCT_NEEDS_CONFIRMATION
+# döner — bot Evet/Hayır yeni ürün/İptal sormalı.
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def saman(session):
+    from app.models import Product
+
+    p = Product(name="Saman", base_unit="balya")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+async def test_urun_tam_eslesirse_dogrudan_baglanir(session, furkan_duman, saman):
+    intent = ParsedIntent(
+        kind="debt", person_name="furkan duman", qty=Decimal("20"), product="saman", amount=Decimal("5000"),
+    )
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.product.id == saman.id
+    assert resolved.product_suggestion is None
+
+
+async def test_urun_yaziminda_hata_varsa_onay_ister(session, furkan_duman, saman):
+    intent = ParsedIntent(
+        kind="debt", person_name="furkan duman", qty=Decimal("20"), product="samaan", amount=Decimal("5000"),
+    )
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.PRODUCT_NEEDS_CONFIRMATION
+    assert resolved.person.id == furkan_duman.id
+    assert resolved.product is None
+    assert resolved.product_suggestion.id == saman.id
+    assert resolved.product_name_raw == "samaan"
+    # Onay bekleniyor, kayıt için gereken diğer alanlar kaybolmamalı.
+    assert resolved.qty == Decimal("20")
+    assert resolved.amount == Decimal("5000")
+
+
+async def test_urun_hic_benzemiyorsa_sormadan_yeni_sayilir(session, furkan_duman):
+    intent = ParsedIntent(
+        kind="debt", person_name="furkan duman", qty=Decimal("5"), product="tuz", amount=Decimal("500"),
+    )
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.product is not None
+    assert resolved.product.name == "tuz"
+    assert resolved.product_suggestion is None
+
+
+async def test_urun_belirsizken_kisi_de_coklu_ise_once_kisi_sorulur(session, two_furkans, saman):
+    # Kişi netleşmeden ürün hiç kontrol edilmez (CLAUDE.md > "Ürün: yalnızca
+    # kişi netleşince READY çağrılır") — çoklu aday varsa önce o sorulmalı.
+    intent = ParsedIntent(
+        kind="debt", person_name="furkan", qty=Decimal("20"), product="samaan", amount=Decimal("5000"),
+    )
+    resolved = await resolve(session, intent)
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert resolved.product_suggestion is None
