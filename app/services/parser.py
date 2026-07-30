@@ -56,6 +56,11 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
             "{isim} ekstresi/raporu/dökümü" / "{isim} hesap dökümü" ->
               report_person
             "rapor ver" / "rapor" (tek başına, tür belirsiz) -> report_menu
+  Kişi silme/arşivleme (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3"):
+            "{isim} sil/kaldır/arşivle/sıfırla" -> archive_person (kişi
+              GERÇEKTEN silinmez, arşive taşınır + pasifleştirilir).
+            "{isim} sil/sıfırla yeniden oluştur/aç" -> archive_and_recreate
+              (arşivle + aynı isimle temiz/bakiyesi sıfır yeni kişi açılır).
 """
 
 from __future__ import annotations
@@ -223,6 +228,37 @@ CREATE_PERSON_FILLERS = {
     "adında", "adinda", "yeni", "kişi", "kisi", "isim", "et", "oluştur",
     "olustur", "kayıt", "kayit",
 }
+
+# Kişi SİLME/ARŞİVLEME türevleri (CLAUDE.md > "Bot kişi silme = arşivleme —
+# Grup 3"): "furkanı sil", "furkan sil", "furkanı kaldır", "furkanı
+# arşivle", "furkanı sıfırla". HİÇBİR ŞEY gerçekten silinmez — bu niyet
+# arşivle+pasifleştir akışını tetikler (bkz. app/services/person_archive.py).
+# "yeniden oluştur/aç" eklenmişse (ör. "furkanı sil yeniden oluştur")
+# archive_and_recreate: arşivle + aynı isimle temiz yeni kişi. Bu kontrol
+# create_person'dan (aşağıda, parse() içinde) ÖNCE denenir çünkü ikisi de
+# "oluştur" kelimesini tetikleyici sayabilir — bir ARCHIVE_ACTION_WORDS
+# üyesi (sil/kaldır/arşivle/sıfırla) varsa bu her zaman bir silme komutudur,
+# create_person'a asla düşmemeli.
+ARCHIVE_ACTION_WORDS = {"sil", "kaldır", "kaldir", "arşivle", "arsivle", "sıfırla", "sifirla"}
+ARCHIVE_RECREATE_MARKERS = {"oluştur", "olustur", "aç", "ac"}
+ARCHIVE_FILLERS = ARCHIVE_ACTION_WORDS | ARCHIVE_RECREATE_MARKERS | {"yeniden"}
+
+
+def _try_archive_person_query(tokens: list[str]) -> ParsedIntent | None:
+    """"{isim} sil/kaldır/arşivle/sıfırla" -> archive_person. Aynı cümlede
+    "yeniden" + "oluştur"/"aç" de varsa -> archive_and_recreate (arşivle +
+    aynı isimle temiz yeni kişi). Silme fiili yoksa hiç tetiklenmez."""
+    token_set = set(tokens)
+    if not (token_set & ARCHIVE_ACTION_WORDS):
+        return None
+
+    recreate = "yeniden" in token_set and bool(token_set & ARCHIVE_RECREATE_MARKERS)
+    person_tokens = [t for t in tokens if t not in ARCHIVE_FILLERS]
+    person = " ".join(person_tokens).strip()
+    if not person:
+        return None
+    kind = "archive_and_recreate" if recreate else "archive_person"
+    return ParsedIntent(kind=kind, person_name=person)
 
 _TR_ONES = {
     "bir": 1, "iki": 2, "üç": 3, "dört": 4, "beş": 5,
@@ -727,8 +763,9 @@ _SINGLE_WORD_RESERVED = (
     | REPORT_DAILY_QUALIFIERS | REPORT_DAILY_NOUNS
     | REPORT_PERSON_KEYWORDS | REPORT_PERSON_PRE_FILLERS
     | CREATE_PERSON_ACTIONS | CREATE_PERSON_NOUN_WORDS
+    | ARCHIVE_ACTION_WORDS | ARCHIVE_RECREATE_MARKERS
     | _NUMBER_WORDS
-    | {"rapor", "sistemdeki", "kimler", CREATE_PERSON_NAMING_WORD}
+    | {"rapor", "sistemdeki", "kimler", CREATE_PERSON_NAMING_WORD, "yeniden"}
 )
 
 
@@ -781,6 +818,14 @@ def parse(raw_text: str) -> ParsedIntent | None:
     report_menu = _try_report_menu(tokens)
     if report_menu is not None:
         return report_menu
+
+    # Kişi silme/arşivleme (CLAUDE.md > "Bot kişi silme = arşivleme — Grup
+    # 3"): create_person'dan ÖNCE denenir — "furkanı sil yeniden oluştur"
+    # gibi bir cümle "oluştur" içerdiği için create_person'a düşebilirdi,
+    # ama bir ARCHIVE_ACTION_WORDS üyesi varsa bu her zaman silme demektir.
+    archive_person = _try_archive_person_query(tokens)
+    if archive_person is not None:
+        return archive_person
 
     # Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup 2"):
     # borç/tahsilat DEĞİL, sadece kişi ekleme niyeti. Rapor kontrollerinden

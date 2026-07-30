@@ -62,7 +62,15 @@ NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily",
 # güvenlik davranışları BEDAVA gelir — birebir eşleşme READY (zaten var),
 # fuzzy adaylar NEEDS_CONFIRMATION ("hangisi?" + "+ Yeni kişi ekle" butonu),
 # hiç eşleşme yoksa PERSON_NOT_FOUND (Evet/Hayır -> adım adım oluşturma).
-NO_AMOUNT_KINDS = {"balance_query", "report_person", "person_contact", "info_menu", "create_person"}
+# "archive_person"/"archive_and_recreate" (CLAUDE.md > "Bot kişi silme =
+# arşivleme — Grup 3") de burada: kişi netleşmeden arşivleme YOK, çoklu aday
+# varsa aynı "hangisi?" güvenlik akışından geçer. Kişi bulunamazsa bot
+# bunlarda "Ekleyeyim mi?" SORMAZ (bkz. app/bot/main.py > _QUERY_ONLY_KINDS)
+# — olmayan birini arşivlemek anlamsız.
+NO_AMOUNT_KINDS = {
+    "balance_query", "report_person", "person_contact", "info_menu",
+    "create_person", "archive_person", "archive_and_recreate",
+}
 
 
 @dataclass(slots=True)

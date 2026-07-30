@@ -58,6 +58,7 @@ class ProcessOutcome(str, enum.Enum):
     REPORT_PERSON = "report_person"
     PERSON_CONTACT = "person_contact"
     INFO_MENU = "info_menu"
+    ARCHIVE_CONFIRM = "archive_confirm"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -182,6 +183,14 @@ async def handle_resolved(
         #     toplama akışı sonunda BURAYA, yeni oluşturulmuş kişiyle gelinir
         #     (bkz. _complete_new_person): bot "eklendi" der.
         return ProcessResult(outcome=ProcessOutcome.CREATE_PERSON, resolved=resolved)
+
+    if resolved.kind in ("archive_person", "archive_and_recreate"):
+        # Kişi netleşti (READY) ama HENÜZ arşivlenmedi — gerçek arşivleme
+        # yazarak onaydan sonra bot tarafında (person_archive.archive_person)
+        # yapılır (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3"). Burada
+        # yalnızca onay mesajında gösterilecek bakiye hesaplanır.
+        bal = await balance_of(session, resolved.person.id)
+        return ProcessResult(outcome=ProcessOutcome.ARCHIVE_CONFIRM, resolved=resolved, balance=bal)
 
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net

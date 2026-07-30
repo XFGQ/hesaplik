@@ -16,6 +16,11 @@ Onay akışı (CLAUDE.md > Faz 3):
     olsa da düşük güven sayılır, "Bunu mu demek istediniz?" +
     Evet/Düzelt/İptal (Faz 4).
   - Anlaşılmazsa: örnekli kısa açıklama, ikinci soru sorulmaz.
+  - Kişi silme ("furkanı sil"): HİÇBİR ŞEY hemen silinmez. Kişi netleşince
+    YAZARAK onay istenir (işletme adının ilk kelimesi, Türkçe büyük harf);
+    doğru yazılırsa person_archive.archive_person çağrılır (arşivle +
+    pasifleştir), yanlış/eksik onayda iptal edilir. Geri getirme bot'tan
+    YAPILMAZ (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3").
 
 Müşteriye teknik terim (provider, güven skoru, LLM) asla gösterilmez.
 
@@ -55,7 +60,7 @@ from telegram.ext import (
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Person, Product, RawMessage, TxKind
-from app.services import catalog, llm_provider, message_processor, report
+from app.services import catalog, llm_provider, message_processor, person_archive, report
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
@@ -86,8 +91,13 @@ ANLASILAMADI_METNI = (
 
 # Salt okunur sorgu niyetleri: bulunamayan kişi için "Ekleyeyim mi?"
 # sorulmaz (bkz. PERSON_NOT_FOUND kolları), sadece "defterde yok" denir —
-# bunlar hiçbir şey kaydetmediği için yeni kişi açmak anlamsız.
-_QUERY_ONLY_KINDS = ("balance_query", "report_person", "person_contact", "info_menu")
+# bunlar hiçbir şey kaydetmediği için yeni kişi açmak anlamsız. archive_*
+# de burada: olmayan birini arşivlemek/silmek anlamsız, "Ekleyeyim mi?"
+# sorusu kafa karıştırır (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3").
+_QUERY_ONLY_KINDS = (
+    "balance_query", "report_person", "person_contact", "info_menu",
+    "archive_person", "archive_and_recreate",
+)
 
 _BACK_VOWELS = "aıou"
 _FRONT_VOWELS = "eiöü"
@@ -426,6 +436,60 @@ def _candidates_keyboard(candidates: list[Person]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+# --------------------------------------------------------------- kişi silme = arşivleme
+#
+# "furkanı sil" gibi bir komut hiçbir şeyi hemen silmez: kişi netleşince
+# (candidate akışından da geçebilir) YAZARAK onay istenir — settings.
+# business_name'in ilk kelimesi, Türkçe kurallarla büyük harfe çevrilmiş
+# (CLAUDE.md > "Yazarak onay her silmede" ve "Bot kişi silme = arşivleme —
+# Grup 3"). Doğru kelime yazılınca person_archive.archive_person çağrılır;
+# GERİ GETİRME bot'tan yapılmaz (kaza riski, yalnızca komut satırı).
+
+def _turkce_buyuk(s: str) -> str:
+    """Türkçe kurallarla büyük harf: "i" -> "İ" (Python'un varsayılan
+    .upper()'ı "i"yi noktasız "I" yapar, Türkçe'de yanlış). "İ".upper()
+    zaten "İ" olduğundan bu değişim güvenlidir; diğer Türkçe harfler
+    (ç/ğ/ö/ş/ü) zaten .upper() ile doğru eşlenir."""
+    return s.replace("i", "İ").upper()
+
+
+async def _archive_onay_kelimesi() -> str:
+    async with SessionLocal() as session:
+        isletme = await report.isletme_adi(session)
+    ilk_kelime = (isletme or "Hesaplık").split()[0]
+    return _turkce_buyuk(ilk_kelime)
+
+
+def _format_archive_confirm(person_full_name: str, bal: Balance, onay_kelimesi: str) -> str:
+    if bal.balance_try > 0:
+        bakiye = f"{_fmt_try(bal.balance_try)} TL borçlu"
+        uyari = f"\n⚠️ {person_full_name}'in {_fmt_try(bal.balance_try)} TL borcu var."
+    elif bal.balance_try < 0:
+        bakiye = f"{_fmt_try(-bal.balance_try)} TL alacaklı"
+        uyari = f"\n⚠️ {person_full_name}'in {_fmt_try(-bal.balance_try)} TL alacağı var."
+    else:
+        bakiye = "sıfır"
+        uyari = ""
+    return (
+        f"{person_full_name} arşivlenecek. Bakiyesi {bakiye}.{uyari}\n"
+        f"Onaylıyorsan {onay_kelimesi} yaz."
+    )
+
+
+async def _prompt_archive_confirm(reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, bal: Balance) -> None:
+    """`reply`, hem Message.reply_text hem CallbackQuery.edit_message_text
+    olabilir (ikisi de aynı imzayla metin gönderir) — direkt metinden mi
+    ("furkanı sil") yoksa aday seçiminden mi (_finish_pending) geldiği fark
+    etmez, onay isteme mantığı tek yerde."""
+    onay = await _archive_onay_kelimesi()
+    context.chat_data["archive_confirm"] = {
+        "person_id": resolved.person.id,
+        "kind": resolved.kind,
+        "onay_kelimesi": onay,
+    }
+    await reply(_format_archive_confirm(resolved.person.full_name, bal, onay))
+
+
 # --------------------------------------------------------------- yeni kişi — adım adım bilgi toplama
 #
 # Telegram'dan borç/tahsilat sırasında kişi bulunamayınca (veya "+ Yeni kişi
@@ -582,6 +646,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _handle_new_person_text(update, context, flow, text)
         return
 
+    # Arşivleme onayı bekleniyorsa, gelen metin normal mesaj işlemeye değil
+    # yazarak-onay kontrolüne gider (CLAUDE.md > "Yazarak onay her silmede").
+    archive_confirm = context.chat_data.get("archive_confirm")
+    if archive_confirm is not None:
+        await _handle_archive_confirm_text(update, context, archive_confirm, text)
+        return
+
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
     # belli olmadığından baştan gösterilir. Regex anında çözerse tek bir
     # typing zararsız; LLM'e düşerse (~13 sn) periyodik yenilenir.
@@ -631,6 +702,45 @@ async def _handle_new_person_text(
     await update.message.reply_text(prompt, reply_markup=keyboard)
 
 
+async def _handle_archive_confirm_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, pending: dict, text: str
+) -> None:
+    """Yazarak onay kelimesi doğru geldiyse person_archive.archive_person
+    çağrılır (archive_and_recreate ise ayrıca aynı isimle temiz yeni kişi
+    açılır). Yanlış/eksik onayda HİÇBİR ŞEY arşivlenmez — "işlem iptal
+    edildi" denir, ikinci bir şans için kullanıcı komutu yeniden yazmalı
+    (CLAUDE.md > "Yazarak onay her silmede")."""
+    context.chat_data.pop("archive_confirm", None)
+
+    if _turkce_buyuk((text or "").strip()) != pending["onay_kelimesi"]:
+        await update.message.reply_text("İşlem iptal edildi.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, pending["person_id"])
+        if person is None or not person.is_active:
+            await update.message.reply_text("Kişi bulunamadı.")
+            return
+        name = person.full_name
+
+        await person_archive.archive_person(
+            session,
+            person.id,
+            archived_by=message_processor.TELEGRAM_ACTOR,
+            reason="Telegram: kullanıcı isteğiyle arşivlendi",
+        )
+
+        if pending["kind"] == "archive_and_recreate":
+            session.add(Person(full_name=name))
+
+        await session.commit()
+
+    if pending["kind"] == "archive_and_recreate":
+        await update.message.reply_text(f"{name} arşivlendi, temiz hesap açıldı.")
+    else:
+        await update.message.reply_text(f"{name} arşivlendi.")
+
+
 async def _reply_result(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -669,6 +779,11 @@ async def _reply_result(
     if result.outcome == ProcessOutcome.INFO_MENU:
         context.chat_data["info_menu"] = {"person_id": resolved.person.id}
         await update.message.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
+        return
+
+    if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
+        assert result.balance is not None
+        await _prompt_archive_confirm(update.message.reply_text, context, resolved, result.balance)
         return
 
     if result.outcome == ProcessOutcome.LIST:
@@ -1066,6 +1181,11 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
         await query.edit_message_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
         return
 
+    if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
+        assert result.balance is not None
+        await _prompt_archive_confirm(query.edit_message_text, context, resolved, result.balance)
+        return
+
     if result.outcome == ProcessOutcome.CREATE_PERSON:
         # Adaylardan biri seçildi (mevcut kişi) — "hangisi?" sorusuna cevap
         # verildi, yeni bir kişi oluşturulmadı (bkz. _reply_result'taki aynı
@@ -1126,6 +1246,13 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
     if result.outcome == ProcessOutcome.INFO_MENU:
         context.chat_data["info_menu"] = {"person_id": person.id}
         await msg.reply_text("Ne bilgisi?", reply_markup=_info_menu_keyboard())
+        return
+
+    if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
+        # Nadir yol: "+ Yeni kişi ekle" ile arşivleme niyeti için az önce
+        # oluşturulmuş bir kişi üzerinde çalışılıyor demektir.
+        assert result.balance is not None
+        await _prompt_archive_confirm(msg.reply_text, context, resolved, result.balance)
         return
 
     if result.outcome == ProcessOutcome.CREATE_PERSON:
