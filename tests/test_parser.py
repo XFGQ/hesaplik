@@ -981,3 +981,64 @@ def test_create_person_borc_ile_karismaz():
     # Normal bir borç cümlesi create_person'a yanlışlıkla düşmemeli.
     p = parse("ahmet 20 balya saman aldı 15000 tl borç")
     assert p.kind == "debt"
+
+
+# --------------------------------------------------------------- Grup 3: kişi
+# silme/arşivleme (CLAUDE.md > "Bot kişi silme = arşivleme"). HİÇBİR ŞEY
+# gerçekten silinmez, bu niyet yalnızca arşivle+pasifleştir akışını tetikler.
+
+
+def test_archive_person_furkani_sil():
+    p = parse("furkanı sil")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkanı"
+
+
+def test_archive_person_furkan_sil_eksiz():
+    p = parse("furkan sil")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkan"
+
+
+def test_archive_person_kaldir():
+    p = parse("furkanı kaldır")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkanı"
+
+
+def test_archive_person_arsivle():
+    p = parse("furkanı arşivle")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkanı"
+
+
+def test_archive_person_sifirla():
+    p = parse("furkanı sıfırla")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkanı"
+
+
+def test_archive_and_recreate_sil_yeniden_olustur():
+    p = parse("furkanı sil yeniden oluştur")
+    assert p.kind == "archive_and_recreate"
+    assert p.person_name == "furkanı"
+
+
+def test_archive_and_recreate_sifirla_yeniden_ac():
+    p = parse("furkanı sıfırla yeniden aç")
+    assert p.kind == "archive_and_recreate"
+    assert p.person_name == "furkanı"
+
+
+def test_archive_person_soyadli_isim_korunur():
+    p = parse("furkan duman sil")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkan duman"
+
+
+def test_archive_person_olustur_kelimesi_tek_basina_yeniden_olmadan_recreate_saymaz():
+    # "yeniden" yoksa "oluştur" kelimesi tek başına recreate tetiklemez —
+    # zaten create_person'ın kendi kelimeleriyle çakışmaması için bu ayrım
+    # kritik (bkz. modül üstü ARCHIVE_* yorumu).
+    p = parse("furkanı sil")
+    assert p.kind == "archive_person"

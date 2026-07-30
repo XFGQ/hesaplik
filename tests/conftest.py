@@ -35,7 +35,7 @@ async def session(engine):
         yield s
         await s.rollback()
         for t in ("audit_log", "raw_messages", "archived_transactions",
-                  "transaction_lines", "transactions",
+                  "archived_persons", "transaction_lines", "transactions",
                   "price_history", "product_aliases", "products",
                   "person_aliases", "persons"):
             await s.execute(text(f"TRUNCATE {t} RESTART IDENTITY CASCADE"))
