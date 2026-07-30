@@ -624,3 +624,48 @@ hem kişi hem işlemleri arşivlenir.
 **Türevler (regex):** "furkanı sil", "furkan sil", "furkanı kaldır",
 "furkanı arşivle", "furkanı sil yeniden oluştur", "furkanı sıfırla".
 Çoklu kişi → "hangisi?" (güvenlik). Kişi eşleştirme kurallarıyla.
+
+## Silme mesajı + kişi düzenleme — Grup 4 (2026-07-30)
+
+**"Arşivlendi" yerine "silindi" de:** Kullanıcıya arka plan teknik detayı
+gösterme. Arşivleme onayı ve sonucu "silindi" dilini kullansın:
+- Onay: "{kişi} silinecek. Bakiyesi {X} TL. Onaylıyorsan {ONAY} yaz."
+- Sonuç: "{kişi} silindi." (arka planda arşivleniyor, kullanıcı bilmez)
+Kod içi mantık ve tablo adları "arşiv" kalır (doğru terim), sadece
+KULLANICIYA GÖSTERİLEN metin "silindi" olur.
+
+**Kişi düzenleme komutları (yeni):**
+"{kişi} düzenle", "{kişi} adlı kişiyi düzenle", "{kişi} isim değiştir/
+düzenle/değişiklik", "{kişi} telefon düzenle/değişiklik", "{kişi} ilçe {X}
+yap", "{kişi} isim {yeni} yap", "{kişinin} ismi {yeni} yap" → düzenleme.
+
+İki mod:
+1. NET komut ("mehmet ilçe ahmetbeyler yap", "mehmetin ismi akif yap") →
+   o alanı güncelle, onay iste veya direkt yap + "güncellendi".
+2. BELİRSİZ ("mehmet düzenle", "mehmet isim değiştir") → ne düzenleneceğini
+   sor: [Ad soyad] [Telefon] [İl] [İlçe] [Adres] butonları, seçince yeni
+   değeri iste, güncelle.
+
+Düzenlenebilir alanlar: full_name, phone, city, district, address, note.
+Kişi eşleştirme güvenlik kurallarıyla (çoklu kişi → hangisi?). Değişiklik
+audit_log'a (kim, ne zaman, alan, eski→yeni). Yazım hatası toleransı:
+"düzenlee", "dğeişiklik" gibi hataları da yakala.
+
+## Düzenleme mesajları — eski değer göster, ne değişti belirt (2026-07-30)
+
+**Güncelleme sonucu net olsun:** "güncellendi" yetmez, hangi alan ne oldu
+söylensin:
+- "Mehmet Kaya'nın ilçesi Ahmetbeyler olarak güncellendi."
+- "Mehmet Kaya'nın telefonu 555... olarak güncellendi."
+- İsim değişiminde: "Mehmet Kaya'nın adı Akif olarak güncellendi."
+Format: "{kişi}'nin {alan} {yeni değer} olarak güncellendi."
+
+**Düzenlerken eski değeri göster:** Belirsiz düzenleme menüsünden bir alan
+seçilince, yeni değeri sormadan ÖNCE mevcut değeri göster:
+- "İlçe bilgisi: Bergama
+   Yeni ilçe için yazın:"
+- "Telefon: 535556578
+   Yeni telefon için yazın:"
+- Alan boşsa: "İlçe bilgisi: (boş)\nYeni ilçe için yazın:"
+Kullanıcı eski değeri görüp ona göre yenisini yazar. Her alan için geçerli
+(ad soyad, telefon, il, ilçe, adres, not).
