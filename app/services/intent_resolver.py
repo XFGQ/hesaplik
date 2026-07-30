@@ -62,7 +62,18 @@ NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily",
 # güvenlik davranışları BEDAVA gelir — birebir eşleşme READY (zaten var),
 # fuzzy adaylar NEEDS_CONFIRMATION ("hangisi?" + "+ Yeni kişi ekle" butonu),
 # hiç eşleşme yoksa PERSON_NOT_FOUND (Evet/Hayır -> adım adım oluşturma).
-NO_AMOUNT_KINDS = {"balance_query", "report_person", "person_contact", "info_menu", "create_person"}
+# "archive_person"/"archive_and_recreate" (CLAUDE.md > "Bot kişi silme =
+# arşivleme — Grup 3") de burada: kişi netleşmeden arşivleme YOK, çoklu aday
+# varsa aynı "hangisi?" güvenlik akışından geçer. Kişi bulunamazsa bot
+# bunlarda "Ekleyeyim mi?" SORMAZ (bkz. app/bot/main.py > _QUERY_ONLY_KINDS)
+# — olmayan birini arşivlemek anlamsız. "edit_person" (CLAUDE.md > "Silme
+# mesajı + kişi düzenleme — Grup 4") de burada: amaç kişi bilgisini
+# güncellemek, tutar hiç gerekmez; kişi netleşmeden düzenleme yapılmaz ve
+# olmayan biri de "Ekleyeyim mi?" sorusuna düşmez (aynı _QUERY_ONLY_KINDS).
+NO_AMOUNT_KINDS = {
+    "balance_query", "report_person", "person_contact", "info_menu",
+    "create_person", "archive_person", "archive_and_recreate", "edit_person",
+}
 
 
 @dataclass(slots=True)
@@ -79,6 +90,8 @@ class ResolvedIntent:
     amount: Decimal | None = None
     district: str | None = None
     query: str | None = None
+    field_name: str | None = None  # yalnızca kind == "edit_person"
+    new_value: str | None = None  # yalnızca kind == "edit_person", NET komutta dolu
 
 
 async def find_person_match(
@@ -154,6 +167,8 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 unit=intent.unit,
                 product_name_raw=intent.product,
                 amount=intent.amount,
+                field_name=intent.field,
+                new_value=intent.new_value,
             )
         return ResolvedIntent(
             status=ResolutionStatus.PERSON_NOT_FOUND,
@@ -163,6 +178,8 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
             unit=intent.unit,
             product_name_raw=intent.product,
             amount=intent.amount,
+            field_name=intent.field,
+            new_value=intent.new_value,
         )
 
     product = None
@@ -178,4 +195,6 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         product_name_raw=intent.product,
         product=product,
         amount=intent.amount,
+        field_name=intent.field,
+        new_value=intent.new_value,
     )

@@ -153,6 +153,28 @@ CREATE TABLE archived_transactions (
 
 CREATE INDEX idx_archived_tx_person ON archived_transactions (person_id);
 
+-- ---------------------------------------------------------------- kisi arsivi (silme = arsivle)
+-- "Furkanı sil" kişiyi yok etmez: kişi kartı + o anki bakiye + TÜM işlemlerinin
+-- snapshot'ı buraya yazılır, sonra persons.is_active=false yapılır (satır DB'de
+-- kalır, defterde/aramada görünmez). transactions'a dokunulmaz.
+
+CREATE TABLE archived_persons (
+    id                    BIGSERIAL     PRIMARY KEY,
+    original_person_id    BIGINT        NOT NULL REFERENCES persons(id),
+    full_name             TEXT          NOT NULL,
+    phone                 TEXT,
+    city                  TEXT,
+    district              TEXT,
+    person_created_at     TIMESTAMPTZ   NOT NULL,
+    balance_try           NUMERIC(14,2) NOT NULL,
+    transactions_snapshot JSONB         NOT NULL,
+    archived_by           TEXT          NOT NULL,
+    archived_at           TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    archive_reason        TEXT
+);
+
+CREATE INDEX idx_archived_persons_original ON archived_persons (original_person_id);
+
 -- ---------------------------------------------------------------- ham mesajlar (dokunulmaz)
 
 CREATE TABLE raw_messages (
