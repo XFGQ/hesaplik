@@ -696,3 +696,37 @@ kaydedilmemeli. Mevcut catalog fuzzy eşleştirme (pg_trgm) ile:
 - "saman 15" gibi içinde sayı/çöp olan adları temizle veya sor.
 - Eşik: SIMILARITY_STRONG üstü → öneri sun, altı → yeni ürün onayı iste.
 - Fuzzy eşleştirme KASITEN otomatik değil, öneri. Kullanıcı onaylar.
+
+## Çoklu istek — kalıcı istek kuyruğu (2026-07-31, Grup 6)
+
+Çoklu istek DB tabanlı kalıcı kuyrukla çalışır. Bellek (chat_data) yerine
+tablo kullanılır ki bot durup soru sorsa, internet kopsa, bot yeniden
+başlasa bile kaldığı yerden devam etsin.
+
+**pending_requests tablosu:**
+- id, chat_id, batch_id (aynı mesajdan gelen istekler aynı batch)
+- raw_text (o işlemin metni), sira_no (batch içindeki sıra)
+- durum: 'beklemede' | 'işleniyor' | 'tamamlandı' | 'başarısız' | 'iptal'
+- sonuc (işlendiyse özet), hata (başarısızsa sebep)
+- created_at, updated_at
+
+**Akış:**
+1. Çoklu mesaj gelince split_into_requests ile parçalara ayır.
+2. Her parçayı pending_requests'e 'beklemede' olarak yaz (batch_id ortak).
+3. Sırayla işle: ilk 'beklemede' isteği al → 'işleniyor' yap → process.
+   - NET sonuç → kaydet, 'tamamlandı' işaretle, sonraki isteğe geç.
+   - ONAY gerekiyorsa (hangisi/evet-hayır/ürün/silme) → o isteği 'işleniyor'
+     bırak, kullanıcıya sor, DUR. Kullanıcı cevaplayınca o isteği bitir
+     ('tamamlandı'), SONRA kuyruktaki bir sonraki 'beklemede'ye otomatik geç.
+   - LLM gerekiyorsa (Ollama) → çağır; Ollama kapalıysa/erişilemezse o
+     isteği 'başarısız' (hata: "anlaşılamadı") işaretle, DİĞERLERİNE devam et
+     (biri LLM'e takılınca hepsi durmasın).
+4. Batch bitince özet: "4 işlemden 3 tamamlandı, 1 anlaşılamadı: '...'".
+
+**Dayanıklılık:** bot yeniden başlarsa, 'beklemede'/'işleniyor' kalan
+istekler DB'de durur; istenirse devam ettirilebilir (ilk sürümde en azından
+kaybolmaz, elle görülebilir). Onay bekleyen istek chat_data + DB'de izlenir.
+
+**Önemli:** her istek kişi eşleştirme ve para güvenlik kurallarından AYRI
+geçer. Bir istek yanlış giderse diğerlerini etkilemez. Kuyruk sıralı işler
+(paralel değil) ki onay akışları karışmasın.
