@@ -216,6 +216,28 @@ CREATE TABLE settings (
 
 INSERT INTO settings (key, value) VALUES ('business_name', 'Hesaplık');
 
+-- ------------------------------------------------------------ istek kuyrugu
+-- Tek mesajdan cikan islemler bellekte degil burada durur: bot soru sorup
+-- beklese, internet kopsa, bot yeniden baslasa bile istek kaybolmaz.
+-- Ayni mesajdan gelenler ayni batch_id'yi paylasir, sira_no ile sirali islenir.
+
+CREATE TABLE pending_requests (
+    id         BIGSERIAL   PRIMARY KEY,
+    chat_id    TEXT        NOT NULL,
+    batch_id   TEXT        NOT NULL,
+    raw_text   TEXT        NOT NULL,
+    sira_no    INTEGER     NOT NULL,
+    durum      TEXT        NOT NULL DEFAULT 'beklemede'
+        CHECK (durum IN ('beklemede', 'isleniyor', 'tamamlandi', 'basarisiz', 'iptal')),
+    sonuc      TEXT,
+    hata       TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_pending_chat_durum ON pending_requests (chat_id, durum);
+CREATE UNIQUE INDEX uq_pending_batch_sira ON pending_requests (batch_id, sira_no);
+
 -- ---------------------------------------------------------------- görünümler
 -- Bakiye > 0  => kisi bize borclu (bizim alacagimiz)
 -- Ters kayit karsit kind ile eklendigi icin toplamda kendiliginden sifirlanir.
