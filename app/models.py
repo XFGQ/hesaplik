@@ -13,6 +13,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -266,6 +267,38 @@ class RawMessage(Base):
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     transaction_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("transactions.id"))
+
+
+class PendingRequest(Base):
+    """Tek mesajdan çıkan işlemlerin kalıcı kuyruğu. Bellekte değil DB'de
+    tutulur ki bot soru sorup beklese, internet kopsa, bot yeniden başlasa
+    bile istek kaybolmasın. Aynı mesajdan gelenler aynı batch_id'yi paylaşır,
+    sira_no ile sırayla işlenir."""
+
+    __tablename__ = "pending_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "durum IN ('beklemede', 'isleniyor', 'tamamlandi', 'basarisiz', 'iptal')",
+            name="chk_pending_durum",
+        ),
+        Index("idx_pending_chat_durum", "chat_id", "durum"),
+        Index("uq_pending_batch_sira", "batch_id", "sira_no", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    chat_id: Mapped[str] = mapped_column(Text, nullable=False)
+    batch_id: Mapped[str] = mapped_column(Text, nullable=False)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    sira_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    durum: Mapped[str] = mapped_column(Text, nullable=False, default="beklemede")
+    sonuc: Mapped[str | None] = mapped_column(Text)
+    hata: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class AuditLog(Base):
