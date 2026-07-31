@@ -1,18 +1,83 @@
 import os
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 import asyncpg
-from dotenv import load_dotenv
-
-load_dotenv()
+import httpx
+import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from dotenv import load_dotenv
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+from app.config import settings
+from app.services import llm_provider
+from app.services.parser import ParsedIntent
+
+# .env'deki TEST_DSN gibi değişkenler için (app.config kendi .env'ini
+# pydantic-settings ile zaten okur, bu yalnızca os.getenv kullanan yerler
+# için gerekli).
+load_dotenv()
 
 DSN = os.getenv("TEST_DSN", "postgresql+asyncpg://hesaplik:hesaplik@localhost:5432/hesaplik_test")
+
+
+# ------------------------------------------------------------------ LLM izolasyonu
+#
+# Testler gerçek bir LLM servisine (Ollama/vLLM) ASLA bağlanmaz: CI'da ve
+# sunucuda böyle bir servis yok, yerelde açıksa da her çağrı 10+ saniye
+# sürüp testi kilitliyor. .env'de LLM_PROVIDER=ollama olsa bile aşağıdaki
+# autouse fixture'lar devrede olduğu için hiçbir test yanlışlıkla ağa
+# çıkamaz. LLM'e düşen davranışı test etmek isteyen testler `fake_llm`
+# fixture'ını isteyip `fake_llm.intent = ...` ile yanıtı belirler.
+
+
+class FakeLLMProvider:
+    """LLMProvider Protocol'ünü karşılayan, ağa hiç çıkmayan sahte
+    sağlayıcı. `intent` None ise "LLM de çözemedi" davranışını taklit
+    eder (UNRECOGNIZED'a düşer); bir ParsedIntent verilirse her çağrıda
+    onu döner. Deterministiktir — aynı girdi her koşuda aynı sonucu verir."""
+
+    def __init__(self, intent: ParsedIntent | None = None):
+        self.intent = intent
+        self.calls: list[str] = []
+
+    @property
+    def called(self) -> bool:
+        return bool(self.calls)
+
+    async def parse(self, text: str) -> ParsedIntent | None:
+        self.calls.append(text)
+        return self.intent
+
+
+@pytest.fixture(autouse=True)
+def fake_llm(monkeypatch):
+    """Her testte get_provider()'ı sahte sağlayıcıya çevirir. Ayrıca
+    settings.llm_provider'ı "none" yapar ve timeout'u kısaltır: bir kod
+    yolu get_provider()'ı atlayıp doğrudan OllamaProvider kurmaya kalkarsa
+    bile gerçek bir istek uzun süre asılı kalamaz."""
+    provider = FakeLLMProvider()
+    monkeypatch.setattr(llm_provider, "get_provider", lambda: provider)
+    monkeypatch.setattr(settings, "llm_provider", "none")
+    monkeypatch.setattr(settings, "llm_timeout", 1.0)
+    return provider
+
+
+@pytest.fixture(autouse=True)
+def no_real_network(monkeypatch):
+    """Son güvenlik ağı: httpx'in GERÇEK taşıyıcısı test sırasında hiç
+    çalışmamalı. httpx.MockTransport ayrı bir sınıf olduğu için
+    tests/test_llm_provider.py'nin mock'lu OllamaProvider testleri
+    etkilenmez; kaçak bir çağrı olursa sessizce beklemek yerine hemen
+    patlar ve testte görünür."""
+
+    def _blocked(*_args, **_kwargs):
+        raise RuntimeError(
+            "Testlerde gerçek ağ çağrısı yasak (httpx). LLM için "
+            "conftest.FakeLLMProvider ya da httpx.MockTransport kullan."
+        )
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _blocked)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked)
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -34,7 +99,8 @@ async def session(engine):
     async with maker() as s:
         yield s
         await s.rollback()
-        for t in ("audit_log", "raw_messages", "archived_transactions",
+        for t in ("audit_log", "raw_messages", "pending_requests",
+                  "archived_transactions",
                   "archived_persons", "transaction_lines", "transactions",
                   "price_history", "product_aliases", "products",
                   "person_aliases", "persons"):
