@@ -269,7 +269,12 @@ async def test_silme_onayi_sonrasi_kuyruk_devam_eder(session, patch_session_loca
     await session.commit()
 
     context = FakeContext()
-    text = "furkanı sil\nmehmet öztürk 500 tl borç yazdım"
+    # Çıplak accusative eki ("furkanı") kasten sökülmez, bu yüzden tek
+    # kelime + soyadlı tam isim eşleşmesi tek adaylı "hangisi?" sorusuna
+    # düşebilir (bkz. test_intent_resolver.py > ek_ile_yazilan_isim). Burada
+    # test edilen şey aday seçimi değil YAZARAK ONAY sonrası kuyruğun devamı
+    # olduğu için ekSİZ tam isim kullanılır — doğrudan ARCHIVE_CONFIRM'e gider.
+    text = "furkan duman sil\nmehmet öztürk 500 tl borç yazdım"
     update = FakeUpdate(FakeMessage(text=text))
     await bot_main.on_text(update, context)
 

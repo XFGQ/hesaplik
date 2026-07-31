@@ -1588,8 +1588,15 @@ async def _handle_person_pick(query, context: ContextTypes.DEFAULT_TYPE, person_
         if person is None:
             await query.edit_message_text("Kişi bulunamadı.")
             return
-        await _finish_pending(session, query, context, person, pending)
+        completed = await _finish_pending(session, query, context, person, pending)
         await session.commit()
+
+    # Kuyruk İLERLETME oturum KAPANDIKTAN sonra yapılır: _advance_queue kendi
+    # SessionLocal()'ını açıyor ve aynı raw_messages satırını güncelliyor —
+    # yukarıdaki oturum hâlâ açıkken çağrılırsa iki oturum aynı satır kilidini
+    # bekleyip sonsuza kadar asılı kalır (testler bu yüzden bitmiyordu).
+    if completed:
+        await _advance_queue(context, query.message)
 
 
 async def _resolve_and_process(
@@ -1629,7 +1636,12 @@ async def _resolve_and_process(
     return resolved, result
 
 
-async def _finish_pending(session, query, context, person: Person, pending: dict) -> None:
+async def _finish_pending(session, query, context, person: Person, pending: dict) -> bool:
+    """Aday seçildikten sonra bekleyen niyeti tamamlar. Bu parçanın TAM
+    bitip bitmediğini (yeni bir onay/seçim beklemediğini) döner; kuyruğu
+    ilerletme kararını çağıran verir — `session` burada hâlâ AÇIK olduğu
+    için kuyruk bu fonksiyonun içinden ilerletilemez (bkz.
+    _handle_person_pick'teki kilit notu)."""
     resolved, result = await _resolve_and_process(session, context, query.message.chat_id, person, pending)
 
     if result.outcome == ProcessOutcome.BALANCE:
@@ -1681,14 +1693,13 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
         context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
         await query.edit_message_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
 
-    # Bu parça TAM olarak bitmişse (yeni bir onay/seçim beklemiyorsa) kuyrukta
-    # bekleyen bir sonraki parçaya geç (CLAUDE.md > "Tek mesajda birden çok
-    # istek") — ARCHIVE_CONFIRM/EDIT_PERSON_*/PRODUCT_NEEDS_CONFIRMATION/
-    # INFO_MENU gibi ZİNCİRLEME bir onay daha başlattıysa (aday seçildi ama
-    # şimdi ürün de belirsiz çıktı gibi) kuyruk İLERLETİLMEZ, bu parça hâlâ
-    # açık sayılır.
-    if result.outcome in _COMPLETES_WITHOUT_INPUT:
-        await _advance_queue(context, query.message)
+    # Bu parça TAM olarak bittiyse (yeni bir onay/seçim beklemiyorsa) çağıran
+    # kuyrukta bekleyen bir sonraki parçaya geçer (CLAUDE.md > "Tek mesajda
+    # birden çok istek") — ARCHIVE_CONFIRM/EDIT_PERSON_*/
+    # PRODUCT_NEEDS_CONFIRMATION/INFO_MENU gibi ZİNCİRLEME bir onay daha
+    # başlattıysa (aday seçildi ama şimdi ürün de belirsiz çıktı gibi) kuyruk
+    # İLERLETİLMEZ, bu parça hâlâ açık sayılır.
+    return result.outcome in _COMPLETES_WITHOUT_INPUT
 
 
 async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
