@@ -377,7 +377,7 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filefatname}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
