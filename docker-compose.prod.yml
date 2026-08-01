@@ -35,6 +35,17 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Yedek LİSTELEME için (GET /api/backups). Yedeği host'taki systemd
+      # timer alır; container depoya yalnızca bakar, yazmaz.
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/data/backups}
+      RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+    volumes:
+      # Kaynak (host) ve hedef (container) yolu AYNI olmalı: restic depoyu
+      # RESTIC_REPOSITORY'deki mutlak yolda arar, o yüzden host'taki yol
+      # container içinde de birebir aynı yerde görünür.
+      # Salt okunur: container yedek alamaz, yalnızca listeler.
+      # Uzak depo (s3:/rclone:) kullanılırsa bu satır kaldırılmalı.
+      - ${RESTIC_REPOSITORY:-./data/backups}:${RESTIC_REPOSITORY:-/data/backups}:ro
     # SADECE localhost:8100 — Nginx buraya proxy'ler, dışarı kapalı
     ports:
       - "127.0.0.1:8100:8000"
