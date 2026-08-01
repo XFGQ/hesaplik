@@ -66,5 +66,17 @@ services:
       LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
     command: python -m app.bot.main
 
+  ollama:
+    image: ollama/ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+    volumes:
+      - ollama_data:/root/.ollama
+    # port dışarı açılmaz — sadece hesaplik ağı içinden (api/bot erişir)
+
+
 volumes:
   pgdata:
+  ollama_data:
