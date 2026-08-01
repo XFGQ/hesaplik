@@ -23,11 +23,11 @@ jobs:
             git checkout main
             git pull origin main
             echo "=== Container'ları yeniden derle ve başlat ==="
-            sudo docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+            docker compose --env-file .env -f docker-compose.prod.yml up -d --build
             echo "=== Eski imajları temizle ==="
-            sudo docker image prune -f
+            docker image prune -f
             echo "=== Durum ==="
-            sudo docker compose --env-file .env -f docker-compose.prod.yml ps
+            docker compose --env-file .env -f docker-compose.prod.yml ps
             echo "=== Sağlık kontrolü ==="
             sleep 5
             curl -sf http://127.0.0.1:8100/api/health && echo " OK" || echo " SAĞLIK KONTROLÜ BAŞARISIZ"
