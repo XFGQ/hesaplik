@@ -56,6 +56,29 @@ bölümünde. Özet:
    (docker-compose.yml zaten böyle yapılandırılmış, kontrol et).
 7. Caddy ile TLS, `DOMAIN` gerçek alan adına ayarlanır.
 
+## Web arayüzünde yedek listesi (api container'ı)
+
+Ayarlar > Yedekleme bölümü `GET /api/backups` ile depoyu **listeler**;
+yedeği alan yine host'taki `hesaplik-backup.timer`'dır. Bunun için
+`docker-compose.prod.yml`'de api servisi:
+
+- `RESTIC_REPOSITORY` / `RESTIC_PASSWORD` değişkenlerini alır (`.env`),
+- depoyu **salt okunur** (`:ro`) bağlar; container depoya yazamaz.
+
+**`RESTIC_REPOSITORY` üretimde mutlak yol olmalı** (örn.
+`/var/www/duman.rinnesoft.com/data/backups`). Sebep: bağlama noktasının
+kaynağı ile hedefi aynı yoldur — restic depoyu `RESTIC_REPOSITORY`'deki
+mutlak yolda arar, container içinde de aynı yerde görünmesi gerekir.
+Göreli yol (`./data/backups`) verilirse `docker compose up` geçersiz
+bağlama hedefiyle patlar.
+
+Uzak depoya (`s3:...`, `rclone:...`) geçilirse bağlama satırı kaldırılır,
+yalnızca değişkenler kalır.
+
+"Şimdi yedekle" düğmesi container'dan çalışmaz (orada `docker compose`
+yok ve depo salt okunur): endpoint 503 ile "Yedekler sunucuda otomatik
+alınıyor" der, listeleme etkilenmez.
+
 ## Notlar
 
 - `scripts/backup.sh` ve `scripts/restore-test.sh` idempotent: depo yoksa
