@@ -1,0 +1,59 @@
+# Hesaplık üretim (İzmir sunucusu, Debian + mevcut Nginx)
+# Caddy YOK — sunucudaki mevcut Nginx reverse proxy kullanılıyor.
+# API yalnızca 127.0.0.1:8100'e bağlanır; Nginx duman.rinnesoft.com'u buraya proxy'ler.
+# Postgres dışarı AÇILMAZ (sadece compose ağı içinde) — mevcut MariaDB'ye dokunmaz.
+name: hesaplik
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hesaplik}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?parola gerekli}
+      POSTGRES_DB: ${POSTGRES_DB:-hesaplik}
+    # port YOK — dışarı açılmıyor, sadece iç ağ
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hesaplik}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hesaplik}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-hesaplik}
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # SADECE localhost:8100 — Nginx buraya proxy'ler, dışarı kapalı
+    ports:
+      - "127.0.0.1:8100:8000"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hesaplik}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-hesaplik}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?bot token gerekli}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-none}
+      OLLAMA_URL: ${OLLAMA_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
+      LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+    command: python -m app.bot.main
+
+volumes:
+  pgdata:
