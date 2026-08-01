@@ -6,10 +6,16 @@ doğrulaması asla LLM'e bırakılmaz — mevcut intent_resolver + ledger
 kuralları (pg_trgm kişi eşleştirme, catalog, Decimal) BİZİM KOD tarafında
 aynen uygulanır. Prompt kolay düzenlenebilsin diye tek bir sabit string.
 
-Prompt KISA tutulur (~2500 karakter): işlemcide soğuk model 60sn+ sürüyor,
-uzun prompt bunu daha da ağırlaştırıyor (CLAUDE.md ölçümü: 7829 karakterlik
-eski prompt ile soğuk 60sn+, ısınınca 23sn). Az ama kapsayıcı örnek tercih
-edilir, tekrarlayan açıklama/örnek eklenmez.
+Prompt KISA tutulur (~5-6 bin karakter): işlemcide soğuk model 60sn+
+sürüyor, uzun prompt bunu daha da ağırlaştırıyor (CLAUDE.md ölçümü: 7829
+karakterlik eski prompt ile soğuk 60sn+, ısınınca 23sn). Ayrıca küçük model
+(qwen2.5:3b) uzun promptta şaşırıyor. Az ama kapsayıcı örnek tercih edilir,
+tekrarlayan açıklama/örnek eklenmez — bir kural iki kez anlatılmaz.
+
+Tek istisna YÖN kuralıdır (debt/payment): yanlış yön parayı ters yazar,
+bu yüzden hem fiil listesi hem karşıt örnek çifti ("sattım"->debt vs
+"aldım"->payment) bilerek açık açık yazılır. tests/test_llm_prompt.py
+buradaki örneklerin kendileriyle tutarlı kalmasını bekler.
 """
 
 from __future__ import annotations
@@ -25,11 +31,18 @@ SYSTEM_PROMPT = """Sen bir cari hesap defteri asistanısın. Türkçe cümleyi
 "tur": "genel"|"gunluk"|"kisi"|null, "kisi": string|null}
 
 Kurallar:
-- kind: kayıt fiili + TUTAR varsa borç="debt", tahsilat="payment". Yön
-  önemli: kişiDEN aldın (para SANA geldi) = "payment"; kişiYE verdin (para/
-  mal ONA gitti) = "debt". "mehmetten 5000 aldım"->payment, "mehmete 500
-  verdim"->debt. Tutar/fiil YOKSA ama "borçlu/borcu/bakiyesi ne" gibi soru
-  varsa "balance_query" — amount UYDURMA. İlgisiz cümlede kind:null.
+- kind: kayıt fiili + TUTAR varsa borç="debt", tahsilat="payment". YÖN
+  KRİTİK, fiile bak:
+  "debt" = mal/para KARŞIYA gitti, o SANA borçlandı: verdim, SATTIM,
+  borç yazdım, veresiye, çıktı, gönderdim, ve 3. şahıs "aldı" (O aldı).
+  "payment" = para BANA geldi: aldım (BEN aldım), ödedi, tahsil ettim,
+  geri verdi, borcunu kapattı.
+  "sattım" HER ZAMAN "debt"tir — satıcı malı verdi, alıcı borçlandı;
+  ASLA payment değil. "aldım" (ben) = payment ama "aldı" (o) = debt.
+  Cümlede "borç/borcu var/borç yaz" geçmesi debt yönünü güçlendirir;
+  ama "borcunu ödedi/kapattı/getirdi" = payment (borç kapanıyor).
+  Tutar/fiil YOKSA ama "borçlu/borcu/bakiyesi ne" gibi soru varsa
+  "balance_query" — amount UYDURMA. İlgisiz cümlede kind:null.
 - Kişi listeleme: hepsi="list_all", borçlular="list_debtors", alacaklılar=
   "list_creditors", ilçeye göre="list_district" (district doldurulur).
 - person_name / kisi: METİNDE GEÇTİĞİ HALİYLE, AYNEN yaz. Çekim ekini SÖKME,
@@ -61,14 +74,23 @@ Kurallar:
 
 Örnekler:
 
-"furkana 20 balya saman verdim 15000 tl borç yazsana" ->
-{"kind":"debt","person_name":"furkana","qty":20,"unit":"balya","product":"saman","amount":15000,"district":null,"islem":null,"tur":null,"kisi":null}
+"ali veliye 20 balya saman sattım 3000 lira" ->
+{"kind":"debt","person_name":"ali veliye","qty":20,"unit":"balya","product":"saman","amount":3000,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"mehmete 500 verdim" ->
+{"kind":"debt","person_name":"mehmete","qty":null,"unit":null,"product":null,"amount":500,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"ahmet 10 çuval yem aldı 1500 borç" ->
+{"kind":"debt","person_name":"ahmet","qty":10,"unit":"çuval","product":"yem","amount":1500,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"mehmetten 5000 aldım" ->
+{"kind":"payment","person_name":"mehmetten","qty":null,"unit":null,"product":null,"amount":5000,"district":null,"islem":null,"tur":null,"kisi":null}
 
 "mehmet bugün 2000 lira ödedi" ->
 {"kind":"payment","person_name":"mehmet","qty":null,"unit":null,"product":null,"amount":2000,"district":null,"islem":null,"tur":null,"kisi":null}
 
-"mehmetten 5000 aldım" ->
-{"kind":"payment","person_name":"mehmetten","qty":null,"unit":null,"product":null,"amount":5000,"district":null,"islem":null,"tur":null,"kisi":null}
+"ahmet 20 balya borcunu 15000 tl ödedi" ->
+{"kind":"payment","person_name":"ahmet","qty":20,"unit":"balya","product":null,"amount":15000,"district":null,"islem":null,"tur":null,"kisi":null}
 
 "ali ne kadar borçlu" ->
 {"kind":"balance_query","person_name":"ali","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
@@ -80,9 +102,6 @@ Kurallar:
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"genel","kisi":null}
 
 "ahmetin hesap dökümünü ver" ->
-{"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"kisi","kisi":"ahmetin"}
-
-"ahmetin hesabının dökümünü çıkar" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"rapor","tur":"kisi","kisi":"ahmetin"}
 
 "mehmetin durumu ne" ->

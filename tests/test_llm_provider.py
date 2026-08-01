@@ -245,6 +245,65 @@ async def test_ollama_saglikli_yanit_parsed_intent_doner():
     assert intent.amount == Decimal("15000")
 
 
+async def test_ollama_sattim_borc_olarak_gecer():
+    # YÖN: "sattım" = mal ONA gitti = debt. LLM doğru yönü döndürdüğünde
+    # provider hattı bunu bozmadan geçirmeli — özellikle iki kelimelik ad
+    # ("ali veliye") isim doğrulamasına takılmamalı, yoksa doğru yanıt
+    # kişisiz kalıp None'a düşerdi.
+    def handler(request):
+        return _chat_response({
+            "kind": "debt", "person_name": "ali veliye", "qty": 20,
+            "unit": "balya", "product": "saman", "amount": 3000, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = OllamaProvider("http://localhost:11434", "qwen2.5:3b", client=client)
+        intent = await provider.parse("ali veliye 20 balya saman sattım 3000 lira")
+
+    assert intent is not None
+    assert intent.kind == "debt"
+    assert intent.person_name == "ali veliye"
+    assert intent.qty == Decimal("20")
+    assert intent.unit == "balya"
+    assert intent.product == "saman"
+    assert intent.amount == Decimal("3000")
+
+
+async def test_ollama_ucuncu_sahis_aldi_borc_olarak_gecer():
+    # "aldı" (O aldı) = debt; "aldım" (BEN aldım) = payment. Aynı kök, ters
+    # yön — hat ikisini de olduğu gibi taşımalı.
+    def handler(request):
+        return _chat_response({
+            "kind": "debt", "person_name": "ahmet", "qty": 10, "unit": "çuval",
+            "product": "yem", "amount": 1500, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = OllamaProvider("http://localhost:11434", "qwen2.5:3b", client=client)
+        intent = await provider.parse("ahmet 10 çuval yem aldı 1500 borç")
+
+    assert intent is not None
+    assert intent.kind == "debt"
+    assert intent.amount == Decimal("1500")
+
+
+async def test_ollama_odedi_tahsilat_olarak_gecer():
+    # "borcunu ödedi": cümlede "borç" geçse de yön TAHSİLAT (borç kapanıyor).
+    def handler(request):
+        return _chat_response({
+            "kind": "payment", "person_name": "ahmet", "qty": 20, "unit": "balya",
+            "product": None, "amount": 15000, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = OllamaProvider("http://localhost:11434", "qwen2.5:3b", client=client)
+        intent = await provider.parse("ahmet 20 balya borcunu 15000 tl ödedi")
+
+    assert intent is not None
+    assert intent.kind == "payment"
+    assert intent.amount == Decimal("15000")
+
+
 async def test_ollama_baglanti_hatasinda_none_doner():
     def handler(request):
         raise httpx.ConnectError("bağlanamadı", request=request)
