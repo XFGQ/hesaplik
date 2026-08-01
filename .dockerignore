@@ -1,0 +1,16 @@
+# Build baglami kucuk kalsin; web/dist imaj icinde asama 1'de uretilir,
+# yereldeki (bayat olabilecek) kopyasi gonderilmez.
+.git
+.github
+.venv
+__pycache__
+*.pyc
+*.egg-info
+.pytest_cache
+.ruff_cache
+node_modules
+web/dist
+web/node_modules
+data
+.env
+.vscode

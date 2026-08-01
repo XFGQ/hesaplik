@@ -9,6 +9,11 @@ class Settings(BaseSettings):
     # Vite dev sunucusu. Uretimde ayni origin oldugu icin bos birakilabilir.
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # Uretimde web ve API tek porttan servis edilir: FastAPI, `npm run build`
+    # ciktisini (web/dist) statik olarak sunar. Goreli yol proje kokune gore
+    # cozulur. Dizin yoksa (gelistirmede build alinmamissa) yalnizca API calisir.
+    web_dist: str = "web/dist"
+
     restic_repository: str = "./data/backups"
     restic_password: str | None = None
 

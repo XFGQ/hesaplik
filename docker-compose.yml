@@ -24,6 +24,10 @@ services:
     profiles: ["server"]
     build: .
     restart: unless-stopped
+    # Tek port: hem API hem web arayüzü. Yalnızca localhost'a açılır,
+    # sunucudaki Nginx buraya proxy'ler.
+    ports:
+      - "127.0.0.1:8100:8000"
     depends_on:
       db:
         condition: service_healthy

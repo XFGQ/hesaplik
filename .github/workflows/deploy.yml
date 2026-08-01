@@ -1,0 +1,33 @@
+name: Deploy
+
+# Sadece main'e push olunca çalışır (feat/* branch'ler deploy etmez)
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sunucuya SSH ile deploy
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            cd /var/www/duman.rinnesoft.com
+            echo "=== Güncel kodu çek ==="
+            git fetch origin
+            git checkout main
+            git pull origin main
+            echo "=== Container'ları yeniden derle ve başlat ==="
+            sudo docker compose --env-file .env -f docker-compose.prod.yml up -d --build
+            echo "=== Eski imajları temizle ==="
+            sudo docker image prune -f
+            echo "=== Durum ==="
+            sudo docker compose --env-file .env -f docker-compose.prod.yml ps
+            echo "=== Sağlık kontrolü ==="
+            sleep 5
+            curl -sf http://127.0.0.1:8100/api/health && echo " OK" || echo " SAĞLIK KONTROLÜ BAŞARISIZ"
