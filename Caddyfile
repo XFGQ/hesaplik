@@ -1,11 +1,7 @@
 {$DOMAIN:localhost} {
 	encode gzip
-	handle /api/* {
-		reverse_proxy api:8000
-	}
-	handle {
-		root * /srv/web
-		try_files {path} /index.html
-		file_server
-	}
+	# Web ve API tek porttan: FastAPI hem /api'yi hem React build'ini
+	# (imajın içindeki web/dist) servis eder. Caddy artık statik dosya
+	# sunmaz; SPA fallback (bilinmeyen yol -> index.html) app/main.py'de.
+	reverse_proxy api:8000
 }
