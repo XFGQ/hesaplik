@@ -44,6 +44,34 @@ BAKIYE_SORGUSU_CUMLELERI = [
 ]
 
 
+# Bug (2026-08-01, prompt): LLM "sattım"ı TAHSİLAT sanıyordu ("ali veliye
+# 20 balya saman sattım 3000 lira" -> payment). Yön yanlış olunca para ters
+# yazılır. Prompt'taki YÖN kuralı bunu düzeltmeli; burası küçük modelle
+# (qwen2.5:3b) de doğru mu diye elle bakılan yer. Kural parser bu
+# cümlelerin çoğunu zaten çözüyor, bu yüzden doğrudan provider'a sorulur.
+YON_CUMLELERI = [
+    ("ali veliye 20 balya saman sattım 3000 lira", "debt"),
+    ("mehmete 500 verdim", "debt"),
+    ("ahmet 10 çuval yem aldı 1500 borç", "debt"),
+    ("furkana 30 balya saman gönderdim 4000 lira", "debt"),
+    ("mehmetten 5000 aldım", "payment"),
+    ("ali 500 ödedi", "payment"),
+    ("ahmet borcunu kapattı 2000 tl", "payment"),
+]
+
+
+async def _check_yon(provider) -> None:
+    print("\n=== YÖN: sattım/verdim -> debt, aldım/ödedi -> payment ===")
+    yanlis = 0
+    for text, expected_kind in YON_CUMLELERI:
+        intent = await provider.parse(text)
+        kind = intent.kind if intent is not None else None
+        ok = kind == expected_kind
+        yanlis += 0 if ok else 1
+        print(f"{'DOĞRU ' if ok else 'YANLIŞ'} {text!r} -> {kind} (beklenen {expected_kind})")
+    print(f"\nÖzet: {len(YON_CUMLELERI) - yanlis}/{len(YON_CUMLELERI)} doğru")
+
+
 async def _check_prompt_fix(provider) -> None:
     print("\n=== Prompt düzeltmesi: bakiye sorgusu vs kayıt ===")
     for text, expected_kind, expected_person, expected_district in BAKIYE_SORGUSU_CUMLELERI:
@@ -96,6 +124,7 @@ async def main() -> None:
         await session.rollback()
     await engine.dispose()
 
+    await _check_yon(provider)
     await _check_prompt_fix(provider)
 
 
