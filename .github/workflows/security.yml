@@ -1,0 +1,36 @@
+name: Güvenlik Taraması
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  security:
+    runs-on: ubuntu-latest
+    # Bu iş bilgilendiricidir: açık bulsa bile push'u durdurmaz.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Araçları kur
+        run: pip install pip-audit bandit
+
+      # Bağımlılıklardaki bilinen güvenlik açıkları
+      - name: pip-audit (bağımlılık açıkları)
+        continue-on-error: true
+        run: |
+          echo "=== Bağımlılık güvenlik taraması ==="
+          pip install -e .
+          pip-audit --desc || echo "⚠️ pip-audit açık buldu (yukarı bak) — push engellenmedi."
+
+      # Kendi kodundaki güvenlik sorunları
+      - name: bandit (kod güvenlik analizi)
+        continue-on-error: true
+        run: |
+          echo "=== Kod güvenlik taraması ==="
+          bandit -r app/ -ll || echo "⚠️ bandit sorun buldu (yukarı bak) — push engellenmedi."
