@@ -254,6 +254,13 @@ class Setting(Base):
 
 
 class RawMessage(Base):
+    """Dokunulmaz ham mesaj. `payload`/`received_at` asla değişmez.
+
+    detected_*/parse_*/outcome_* alanları (Faz 7, admin paneli "İşlem Akışı")
+    mesaj işlenirken YAN ETKİ olarak doldurulur: müşteri ne yazdı → sistem ne
+    algıladı → ne yaptı. Hepsi nullable, yazılamamaları defteri etkilemez
+    (bkz. app/services/message_trace.py)."""
+
     __tablename__ = "raw_messages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -267,6 +274,18 @@ class RawMessage(Base):
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     transaction_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("transactions.id"))
+
+    # --- izleme (admin paneli "İşlem Akışı")
+    detected_kind: Mapped[str | None] = mapped_column(Text)
+    detected_person: Mapped[str | None] = mapped_column(Text)
+    detected_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    detected_product: Mapped[str | None] = mapped_column(Text)
+    detected_qty: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    detected_unit: Mapped[str | None] = mapped_column(Text)
+    parse_source: Mapped[str | None] = mapped_column(Text)
+    parse_ms: Mapped[int | None] = mapped_column(Integer)
+    outcome: Mapped[str | None] = mapped_column(Text)
+    outcome_detail: Mapped[str | None] = mapped_column(Text)
 
 
 class PendingRequest(Base):
