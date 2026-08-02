@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.api.admin import router as admin_router
 from app.api.routes import router
 from app.config import settings
 
@@ -24,6 +25,7 @@ app.add_middleware(
 # Sıra kritik: önce API (/api/...), sonra statik dosyalar, EN SON SPA
 # catch-all. Aksi hâlde catch-all API yollarını yutar.
 app.include_router(router)
+app.include_router(admin_router)
 
 
 @app.get("/api/health")

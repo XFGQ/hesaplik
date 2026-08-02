@@ -176,6 +176,10 @@ CREATE TABLE archived_persons (
 CREATE INDEX idx_archived_persons_original ON archived_persons (original_person_id);
 
 -- ---------------------------------------------------------------- ham mesajlar (dokunulmaz)
+-- Ham metin hicbir zaman degismez. detected_*/parse_*/outcome_* alanlari
+-- (Faz 7, admin paneli "Islem Akisi") mesaj islenirken YAN ETKI olarak
+-- doldurulur: musteri ne yazdi -> sistem ne algiladi -> ne yapti. Hepsi
+-- nullable; yazilamamalari defteri etkilemez.
 
 CREATE TABLE raw_messages (
     id             BIGSERIAL PRIMARY KEY,
@@ -186,11 +190,25 @@ CREATE TABLE raw_messages (
     trace_id       TEXT,
     received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at   TIMESTAMPTZ,
-    transaction_id BIGINT REFERENCES transactions(id)
+    transaction_id BIGINT REFERENCES transactions(id),
+
+    -- izleme (admin paneli): sistem ne algiladi
+    detected_kind    TEXT,                    -- debt/payment/query/edit/archive/none
+    detected_person  TEXT,
+    detected_amount  NUMERIC(14,2),
+    detected_product TEXT,
+    detected_qty     NUMERIC(14,2),
+    detected_unit    TEXT,
+    parse_source     TEXT,                    -- 'regex' | 'llm' | 'none'
+    parse_ms         INTEGER,                 -- parse suresi (ms)
+    outcome          TEXT,                    -- kaydedildi/yanitlandi/soru_soruldu/hata/yok_sayildi
+    outcome_detail   TEXT
 );
 
 CREATE UNIQUE INDEX uq_raw_external ON raw_messages (channel, external_id)
     WHERE external_id IS NOT NULL;
+CREATE INDEX idx_raw_received ON raw_messages (received_at DESC);
+CREATE INDEX idx_raw_detected_kind ON raw_messages (detected_kind);
 
 CREATE TABLE audit_log (
     id         BIGSERIAL PRIMARY KEY,
