@@ -227,7 +227,7 @@ soft-delete ve arşivle korunuyor.
 alanı doldurur; alt buton/eylemler sayfanın en altında sabit durur, tablo
 uzadıkça yukarı kaymaz.
 
-## Yedekten geri dönme (yalnızca komut satırı)
+## Yedekten geri dönme (komut satırı)
 
     set -a; source .env; set +a
     restic snapshots                       # ID seç
@@ -236,7 +236,36 @@ uzadıkça yukarı kaymaz.
     docker compose exec -T db pg_restore -U hesaplik -d hesaplik \
       --clean --if-exists --no-owner < /tmp/geri.dump
 
-Tüm veritabanını o ana geri sarar. API'ye konmaz, kaza riski yüksek.
+Tüm veritabanını o ana geri sarar. Bu el yordamı her zaman geçerli kalır
+(felaket anında panel açılmayabilir).
+
+## Panelden geri yükleme — "Yol A": panel İSTER, host UYGULAR (2026-08)
+
+API container'ı veritabanını geri YÜKLEYEMEZ: içinde `docker`/`compose` yok,
+restic deposu salt okunur bağlı. Bu yüzden iş ikiye ayrıldı ve **API'de
+pg_restore çalıştıran kod yoktur**:
+
+- **Panel/API:** `restore_requests` tablosuna `status='bekliyor'` bir İSTEK
+  yazar (snapshot_id + kim istedi). Şifre modalda TEKRAR sorulur (yanlışsa
+  403, oturum düşmez), audit_log'a da yazılır.
+- **Host izleyici (`scripts/restore-apply.sh`, systemd timer):** kuyruğu
+  okur → `yedekleniyor` (önce güvenlik yedeği) → `yukleniyor` (restic dump |
+  pg_restore) → `tamamlandi`. Herhangi bir adım hata verirse `hata` +
+  `error_detail` yazıp DURUR; yarım geri yükleme yapılmaz.
+
+**Tek seferde tek aktif restore.** Uygulama 409 döner, asıl garanti kısmi
+tekil indekstir (`uq_restore_tek_aktif`) — eşzamanlı iki istek veritabanınca
+reddedilir.
+
+**Güvenlik yedeği etiketle ayrılır.** Normal yedekler `hesaplik`, geri
+yükleme öncesi alınanlar `restore-oncesi` etiketli (`scripts/backup.sh
+[etiket]`). `restic forget` budaması YALNIZCA `hesaplik` etiketine uygulanır:
+güvenlik yedeği 24 saat sonra kendiliğinden silinmez. Panel iki etiketi
+birlikte listeler, güvenlik yedeklerini rozetle işaretler.
+
+Host izleyici kurulu değilse istek `bekliyor` kalır — kaybolmaz; panel
+birkaç dakika sonra "izleyici çalışmıyor olabilir" uyarısı gösterir
+(dolaylı sinyal, kesin bilgi değil).
 
 ## Yazarak onay her silmede
 
