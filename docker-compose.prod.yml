@@ -39,6 +39,7 @@ services:
       # timer alır; container depoya yalnızca bakar, yazmaz.
       RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/data/backups}
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
       # Kaynak (host) ve hedef (container) yolu AYNI olmalı: restic depoyu
       # RESTIC_REPOSITORY'deki mutlak yolda arar, o yüzden host'taki yol
