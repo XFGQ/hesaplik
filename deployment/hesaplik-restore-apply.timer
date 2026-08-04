@@ -1,0 +1,12 @@
+[Unit]
+Description=Hesaplık - geri yükleme kuyruğunu dakikada bir yokla
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+# Persistent=true YOK: kaçırılan bir yoklama sonradan telafi edilmemeli.
+# Geri yükleme kullanıcının o an beklediği bir iştir; saatler sonra
+# kendiliğinden başlaması istenmez (istek panelde 'bekliyor' görünür).
+
+[Install]
+WantedBy=timers.target

@@ -23,6 +23,11 @@
   --success: #7bcf98;
   --success-bg: #16261c;
 
+  /* Yalnızca yönetim panelindeki "uyarı" durumu için: ne iyi ne kötü,
+     bakılması gereken. Defterde para rengi olarak KULLANILMAZ. */
+  --uyari: #e3b464;
+  --uyari-bg: #2a2318;
+
   --sans: "Inter Tight", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, monospace;
   --tap: 52px;
@@ -1422,6 +1427,380 @@ input.amount {
   gap: 8px;
 }
 
+/* --- sistem sağlığı
+   Kart başına bir bileşen; sol kenardaki renkli şerit uzaktan bakınca
+   "ne ayakta, ne değil" sorusunu tek bakışta cevaplar. Renk sözlüğü
+   defterle aynı: yeşil çalışıyor, kırmızı hata. Sarı yalnızca uyarıya
+   ayrılmıştır, panelde başka yerde kullanılmaz. */
+
+.admin-health {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.admin-health-top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.admin-health-top > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.admin-health-top strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.admin-health-top .muted {
+  font-size: 12px;
+}
+
+.admin-health-top-ok {
+  border-left-color: var(--success);
+}
+
+.admin-health-top-ok strong {
+  color: var(--success);
+}
+
+.admin-health-top-uyari {
+  border-left-color: var(--uyari);
+}
+
+.admin-health-top-uyari strong {
+  color: var(--uyari);
+}
+
+.admin-health-top-hata {
+  border-left-color: var(--borc);
+}
+
+.admin-health-top-hata strong {
+  color: var(--borc);
+}
+
+.admin-health-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.admin-health-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule);
+  border-radius: 12px;
+}
+
+.admin-health-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.admin-health-card h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.admin-health-summary {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.admin-health-details {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-health-details .admin-line {
+  font-size: 12px;
+}
+
+.admin-health-details dd {
+  margin: 0;
+}
+
+.admin-health-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+/* "Bu değer doğrudan ölçülmedi" işareti — dolaylı bir iz kesin bilgi
+   sanılmasın (bot ayrı container'da, canlılığı son mesajdan tahmin
+   ediliyor). */
+.admin-health-indirect {
+  align-self: flex-start;
+  margin-left: 0;
+}
+
+.admin-health-ok {
+  border-left-color: var(--success);
+}
+
+.admin-health-uyari {
+  border-left-color: var(--uyari);
+}
+
+.admin-health-hata {
+  border-left-color: var(--borc);
+}
+
+.admin-health-bilgi {
+  border-left-color: var(--rule);
+}
+
+.admin-health-badge-ok {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.admin-health-badge-uyari {
+  color: var(--uyari);
+  background: var(--uyari-bg);
+}
+
+.admin-health-badge-hata {
+  color: var(--borc);
+  background: var(--borc-bg);
+}
+
+.admin-health-badge-bilgi {
+  color: var(--ink-soft);
+  background: var(--card);
+  border-color: var(--rule);
+}
+
+/* --- yedekleme
+   Liste defter tablosuyla aynı dili konuşur; ayıran tek şey satır sonundaki
+   yıkıcı eylem ("Ana veri yap") ve üstteki uyarı şeridi. */
+
+.admin-backups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Kapalı/dikkat gerektiren durum: sarı, ama alarm değil. */
+.admin-notice {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--uyari);
+  border-radius: 10px;
+  background: var(--panel);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+
+.admin-notice strong {
+  color: var(--ink);
+}
+
+.admin-backup-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.admin-backup-ozet {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  min-width: 0;
+}
+
+.admin-backup-ozet strong {
+  font-size: 14px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.admin-backup-ozet .muted {
+  font-size: 11px;
+}
+
+.admin-backup-ozet-wide {
+  grid-column: 1 / -1;
+}
+
+.admin-backup-yer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.admin-backup-yer .admin-tag {
+  margin-left: 0;
+}
+
+.admin-backup-eylem {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* --- geri yükleme onayı */
+
+.admin-restore {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.admin-restore-warn {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--borc);
+  border-radius: 10px;
+  background: var(--borc-bg);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.admin-restore-ok {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--success);
+}
+
+.admin-restore-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* --- geri yükleme durum şeridi
+   Adımları HOST izleyici ilerletir, panel yalnızca okur: gösterilen durum
+   tahmin değil, sunucudaki gerçek durum. */
+
+.admin-restore-durum {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--stamp);
+  border-radius: 12px;
+}
+
+.admin-restore-durum-hata {
+  border-left-color: var(--borc);
+}
+
+.admin-restore-durum p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.admin-restore-durum-bas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.admin-restore-durum-bas strong {
+  font-size: 14px;
+}
+
+.admin-restore-durum-bas .muted {
+  font-size: 12px;
+}
+
+.admin-restore-adimlar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: adim;
+}
+
+.admin-restore-adimlar li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--ink-faint);
+}
+
+.admin-restore-adimlar li::before {
+  content: "○";
+  font-size: 11px;
+}
+
+.admin-adim-gecti {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.admin-adim-gecti::before {
+  content: "✓";
+}
+
+/* Şu anki adım: renk + hafif nabız, "duruyor mu?" sorusu doğmasın. */
+.admin-adim-simdi {
+  color: var(--stamp);
+  border-color: var(--stamp);
+  background: var(--stamp-bg);
+  animation: adim-nabiz 1.6s ease-in-out infinite;
+}
+
+.admin-adim-simdi::before {
+  content: "●";
+}
+
+@keyframes adim-nabiz {
+  50% {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-adim-simdi {
+    animation: none;
+  }
+}
+
 @media (min-width: 900px) {
   .admin {
     flex-direction: row;
@@ -1464,5 +1843,10 @@ input.amount {
   .admin-detail {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     padding: 16px 14px 20px;
+  }
+
+  /* Beş kart yan yana sığmaz, iki-üç kolon hepsini tek ekranda tutar. */
+  .admin-health-grid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 }

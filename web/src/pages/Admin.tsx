@@ -1,8 +1,8 @@
 /* Admin paneli (/admin) — Faz 7 iskeleti.
  *
- * Sol menü + sağ içerik. Şimdilik yalnızca "İşlem Akışı" dolu; kalan altı
- * bölüm menüde görünür ama "Yakında" der (yer tutuyorlar, sırayla
- * doldurulacak — bkz. admin.md).
+ * Sol menü + sağ içerik. "İşlem Akışı", "Sistem Sağlığı" ve "Yedekleme"
+ * dolu; kalan bölümler menüde görünür ama "Yakında" der (yer tutuyorlar,
+ * sırayla doldurulacak — bkz. admin.md).
  *
  * Oturum: şifre doğruysa sunucu httpOnly çerez bırakır. Sayfa açılışında
  * /me sorulur; 401 ise şifre ekranı gösterilir. Token JS'te tutulmaz.
@@ -11,11 +11,14 @@
 import { useEffect, useState } from "react";
 
 import { adminApi, Unauthorized } from "../api/admin";
+import AdminBackups from "../components/admin/AdminBackups";
 import AdminFlow from "../components/admin/AdminFlow";
+import AdminHealth from "../components/admin/AdminHealth";
 
 type SectionId =
   | "flow"
   | "health"
+  | "backups"
   | "llm"
   | "queue"
   | "logs"
@@ -26,7 +29,18 @@ type Section = { id: SectionId; label: string; hint: string; ready?: boolean };
 
 const SECTIONS: Section[] = [
   { id: "flow", label: "İşlem Akışı", hint: "Ne yazıldı → ne algılandı → ne yapıldı", ready: true },
-  { id: "health", label: "Sistem Sağlığı", hint: "API, bot, veritabanı, Ollama durumu" },
+  {
+    id: "health",
+    label: "Sistem Sağlığı",
+    hint: "API, bot, veritabanı, Ollama, yedek durumu",
+    ready: true,
+  },
+  {
+    id: "backups",
+    label: "Yedekleme",
+    hint: "Tüm yedekler ve geri yükleme",
+    ready: true,
+  },
   { id: "llm", label: "LLM İzleme", hint: "Çağrılar, süreler, başarı oranı" },
   { id: "queue", label: "İstek Kuyruğu", hint: "Bekleyen ve yarım kalan istekler" },
   { id: "logs", label: "Loglar", hint: "Bot ve API kayıtları" },
@@ -103,7 +117,10 @@ export default function Admin() {
           <p>{active.hint}</p>
         </header>
 
-        {section === "flow" ? <AdminFlow onUnauthorized={() => setAuthed(false)} /> : <Soon />}
+        {section === "flow" && <AdminFlow onUnauthorized={() => setAuthed(false)} />}
+        {section === "health" && <AdminHealth onUnauthorized={() => setAuthed(false)} />}
+        {section === "backups" && <AdminBackups onUnauthorized={() => setAuthed(false)} />}
+        {!active.ready && <Soon />}
       </main>
     </div>
   );
