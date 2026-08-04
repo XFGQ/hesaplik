@@ -99,7 +99,7 @@ async def session(engine):
     async with maker() as s:
         yield s
         await s.rollback()
-        for t in ("audit_log", "raw_messages", "pending_requests",
+        for t in ("audit_log", "raw_messages", "pending_requests", "restore_requests",
                   "archived_transactions",
                   "archived_persons", "transaction_lines", "transactions",
                   "price_history", "product_aliases", "products",
