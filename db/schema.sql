@@ -256,6 +256,33 @@ CREATE TABLE pending_requests (
 CREATE INDEX idx_pending_chat_durum ON pending_requests (chat_id, durum);
 CREATE UNIQUE INDEX uq_pending_batch_sira ON pending_requests (batch_id, sira_no);
 
+-- --------------------------------------------------------- geri yukleme istegi
+-- "Yol A": panel ISTER, host UYGULAR. API container'i DB'yi geri yukleyemez
+-- (docker/compose yok, depo salt okunur); istek buraya yazilir, host'taki
+-- izleyici (scripts/restore-apply.sh) once guvenlik yedegi alip sonra
+-- pg_restore ile yukler ve durumu buradan gunceller.
+
+CREATE TABLE restore_requests (
+    id                  BIGSERIAL   PRIMARY KEY,
+    snapshot_id         TEXT        NOT NULL,   -- restic short_id
+    requested_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    requested_by        TEXT        NOT NULL,   -- 'admin-panel@<ip>'
+    status              TEXT        NOT NULL DEFAULT 'bekliyor'
+        CHECK (status IN ('bekliyor', 'yedekleniyor', 'yukleniyor', 'tamamlandi', 'hata')),
+    pre_backup_snapshot TEXT,                   -- restore oncesi guvenlik yedegi
+    started_at          TIMESTAMPTZ,
+    finished_at         TIMESTAMPTZ,
+    error_detail        TEXT
+);
+
+CREATE INDEX idx_restore_requested ON restore_requests (requested_at DESC);
+
+-- Tek seferde tek aktif restore (uygulama katmani da kontrol eder, asil
+-- garanti burada: es zamanli iki istek veritabaninda reddedilir).
+CREATE UNIQUE INDEX uq_restore_tek_aktif
+    ON restore_requests ((true))
+    WHERE status IN ('bekliyor', 'yedekleniyor', 'yukleniyor');
+
 -- ---------------------------------------------------------------- görünümler
 -- Bakiye > 0  => kisi bize borclu (bizim alacagimiz)
 -- Ters kayit karsit kind ile eklendigi icin toplamda kendiliginden sifirlanir.
