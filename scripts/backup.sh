@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 # Hesaplık — Postgres yedeği alır, restic deposuna yazar.
-# Kullanım: scripts/backup.sh  (veya just backup)
+# Kullanım: scripts/backup.sh [etiket]   (veya just backup)
+#
+# Etiket boş bırakılırsa "hesaplik" kullanılır (zamanlayıcının aldığı normal
+# yedekler). scripts/restore-apply.sh geri yüklemeden ÖNCE aldığı güvenlik
+# yedeğini "restore-oncesi" etiketiyle alır. Ayrım kritik: aşağıdaki
+# `restic forget` budaması YALNIZCA "hesaplik" etiketli yedeklere uygulanır,
+# güvenlik yedekleri kendiliğinden silinmez.
 set -euo pipefail
+
+BACKUP_TAG="${1:-hesaplik}"
+case "$BACKUP_TAG" in
+  *[!a-zA-Z0-9_-]*)
+    echo "Geçersiz etiket: $BACKUP_TAG (yalnızca harf, rakam, - ve _)" >&2
+    exit 2
+    ;;
+esac
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
@@ -32,7 +46,7 @@ LOG_FILE="./data/backup.log"
 mkdir -p "$(dirname "$LOG_FILE")"
 
 log() {
-  printf '%s %s\n' "$(date -Iseconds)" "$1" >>"$LOG_FILE"
+  printf '%s [%s] %s\n' "$(date -Iseconds)" "$BACKUP_TAG" "$1" >>"$LOG_FILE"
 }
 
 fail() {
@@ -53,9 +67,13 @@ if ! restic snapshots >/dev/null 2>&1; then
 fi
 
 docker compose exec -T db pg_dump -Fc -U "$POSTGRES_USER" "$POSTGRES_DB" \
-  | restic backup --tag hesaplik --stdin --stdin-filename hesaplik.dump --host hesaplik
+  | restic backup --tag "$BACKUP_TAG" --stdin --stdin-filename hesaplik.dump --host hesaplik
 
-restic forget \
+# --tag hesaplik: budama YALNIZCA normal yedeklere uygulanır. Geri yükleme
+# öncesi alınan "restore-oncesi" yedekleri politikanın dışında kalır —
+# keep-last 288 (24 saat) onları da kapsasaydı, bir geri yüklemeden bir gün
+# sonra "eski hâle dön" imkânı sessizce yok olurdu.
+restic forget --tag hesaplik \
   --keep-last "$RESTIC_KEEP_LAST" \
   --keep-daily "$RESTIC_KEEP_DAILY" \
   --keep-weekly "$RESTIC_KEEP_WEEKLY" \
@@ -65,4 +83,10 @@ restic forget \
 trap - ERR
 duration=$(( $(date +%s) - start_ts ))
 log "OK yedek alındı (${duration}s)"
-echo "Yedek tamamlandı (${duration}s)"
+
+# Son satır: restore-apply.sh bu satırdan snapshot kimliğini okur (jq her
+# sunucuda kurulu olmayabilir, o yüzden grep ile).
+son_id="$(restic snapshots --tag "$BACKUP_TAG" --latest 1 --json 2>/dev/null \
+  | grep -o '"short_id":"[^"]*"' | tail -n1 | cut -d'"' -f4)"
+log "snapshot=${son_id:-bilinmiyor}"
+echo "Yedek tamamlandı (${duration}s) snapshot=${son_id:-bilinmiyor}"
