@@ -1862,8 +1862,11 @@ async def _warmup_llm() -> None:
     """Polling başlamadan önce modeli belleğe alır: Ollama boştayken modeli
     düşürüyor (keep_alive), ilk gerçek mesaj bu yüzden soğuk (60sn+) yükleme
     süresine denk geliyordu (CLAUDE.md ölçümü). Bu çağrı sonucu kullanılmaz,
-    yalnızca modeli ısıtır. Hata olursa yutulur — bot LLM'siz de başlar."""
-    provider = llm_provider.get_provider()
+    yalnızca modeli ısıtır. Hata olursa yutulur — bot LLM'siz de başlar.
+    Hangi sağlayıcının ısıtılacağı get_active_provider ile aynı seçim
+    mantığından (settings.llm_primary) geçer — sabit Ollama değil."""
+    async with SessionLocal() as session:
+        provider = await llm_provider.get_active_provider(session)
     if provider is None:
         return
     try:

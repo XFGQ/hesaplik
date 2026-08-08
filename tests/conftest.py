@@ -51,14 +51,22 @@ class FakeLLMProvider:
 
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch):
-    """Her testte get_provider()'ı sahte sağlayıcıya çevirir. Ayrıca
-    settings.llm_provider'ı "none" yapar ve timeout'u kısaltır: bir kod
-    yolu get_provider()'ı atlayıp doğrudan OllamaProvider kurmaya kalkarsa
-    bile gerçek bir istek uzun süre asılı kalamaz."""
+    """Her testte get_active_provider()'ı sahte sağlayıcıya çevirir. Ayrıca
+    settings.llm_provider'ı "none" yapar ve timeout'ları kısaltır: bir kod
+    yolu get_active_provider()'ı atlayıp doğrudan bir provider kurmaya
+    kalkarsa bile gerçek bir istek uzun süre asılı kalamaz. Sağlık
+    önbelleği de her testte temizlenir ki testler arasında sızmasın."""
+    llm_provider.reset_health_cache()
     provider = FakeLLMProvider()
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: provider)
+
+    async def _get_active_provider(session):
+        return provider
+
+    monkeypatch.setattr(llm_provider, "get_active_provider", _get_active_provider)
     monkeypatch.setattr(settings, "llm_provider", "none")
     monkeypatch.setattr(settings, "llm_timeout", 1.0)
+    monkeypatch.setattr(settings, "vllm_timeout", 1.0)
+    monkeypatch.setattr(settings, "llm_health_timeout", 1.0)
     return provider
 
 

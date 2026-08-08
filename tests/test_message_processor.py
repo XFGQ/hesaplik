@@ -23,6 +23,16 @@ class _FakeLLMProvider:
         return self._intent
 
 
+def _mock_llm(monkeypatch, provider) -> None:
+    """get_active_provider(session)'ı sahte/None bir sağlayıcıya çevirir
+    (session parametresi bu testlerde önemsiz, yok sayılır)."""
+
+    async def _get_active_provider(session):
+        return provider
+
+    monkeypatch.setattr(llm_provider, "get_active_provider", _get_active_provider)
+
+
 @pytest_asyncio.fixture(loop_scope="session")
 async def ahmet(session):
     p = Person(full_name="Ahmet Yılmaz")
@@ -264,7 +274,7 @@ _LLM_ANLAMSIZ_METIN = "ahmete bir miktar ödeme yapmak istiyorum"
 
 async def test_kural_parser_cozerse_llm_hic_cagrilmaz(session, monkeypatch, ahmet):
     fake = _FakeLLMProvider(None)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     text = "ahmet yılmaz 500 tl borç yazdım"
     raw = await _make_raw(session, text, 40)
@@ -285,7 +295,7 @@ async def test_borc_kelimesi_tahsilat_fiiliyle_karisan_cumle_llme_duser(session,
     text = "ahmet yılmaz 20 balya borcunu 15000 tl ödedi"
     intent = ParsedIntent(kind="payment", person_name="ahmet yılmaz", amount=Decimal("15000"))
     fake = _FakeLLMProvider(intent)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, text, 45)
     result = await message_processor.process_raw_message(session, raw, text)
@@ -303,7 +313,7 @@ async def test_llm_fallback_net_kayit_onay_ister(session, monkeypatch, ahmet):
     # doğrudan kaydedilmez — RECORDED değil, LLM_CONFIRMATION dönmeli.
     intent = ParsedIntent(kind="debt", person_name="ahmet yılmaz", amount=Decimal("500"))
     fake = _FakeLLMProvider(intent)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 41)
     result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
@@ -328,7 +338,7 @@ async def test_llm_belirsiz_kisi_de_onay_ister(session, monkeypatch):
 
     intent = ParsedIntent(kind="debt", person_name="ahmet", amount=Decimal("500"))
     fake = _FakeLLMProvider(intent)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 42)
     result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
@@ -342,7 +352,7 @@ async def test_llm_erisilemezse_anlasilamadi_doner(session, monkeypatch):
     # LLM None dönerse (bağlantı hatası/timeout/geçersiz yanıt) sistem
     # çökmemeli, mevcut "anlayamadım" (UNRECOGNIZED) davranışına düşmeli.
     fake = _FakeLLMProvider(None)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 43)
     result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
@@ -490,7 +500,7 @@ async def test_regex_cozemedigi_rapor_cumlesinde_llm_devreye_girer(session, monk
     text = "bana bir durum raporu hazırla"
     intent = ParsedIntent(kind="report_general")
     fake = _FakeLLMProvider(intent)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, text, 56)
     result = await message_processor.process_raw_message(session, raw, text)
@@ -508,7 +518,7 @@ async def test_regex_cozemedigi_kisi_raporu_llm_ile_dogru_kisiye_yonlenir(sessio
     text = "ahmet için bir hesap özeti çıkar"
     intent = ParsedIntent(kind="report_person", person_name="ahmet yılmaz")
     fake = _FakeLLMProvider(intent)
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: fake)
+    _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, text, 57)
     result = await message_processor.process_raw_message(session, raw, text)
@@ -520,11 +530,12 @@ async def test_regex_cozemedigi_kisi_raporu_llm_ile_dogru_kisiye_yonlenir(sessio
 
 
 async def test_llm_kapaliyken_kural_parser_cozemezse_hic_cagrilmaz(session, monkeypatch):
-    # LLM_PROVIDER=none iken get_provider() None döner, LLM'e hiç gidilmez
-    # — mevcut davranış aynen korunur. Gerçek ortamın .env'i (yerelde
-    # Ollama açık olabilir) burada önemli değil; get_provider() doğrudan
-    # devre dışı bırakılarak test bu duruma bağımlı olmaktan çıkarılıyor.
-    monkeypatch.setattr(llm_provider, "get_provider", lambda: None)
+    # llm_primary=none iken get_active_provider() None döner, LLM'e hiç
+    # gidilmez — mevcut davranış aynen korunur. Gerçek ortamın durumu
+    # (yerelde Ollama/vLLM açık olabilir) burada önemli değil;
+    # get_active_provider() doğrudan devre dışı bırakılarak test bu
+    # duruma bağımlı olmaktan çıkarılıyor.
+    _mock_llm(monkeypatch, None)
 
     raw = await _make_raw(session, _LLM_ANLAMSIZ_METIN, 44)
     result = await message_processor.process_raw_message(session, raw, _LLM_ANLAMSIZ_METIN)
