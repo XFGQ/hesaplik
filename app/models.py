@@ -254,6 +254,13 @@ class Setting(Base):
 
 
 class RawMessage(Base):
+    """Dokunulmaz ham mesaj. `payload`/`received_at` asla değişmez.
+
+    detected_*/parse_*/outcome_* alanları (Faz 7, admin paneli "İşlem Akışı")
+    mesaj işlenirken YAN ETKİ olarak doldurulur: müşteri ne yazdı → sistem ne
+    algıladı → ne yaptı. Hepsi nullable, yazılamamaları defteri etkilemez
+    (bkz. app/services/message_trace.py)."""
+
     __tablename__ = "raw_messages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -267,6 +274,18 @@ class RawMessage(Base):
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     transaction_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("transactions.id"))
+
+    # --- izleme (admin paneli "İşlem Akışı")
+    detected_kind: Mapped[str | None] = mapped_column(Text)
+    detected_person: Mapped[str | None] = mapped_column(Text)
+    detected_amount: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    detected_product: Mapped[str | None] = mapped_column(Text)
+    detected_qty: Mapped[Decimal | None] = mapped_column(Numeric(14, 2))
+    detected_unit: Mapped[str | None] = mapped_column(Text)
+    parse_source: Mapped[str | None] = mapped_column(Text)
+    parse_ms: Mapped[int | None] = mapped_column(Integer)
+    outcome: Mapped[str | None] = mapped_column(Text)
+    outcome_detail: Mapped[str | None] = mapped_column(Text)
 
 
 class PendingRequest(Base):
@@ -299,6 +318,39 @@ class PendingRequest(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class RestoreRequest(Base):
+    """Geri yükleme isteği — "Yol A": panel İSTER, host UYGULAR.
+
+    API container'ı veritabanını geri yükleyemez (docker/compose yok, restic
+    deposu salt okunur). Panel buraya `bekliyor` bir satır yazar; host'taki
+    izleyici (scripts/restore-apply.sh) alır, önce güvenlik yedeği alır
+    (`pre_backup_snapshot`), sonra yükler ve `status`u günceller.
+
+    Tek seferde tek aktif restore: kısmi tekil indeks (uq_restore_tek_aktif)
+    veritabanı düzeyinde garanti eder."""
+
+    __tablename__ = "restore_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('bekliyor', 'yedekleniyor', 'yukleniyor', 'tamamlandi', 'hata')",
+            name="chk_restore_status",
+        ),
+        Index("idx_restore_requested", "requested_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    snapshot_id: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    requested_by: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(Text, nullable=False, default="bekliyor")
+    pre_backup_snapshot: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_detail: Mapped[str | None] = mapped_column(Text)
 
 
 class AuditLog(Base):

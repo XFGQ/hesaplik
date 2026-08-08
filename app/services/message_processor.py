@@ -14,13 +14,16 @@ okunur olduğu için onay gerekmez. Kural parser da LLM de çözemezse hiçbir
 from __future__ import annotations
 
 import enum
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RawMessage, Transaction, TxSource
-from app.services import llm_provider, parser, report
+from app.services import llm_provider, message_trace, parser, report
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
 from app.services.queries import (
@@ -30,6 +33,8 @@ from app.services.queries import (
     list_persons_with_balance,
     search_persons,
 )
+
+log = logging.getLogger(__name__)
 
 TELEGRAM_ACTOR = "telegram-bot"
 
@@ -83,6 +88,10 @@ class ProcessResult:
 
 
 async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str) -> ProcessResult:
+    # Parse süresi ölçülür (admin paneli "İşlem Akışı"): regex 15 ms
+    # dolayında, LLM saniyeler sürer — hangi mesajların yavaş yola düştüğü
+    # ancak ölçülürse görünür.
+    started = time.perf_counter()
     intent = parser.parse(text)
     source = "rule"
 
@@ -92,8 +101,18 @@ async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str)
             intent = await provider.parse(text)
             source = "llm"
 
+    parse_ms = int((time.perf_counter() - started) * 1000)
+    if intent is None:
+        parse_source = message_trace.SOURCE_NONE
+    elif source == "llm":
+        parse_source = message_trace.SOURCE_LLM
+    else:
+        parse_source = message_trace.SOURCE_REGEX
+
     resolved = await resolve(session, intent)
-    return await handle_resolved(session, raw, resolved, text, source=source)
+    return await handle_resolved(
+        session, raw, resolved, text, source=source, parse_ms=parse_ms, parse_source=parse_source
+    )
 
 
 async def handle_resolved(
@@ -102,11 +121,97 @@ async def handle_resolved(
     resolved: ResolvedIntent,
     text: str,
     source: str = "rule",
+    parse_ms: int | None = None,
+    parse_source: str | None = None,
 ) -> ProcessResult:
     """Zaten çözülmüş bir niyeti işler. Bot'un onay callback'leri (kişi
     oluşturuldu / aday seçildi / LLM önizlemesi onaylandı) de bu yolu
     tekrar kullanır — bu durumlarda kullanıcı zaten onay verdiği için
-    source="rule" (varsayılan) ile çağrılır, doğrudan kaydeder."""
+    source="rule" (varsayılan) ile çağrılır, doğrudan kaydeder.
+
+    Asıl iş `_dispatch`ta; buradaki sarmalayıcı yalnızca izleme verisini
+    (admin paneli "İşlem Akışı") raw_messages'a yazar. İzleme YAN ETKİDİR:
+    yazılamazsa akış aynen sürer, sonuç değişmez."""
+    trace_source = parse_source or (
+        message_trace.SOURCE_LLM if source == "llm" else message_trace.SOURCE_REGEX
+    )
+    try:
+        result = await _dispatch(session, raw, resolved, text, source=source)
+    except Exception as exc:
+        # Hata izi AYRI bir bağlantıda yazılır: bu session birazdan geri
+        # alınacak (hata yukarı gidiyor), aynı session'a yazılan iz de
+        # onunla birlikte kaybolurdu.
+        await _trace_error_out_of_band(raw, resolved, trace_source, parse_ms, exc, text)
+        raise
+
+    message_trace.safe_fill(
+        raw,
+        resolved=result.resolved,
+        outcome=result.outcome.value,
+        source=trace_source,
+        parse_ms=parse_ms,
+        text=text,
+    )
+    await session.flush()
+    return result
+
+
+async def _trace_error_out_of_band(
+    raw: RawMessage,
+    resolved: ResolvedIntent,
+    trace_source: str,
+    parse_ms: int | None,
+    exc: Exception,
+    text: str,
+) -> None:
+    """İzleme satırını yeni bir session'da UPDATE eder. Asla patlamaz:
+    izleme uğruna asıl hatayı gölgelemek olmaz."""
+    raw_id = getattr(raw, "id", None)
+    if raw_id is None:
+        return
+
+    payload = raw.payload
+    stub = RawMessage(payload=payload)
+    try:
+        message_trace.fill_error(
+            stub,
+            resolved=resolved,
+            source=trace_source,
+            parse_ms=parse_ms,
+            error=f"{type(exc).__name__}: {exc}",
+            text=text,
+        )
+        from app.db import SessionLocal  # yerel import: modül yüklenirken motor kurulmasın
+
+        async with SessionLocal() as trace_session:
+            await trace_session.execute(
+                update(RawMessage)
+                .where(RawMessage.id == raw_id)
+                .values(
+                    detected_kind=stub.detected_kind,
+                    detected_person=stub.detected_person,
+                    detected_amount=stub.detected_amount,
+                    detected_product=stub.detected_product,
+                    detected_qty=stub.detected_qty,
+                    detected_unit=stub.detected_unit,
+                    parse_source=stub.parse_source,
+                    parse_ms=stub.parse_ms,
+                    outcome=stub.outcome,
+                    outcome_detail=stub.outcome_detail,
+                )
+            )
+            await trace_session.commit()
+    except Exception:
+        log.exception("hata izi yazılamadı (raw_message_id=%s)", raw_id)
+
+
+async def _dispatch(
+    session: AsyncSession,
+    raw: RawMessage,
+    resolved: ResolvedIntent,
+    text: str,
+    source: str = "rule",
+) -> ProcessResult:
     if resolved.status == ResolutionStatus.UNRECOGNIZED:
         return ProcessResult(outcome=ProcessOutcome.UNRECOGNIZED, resolved=resolved)
     if resolved.status == ResolutionStatus.NEEDS_CONFIRMATION:

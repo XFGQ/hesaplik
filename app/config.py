@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     # cozulur. Dizin yoksa (gelistirmede build alinmamissa) yalnizca API calisir.
     web_dist: str = "web/dist"
 
+    # Admin paneli (/admin) tek şifreyle korunur. BOŞ ise panel tamamen
+    # kapalıdır: giriş denemesi de /api/admin/* uçları da reddedilir —
+    # yapılandırılmamış bir kurulumda panel kazara açık kalmaz.
+    admin_password: str = ""
+    # Admin oturumunun ömrü (saat). Süre dolunca yeniden şifre istenir.
+    admin_session_hours: int = 12
+
     restic_repository: str = "./data/backups"
     restic_password: str | None = None
 

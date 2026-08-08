@@ -24,6 +24,35 @@ systemctl list-timers | grep hesaplik
 journalctl -u hesaplik-backup.service -n 50
 ```
 
+## Geri yükleme izleyicisi (restore-apply) — HENÜZ DENENMEDİ
+
+Admin panelindeki "Ana veri yap" düğmesi veritabanına dokunmaz; yalnızca
+`restore_requests` tablosuna `bekliyor` bir istek yazar. İsteği uygulayan
+şey host'taki bu birimdir:
+
+```
+sudo cp deployment/hesaplik-restore-apply.service /etc/systemd/system/
+sudo cp deployment/hesaplik-restore-apply.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hesaplik-restore-apply.timer
+```
+
+**Kurmadan önce mutlaka test edin.** `scripts/restore-apply.sh` taslaktır ve
+uçtan uca denenmemiştir; `pg_restore --clean --if-exists` mevcut şemayı
+düşürüp yeniden kurar. İlk denemeyi ayrı bir test veritabanında yapın
+(`POSTGRES_DB` ile başka bir veritabanına yönlendirerek).
+
+Timer kurulu değilken panelden gelen istekler `bekliyor` durumunda kalır —
+kaybolmaz, panel birkaç dakika sonra "sunucudaki izleyici çalışmıyor olabilir"
+uyarısı gösterir.
+
+İzleme:
+
+```
+tail -f data/restore.log
+journalctl -u hesaplik-restore-apply.service -n 50
+```
+
 ## Manuel çalıştırma / test
 
 ```

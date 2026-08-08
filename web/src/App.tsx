@@ -13,6 +13,8 @@ export default function App() {
           <Route path="/" element={<People />} />
           <Route path="/kisi/:id" element={<PersonDetail />} />
         </Route>
+        {/* Yönetim paneli defterin Layout'unu KULLANMAZ: kendi sol menüsü
+            var ve şifre ekranı defterin verisini hiç çekmemeli. */}
         <Route path="/admin" element={<Admin />} />
       </Routes>
     </div>

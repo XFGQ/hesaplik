@@ -176,6 +176,10 @@ CREATE TABLE archived_persons (
 CREATE INDEX idx_archived_persons_original ON archived_persons (original_person_id);
 
 -- ---------------------------------------------------------------- ham mesajlar (dokunulmaz)
+-- Ham metin hicbir zaman degismez. detected_*/parse_*/outcome_* alanlari
+-- (Faz 7, admin paneli "Islem Akisi") mesaj islenirken YAN ETKI olarak
+-- doldurulur: musteri ne yazdi -> sistem ne algiladi -> ne yapti. Hepsi
+-- nullable; yazilamamalari defteri etkilemez.
 
 CREATE TABLE raw_messages (
     id             BIGSERIAL PRIMARY KEY,
@@ -186,11 +190,25 @@ CREATE TABLE raw_messages (
     trace_id       TEXT,
     received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at   TIMESTAMPTZ,
-    transaction_id BIGINT REFERENCES transactions(id)
+    transaction_id BIGINT REFERENCES transactions(id),
+
+    -- izleme (admin paneli): sistem ne algiladi
+    detected_kind    TEXT,                    -- debt/payment/query/edit/archive/none
+    detected_person  TEXT,
+    detected_amount  NUMERIC(14,2),
+    detected_product TEXT,
+    detected_qty     NUMERIC(14,2),
+    detected_unit    TEXT,
+    parse_source     TEXT,                    -- 'regex' | 'llm' | 'none'
+    parse_ms         INTEGER,                 -- parse suresi (ms)
+    outcome          TEXT,                    -- kaydedildi/yanitlandi/soru_soruldu/hata/yok_sayildi
+    outcome_detail   TEXT
 );
 
 CREATE UNIQUE INDEX uq_raw_external ON raw_messages (channel, external_id)
     WHERE external_id IS NOT NULL;
+CREATE INDEX idx_raw_received ON raw_messages (received_at DESC);
+CREATE INDEX idx_raw_detected_kind ON raw_messages (detected_kind);
 
 CREATE TABLE audit_log (
     id         BIGSERIAL PRIMARY KEY,
@@ -237,6 +255,33 @@ CREATE TABLE pending_requests (
 
 CREATE INDEX idx_pending_chat_durum ON pending_requests (chat_id, durum);
 CREATE UNIQUE INDEX uq_pending_batch_sira ON pending_requests (batch_id, sira_no);
+
+-- --------------------------------------------------------- geri yukleme istegi
+-- "Yol A": panel ISTER, host UYGULAR. API container'i DB'yi geri yukleyemez
+-- (docker/compose yok, depo salt okunur); istek buraya yazilir, host'taki
+-- izleyici (scripts/restore-apply.sh) once guvenlik yedegi alip sonra
+-- pg_restore ile yukler ve durumu buradan gunceller.
+
+CREATE TABLE restore_requests (
+    id                  BIGSERIAL   PRIMARY KEY,
+    snapshot_id         TEXT        NOT NULL,   -- restic short_id
+    requested_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    requested_by        TEXT        NOT NULL,   -- 'admin-panel@<ip>'
+    status              TEXT        NOT NULL DEFAULT 'bekliyor'
+        CHECK (status IN ('bekliyor', 'yedekleniyor', 'yukleniyor', 'tamamlandi', 'hata')),
+    pre_backup_snapshot TEXT,                   -- restore oncesi guvenlik yedegi
+    started_at          TIMESTAMPTZ,
+    finished_at         TIMESTAMPTZ,
+    error_detail        TEXT
+);
+
+CREATE INDEX idx_restore_requested ON restore_requests (requested_at DESC);
+
+-- Tek seferde tek aktif restore (uygulama katmani da kontrol eder, asil
+-- garanti burada: es zamanli iki istek veritabaninda reddedilir).
+CREATE UNIQUE INDEX uq_restore_tek_aktif
+    ON restore_requests ((true))
+    WHERE status IN ('bekliyor', 'yedekleniyor', 'yukleniyor');
 
 -- ---------------------------------------------------------------- görünümler
 -- Bakiye > 0  => kisi bize borclu (bizim alacagimiz)
