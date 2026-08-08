@@ -1,12 +1,14 @@
+import secrets
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.config import settings
 from app.db import get_session
 from app.models import (
     Person,
@@ -19,6 +21,9 @@ from app.models import (
     TxStatus,
 )
 from app.schemas import (
+    AdminLLMPreferenceIn,
+    AdminLLMSourceOut,
+    AdminLLMStatusOut,
     ArchiveIn,
     BackupRunOut,
     BackupSnapshotOut,
@@ -39,7 +44,7 @@ from app.schemas import (
     TxOut,
     TxWithProductOut,
 )
-from app.services import backup, catalog, ledger, queries, report
+from app.services import backup, catalog, ledger, llm_provider, queries, report
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
@@ -438,3 +443,42 @@ async def run_backup_now():
     if not ok:
         raise HTTPException(500, message)
     return BackupRunOut(ok=ok, message=message, duration_seconds=duration)
+
+
+# --------------------------------------------------------------- admin (LLM yönetimi)
+
+
+def _check_admin_password(password: str | None) -> None:
+    """settings.admin_password boşsa panel tamamen kapalıdır (503) —
+    yanlışlıkla açık admin uç noktası kalmasın diye. Karşılaştırma sabit
+    zamanlıdır (timing attack'e karşı)."""
+    if not settings.admin_password:
+        raise HTTPException(503, "Admin paneli yapılandırılmamış")
+    if not password or not secrets.compare_digest(password, settings.admin_password):
+        raise HTTPException(401, "Yetkisiz")
+
+
+async def require_admin(x_admin_password: str | None = Header(default=None)) -> None:
+    _check_admin_password(x_admin_password)
+
+
+def _llm_status_out(status: llm_provider.LLMStatus) -> AdminLLMStatusOut:
+    return AdminLLMStatusOut(
+        primary=status.primary,
+        active=status.active,
+        vllm=AdminLLMSourceOut(ok=status.vllm.ok, url=status.vllm.url, model=status.vllm.model),
+        ollama=AdminLLMSourceOut(ok=status.ollama.ok, url=status.ollama.url, model=status.ollama.model),
+    )
+
+
+@router.get("/admin/llm", response_model=AdminLLMStatusOut, dependencies=[Depends(require_admin)])
+async def admin_llm_status(session: AsyncSession = Depends(get_session)):
+    return _llm_status_out(await llm_provider.get_status(session))
+
+
+@router.post("/admin/llm", response_model=AdminLLMStatusOut, dependencies=[Depends(require_admin)])
+async def admin_llm_update(body: AdminLLMPreferenceIn, session: AsyncSession = Depends(get_session)):
+    if body.llm_primary not in llm_provider.LLM_PRIMARY_VALUES:
+        raise HTTPException(422, "Geçersiz tercih")
+    await llm_provider.set_llm_primary(session, body.llm_primary)
+    return _llm_status_out(await llm_provider.get_status(session))

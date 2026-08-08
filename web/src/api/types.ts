@@ -79,6 +79,19 @@ export type EntryResult = {
 
 export type Settings = Record<string, string>;
 
+export type AdminLLMSource = {
+  ok: boolean;
+  url: string;
+  model: string;
+};
+
+export type AdminLLMStatus = {
+  primary: "auto" | "vllm" | "ollama" | "none";
+  active: "vllm" | "ollama" | "none";
+  vllm: AdminLLMSource;
+  ollama: AdminLLMSource;
+};
+
 export type BackupSnapshot = {
   id: string;
   time: string;

@@ -1,4 +1,5 @@
 import type {
+  AdminLLMStatus,
   Balance,
   BackupRunResult,
   BackupSnapshot,
@@ -18,8 +19,11 @@ export class ApiError extends Error {}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}/api${path}`, {
-    headers: { "Content-Type": "application/json" },
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers as Record<string, string> | undefined),
+    },
   });
   if (!res.ok) {
     let detail = `İstek başarısız (${res.status})`;
@@ -78,4 +82,13 @@ export const api = {
     `${BASE}/api/reports/daily${date ? `?date=${encodeURIComponent(date)}` : ""}`,
   generalReportUrl: () => `${BASE}/api/reports/general`,
   personReportUrl: (id: number) => `${BASE}/api/reports/person/${id}`,
+
+  adminLlmStatus: (password: string) =>
+    req<AdminLLMStatus>("/admin/llm", { headers: { "X-Admin-Password": password } }),
+  adminSetLlmPrimary: (password: string, llmPrimary: string) =>
+    req<AdminLLMStatus>("/admin/llm", {
+      method: "POST",
+      headers: { "X-Admin-Password": password },
+      body: JSON.stringify({ llm_primary: llmPrimary }),
+    }),
 };

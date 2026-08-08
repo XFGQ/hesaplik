@@ -1134,6 +1134,18 @@ input.amount {
   font-weight: 600;
 }
 
+/* LLM Yönetimi bölümü kendi mini durum şeridini kullanır. */
+.admin-active {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-active strong {
+  font-size: 20px;
+  font-weight: 600;
+}
+
 .admin-head p {
   margin: 3px 0 0;
   font-size: 13px;
@@ -1849,4 +1861,68 @@ input.amount {
   .admin-health-grid {
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
+}
+
+/* --- LLM Yönetimi (kaynak durumu, tercih) */
+
+.status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.status-dot-ok {
+  background: var(--success);
+}
+
+.status-dot-down {
+  background: var(--borc);
+}
+
+.admin-source {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.admin-source:last-child {
+  border-bottom: 0;
+}
+
+.admin-source-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+.admin-source-meta {
+  font-size: 12px;
+  color: var(--ink-faint);
+  font-family: var(--mono);
+}
+
+.admin-pref {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+
+.admin-pref button {
+  min-height: var(--tap);
+  border: 1px solid var(--rule-strong);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.admin-pref button[aria-pressed="true"] {
+  background: var(--stamp-bg);
+  border-color: var(--stamp);
+  color: var(--stamp);
+  box-shadow: inset 0 0 0 1px var(--stamp);
 }

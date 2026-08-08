@@ -96,7 +96,7 @@ async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str)
     source = "rule"
 
     if intent is None:
-        provider = llm_provider.get_provider()
+        provider = await llm_provider.get_active_provider(session)
         if provider is not None:
             intent = await provider.parse(text)
             source = "llm"

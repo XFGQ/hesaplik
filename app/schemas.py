@@ -142,3 +142,20 @@ class BackupRunOut(BaseModel):
     ok: bool
     message: str
     duration_seconds: float
+
+
+class AdminLLMSourceOut(BaseModel):
+    ok: bool
+    url: str
+    model: str
+
+
+class AdminLLMStatusOut(BaseModel):
+    primary: str
+    active: str
+    vllm: AdminLLMSourceOut
+    ollama: AdminLLMSourceOut
+
+
+class AdminLLMPreferenceIn(BaseModel):
+    llm_primary: str
