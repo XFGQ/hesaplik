@@ -1,4 +1,4 @@
-"""LLM sağlayıcıları (Faz 4).
+"""LLM sağlayıcıları (Faz 4, Faz 4c — dinamik geçiş).
 
 Kural parser (app/services/parser.py) çözemediği cümleler için fallback —
 kural parser HİÇBİR ZAMAN kaldırılmaz, bu yalnızca ek bir kaynaktır.
@@ -6,10 +6,16 @@ LLM çıktısı asla doğrudan güvenilmez: intent_resolver'daki kişi eşleşti
 (pg_trgm + SIMILARITY_STRONG/GAP) ve catalog kuralları aynen uygulanır
 (CLAUDE.md > "Faz 4 — LLM").
 
-Provider soyutlaması: hangi sağlayıcı kullanılacağı config'ten
-(LLM_PROVIDER) belirlenir, koddan değil. Ollama yoksa/erişilemezse
-`parse()` None döner, sistem ÇÖKMEZ — kural parser + "elle gir" ile
-çalışmaya devam eder.
+İki eş değerde sağlayıcı var: VLLMProvider (Bosna, 2080 Super, BİRİNCİL —
+hızlı) ve OllamaProvider (İzmir, YEDEK — yavaş ama her zaman orada). İkisi
+de aynı SYSTEM_PROMPT'u kullanır, aynı parsed_intent_from_json doğrulama/
+güvenlik katmanından geçer; tek fark HTTP istek/yanıt şekli.
+
+Hangi sağlayıcının aktif olacağı artık sabit config'ten değil, DB'deki
+settings.llm_primary'den (runtime, admin panelden /admin değiştirilebilir)
+belirlenir — get_active_provider(session) bkz. Kaynaklardan hiçbiri
+erişilemezse `parse()` None döner, sistem ÇÖKMEZ — kural parser + "elle
+gir" ile çalışmaya devam eder.
 """
 
 from __future__ import annotations
@@ -17,11 +23,15 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import time
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models import Setting
 from app.services.catalog import normalize
 from app.services.llm_prompt import SYSTEM_PROMPT
 from app.services.name_utils import strip_turkish_suffix
@@ -255,11 +265,261 @@ class OllamaProvider:
         return parsed_intent_from_json(data, text)
 
 
-def get_provider() -> LLMProvider | None:
-    """Config'e (LLM_PROVIDER) göre aktif sağlayıcıyı döner. "none" ya da
-    tanınmayan bir değer -> None (LLM'e hiç gidilmez)."""
+class VLLMProvider:
+    """vLLM'in OpenAI-uyumlu /v1/chat/completions uç noktası üzerinden
+    çalışır (Bosna, 2080 Super, WireGuard tüneli). Ollama'dan tek farkı
+    istek/yanıt şekli — aynı SYSTEM_PROMPT, aynı parsed_intent_from_json
+    doğrulama/güvenlik katmanı (isim halüsinasyon kontrolü, VALID_KINDS,
+    Decimal çevirimi) aynen uygulanır. Bağlantı hatası/timeout/geçersiz
+    yanıt -> None döner, sistemi ÇÖKERTMEZ.
+
+    `client` parametresi yalnızca testler içindir (httpx.MockTransport ile
+    gerçek ağa çıkmadan mock'lamak için); normal kullanımda boş bırakılır,
+    her çağrıda kısa ömürlü bir AsyncClient açılır.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout: float = 30.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+        self._client = client
+
+    async def _request(self, payload: dict) -> dict | None:
+        url = f"{self.base_url}/v1/chat/completions"
+        try:
+            if self._client is not None:
+                resp = await self._client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, json=payload)
+                resp.raise_for_status()
+                return resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("vLLM'e erişilemedi ya da geçersiz yanıt: %s", e)
+            return None
+
+    async def parse(self, text: str) -> ParsedIntent | None:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+        }
+        body = await self._request(payload)
+        if body is None:
+            return None
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return None
+        if not content:
+            return None
+
+        try:
+            data = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("vLLM geçersiz JSON döndürdü: %r", content)
+            return None
+        if not isinstance(data, dict):
+            return None
+
+        return parsed_intent_from_json(data, text)
+
+
+# --------------------------------------------------------------- sağlık kontrolü
+#
+# "auto" modda hangi kaynağın kullanılacağına ve admin panelin (/admin)
+# durum ekranına karar vermek için. HIZLI olmalı (llm_health_timeout, ~3
+# sn) — her parse() çağrısında tam timeout beklenmesin diye sonuç ayrıca
+# _cached_health ile 10 sn önbelleklenir.
+
+
+async def _probe(url: str, timeout: float) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+        return resp.status_code < 500
+    except httpx.HTTPError:
+        return False
+
+
+async def vllm_healthy() -> bool:
+    """vLLM'in OpenAI-uyumlu sunucusundaki standart /health uç noktasını
+    yoklar. vllm_url boşsa (yapılandırılmamış) hiç denenmez."""
     from app.config import settings  # döngüsel import olmasın diye gecikmeli
 
-    if settings.llm_provider == "ollama":
+    if not settings.vllm_url:
+        return False
+    return await _probe(f"{settings.vllm_url.rstrip('/')}/health", settings.llm_health_timeout)
+
+
+async def ollama_healthy() -> bool:
+    """Ollama'nın yerel model listesini (/api/tags) yoklar — model
+    yüklenmemiş olsa bile sunucu ayaktaysa hızlı döner."""
+    from app.config import settings  # döngüsel import olmasın diye gecikmeli
+
+    return await _probe(f"{settings.ollama_url.rstrip('/')}/api/tags", settings.llm_health_timeout)
+
+
+_HEALTH_CACHE_TTL = 10.0
+_health_cache: dict[str, tuple[float, bool]] = {}
+
+
+async def _cached_health(source: str) -> bool:
+    """vllm_healthy/ollama_healthy sonucunu _HEALTH_CACHE_TTL saniye
+    önbellekler ki her mesajda health check ağa çıkmasın. `source`:
+    "vllm" | "ollama"."""
+    now = time.monotonic()
+    cached = _health_cache.get(source)
+    if cached is not None and (now - cached[0]) < _HEALTH_CACHE_TTL:
+        return cached[1]
+    check = vllm_healthy if source == "vllm" else ollama_healthy
+    ok = await check()
+    _health_cache[source] = (now, ok)
+    return ok
+
+
+def reset_health_cache() -> None:
+    """Test yardımcı fonksiyonu: sağlık önbelleğini temizler (testler
+    arasında sızıntı olmasın diye conftest'te otomatik çağrılır)."""
+    _health_cache.clear()
+
+
+# --------------------------------------------------------------- tercih (DB)
+#
+# settings tablosunda "llm_primary" anahtarı — runtime'da admin panelden
+# (/admin) değiştirilir, .env değil (CLAUDE.md > "Dinamik LLM geçişi").
+
+LLM_PRIMARY_KEY = "llm_primary"
+LLM_PRIMARY_VALUES = ("auto", "vllm", "ollama", "none")
+LLM_PRIMARY_DEFAULT = "auto"
+
+
+async def get_llm_primary(session: AsyncSession) -> str:
+    """DB'deki tercihi okur. Hiç ayarlanmamışsa ya da tanınmayan bir
+    değerse "auto" sayılır — bozuk/eski bir değer sistemi LLM'siz
+    bırakmaz, güvenli varsayılana düşer."""
+    row = await session.get(Setting, LLM_PRIMARY_KEY)
+    value = row.value if row is not None else None
+    return value if value in LLM_PRIMARY_VALUES else LLM_PRIMARY_DEFAULT
+
+
+async def set_llm_primary(session: AsyncSession, value: str) -> None:
+    if value not in LLM_PRIMARY_VALUES:
+        raise ValueError(f"Geçersiz llm_primary değeri: {value!r}")
+    setting = await session.get(Setting, LLM_PRIMARY_KEY)
+    if setting is None:
+        session.add(Setting(key=LLM_PRIMARY_KEY, value=value))
+    else:
+        setting.value = value
+    await session.flush()
+
+
+def select_source(primary: str, vllm_ok: bool, ollama_ok: bool) -> str:
+    """Tercihe ve sağlık durumuna göre hangi kaynağın kullanılacağını
+    belirleyen SAF fonksiyon (ağa çıkmaz) — hem get_active_provider hem
+    admin durum uç noktası (/api/admin/llm) bunu kullanır ki seçim mantığı
+    tek yerde yaşasın, ikisi asla birbirinden sapmasın.
+
+    - "none": her zaman kapalı.
+    - "ollama": her zaman Ollama — vLLM'e hiç dokunulmaz (kullanıcı GPU'yu
+      kendi kullanmak istediğinde "tek tuş kapat" senaryosu).
+    - "vllm": zorla vLLM; erişilemezse NONE'a düşer, Ollama'ya değil
+      (kullanıcı özellikle vLLM istemiştir).
+    - "auto" (ya da tanınmayan değer): vLLM sağlıklıysa vLLM, değilse
+      Ollama, o da değilse none.
+    """
+    if primary == "none":
+        return "none"
+    if primary == "ollama":
+        return "ollama"
+    if primary == "vllm":
+        return "vllm" if vllm_ok else "none"
+    if vllm_ok:
+        return "vllm"
+    if ollama_ok:
+        return "ollama"
+    return "none"
+
+
+async def get_active_provider(session: AsyncSession) -> LLMProvider | None:
+    """settings.llm_primary'ye ve (gerekirse) canlı sağlık kontrolüne göre
+    aktif sağlayıcıyı döner. "none" ya da hiçbir kaynak erişilemiyorsa
+    None (LLM'e hiç gidilmez, kural parser + "elle gir" ile devam edilir).
+
+    "ollama" tercihinde vLLM'e HİÇ dokunulmaz (health check bile atılmaz)
+    — GPU'yu kullanıcı kendi kullanmak istediğinde bu davranış kasıtlıdır.
+    """
+    from app.config import settings  # döngüsel import olmasın diye gecikmeli
+
+    primary = await get_llm_primary(session)
+
+    if primary == "ollama":
         return OllamaProvider(settings.ollama_url, settings.llm_model, timeout=settings.llm_timeout)
+
+    # "ollama" dışındaki tüm dallarda vLLM sağlığı gerekiyor; Ollama sağlığı
+    # yalnızca "auto"da (ve vLLM sağlıksızsa) — gereksiz ağ çağrısından
+    # kaçınmak için kısa devre yapılır (select_source'a zaten hesaplanmış
+    # bayraklar geçilir).
+    vllm_ok = await _cached_health("vllm") if primary != "none" else False
+    ollama_ok = await _cached_health("ollama") if (primary == "auto" and not vllm_ok) else False
+
+    source = select_source(primary, vllm_ok, ollama_ok)
+    if source == "vllm":
+        return VLLMProvider(settings.vllm_url, settings.vllm_model, timeout=settings.vllm_timeout)
+    if source == "ollama":
+        return OllamaProvider(settings.ollama_url, settings.llm_model, timeout=settings.llm_timeout)
+
+    if primary == "vllm":
+        logger.warning("llm_primary=vllm ama vLLM erişilemiyor, LLM devre dışı (Ollama'ya düşülmez)")
     return None
+
+
+# --------------------------------------------------------------- durum (admin panel)
+
+
+@dataclass(slots=True)
+class SourceStatus:
+    ok: bool
+    url: str
+    model: str
+
+
+@dataclass(slots=True)
+class LLMStatus:
+    primary: str
+    active: str
+    vllm: SourceStatus
+    ollama: SourceStatus
+
+
+async def get_status(session: AsyncSession) -> LLMStatus:
+    """Admin panelin (/api/admin/llm) gösterdiği anlık durum. select_source
+    ile aynı saf karar mantığını kullanır, ama get_active_provider'daki kısa
+    devreden (ör. "ollama" tercihinde vLLM'e hiç dokunmama) FARKLI olarak
+    HER İKİ kaynağı da her zaman yoklar — admin ikisinin de gerçek durumunu
+    görmek ister, yalnızca aktif olanınkini değil."""
+    from app.config import settings  # döngüsel import olmasın diye gecikmeli
+
+    primary = await get_llm_primary(session)
+    vllm_ok = await _cached_health("vllm")
+    ollama_ok = await _cached_health("ollama")
+    active = select_source(primary, vllm_ok, ollama_ok)
+
+    return LLMStatus(
+        primary=primary,
+        active=active,
+        vllm=SourceStatus(ok=vllm_ok, url=settings.vllm_url, model=settings.vllm_model),
+        ollama=SourceStatus(ok=ollama_ok, url=settings.ollama_url, model=settings.llm_model),
+    )

@@ -1,12 +1,26 @@
-"""OllamaProvider testleri. Gerçek Ollama'ya ASLA bağlanılmaz — httpx
-MockTransport ile ağ çağrısı taklit edilir."""
+"""OllamaProvider/VLLMProvider ve dinamik kaynak seçimi testleri. Gerçek
+Ollama/vLLM'e ASLA bağlanılmaz — httpx MockTransport ile ağ çağrısı taklit
+edilir, sağlık kontrolleri ise vllm_healthy/ollama_healthy monkeypatch'iyle."""
 
 import json
 from decimal import Decimal
 
 import httpx
+import pytest
 
-from app.services.llm_provider import OllamaProvider, parsed_intent_from_json
+from app.models import Setting
+from app.services import llm_provider
+from app.services.llm_provider import (
+    LLM_PRIMARY_DEFAULT,
+    OllamaProvider,
+    VLLMProvider,
+    get_active_provider,
+    get_llm_primary,
+    get_status,
+    parsed_intent_from_json,
+    select_source,
+    set_llm_primary,
+)
 
 
 def _client_for(handler) -> httpx.AsyncClient:
@@ -371,3 +385,272 @@ async def test_ollama_anlasilamayan_cumlede_none_doner():
         intent = await provider.parse("bugün hava çok güzel")
 
     assert intent is None
+
+
+# --------------------------------------------------------------- VLLMProvider
+#
+# Ollama'dan tek farkı OpenAI-uyumlu istek/yanıt şekli (/v1/chat/completions,
+# choices[0].message.content); doğrulama/güvenlik katmanı aynı
+# parsed_intent_from_json'dan geçtiği için burada tekrar edilmiyor, yalnızca
+# HTTP hattı doğrulanıyor.
+
+
+def _vllm_response(content: dict | str) -> httpx.Response:
+    body = content if isinstance(content, str) else json.dumps(content)
+    return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
+
+
+async def test_vllm_saglikli_yanit_parsed_intent_doner():
+    def handler(request):
+        assert request.url.path == "/v1/chat/completions"
+        return _vllm_response({
+            "kind": "debt", "person_name": "furkan", "qty": 20, "unit": "balya",
+            "product": "saman", "amount": 15000, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "Qwen/Qwen2.5-7B-Instruct-AWQ", client=client)
+        intent = await provider.parse("furkana 20 balya saman verdim 15000 tl borç yazsana")
+
+    assert intent is not None
+    assert intent.kind == "debt"
+    assert intent.person_name == "furkan"
+    assert intent.amount == Decimal("15000")
+
+
+async def test_vllm_baglanti_hatasinda_none_doner():
+    def handler(request):
+        raise httpx.ConnectError("bağlanamadı", request=request)
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_vllm_timeoutta_none_doner():
+    def handler(request):
+        raise httpx.ReadTimeout("zaman aşımı", request=request)
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_vllm_http_hata_kodunda_none_doner():
+    def handler(request):
+        return httpx.Response(500, text="internal error")
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_vllm_gecersiz_json_icerikte_none_doner():
+    def handler(request):
+        return _vllm_response("bu bir json değil")
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_vllm_bos_choices_icerikte_none_doner():
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+# --------------------------------------------------------------- select_source
+#
+# Saf karar fonksiyonu (ağa çıkmaz) — get_active_provider ve get_status'un
+# ikisinin de aynı mantığı paylaştığını garanti eder.
+
+
+def test_select_source_none_her_zaman_kapali():
+    assert select_source("none", vllm_ok=True, ollama_ok=True) == "none"
+
+
+def test_select_source_ollama_zorla_vllme_bakmaz():
+    # vLLM sağlıklı olsa bile "ollama" tercihi Ollama'yı seçer — GPU'yu
+    # kullanıcı kendi kullanmak istediğinde "tek tuş kapat" senaryosu.
+    assert select_source("ollama", vllm_ok=True, ollama_ok=False) == "ollama"
+
+
+def test_select_source_vllm_zorla_saglikliysa_vllm():
+    assert select_source("vllm", vllm_ok=True, ollama_ok=True) == "vllm"
+
+
+def test_select_source_vllm_zorla_erisilemezse_none_ollamaya_duşmez():
+    # Kullanıcı özellikle vLLM istemiştir; erişilemezse none'a düşer,
+    # sessizce Ollama'ya kaymaz.
+    assert select_source("vllm", vllm_ok=False, ollama_ok=True) == "none"
+
+
+def test_select_source_auto_vllm_saglikliysa_vllm():
+    assert select_source("auto", vllm_ok=True, ollama_ok=True) == "vllm"
+
+
+def test_select_source_auto_vllm_cokerse_ollamaya_duser():
+    assert select_source("auto", vllm_ok=False, ollama_ok=True) == "ollama"
+
+
+def test_select_source_auto_ikisi_de_cokerse_none():
+    assert select_source("auto", vllm_ok=False, ollama_ok=False) == "none"
+
+
+def test_select_source_taninmayan_deger_auto_gibi_davranir():
+    assert select_source("bozuk-deger", vllm_ok=True, ollama_ok=False) == "vllm"
+    assert select_source("bozuk-deger", vllm_ok=False, ollama_ok=False) == "none"
+
+
+# --------------------------------------------------------------- tercih (DB)
+
+
+async def test_llm_primary_hic_ayarlanmamissa_auto_doner(session):
+    assert await get_llm_primary(session) == LLM_PRIMARY_DEFAULT == "auto"
+
+
+async def test_llm_primary_set_sonra_get_dogru_deger_doner(session):
+    await set_llm_primary(session, "ollama")
+    assert await get_llm_primary(session) == "ollama"
+
+
+async def test_llm_primary_gecersiz_deger_set_edilemez(session):
+    with pytest.raises(ValueError):
+        await set_llm_primary(session, "bogus")
+
+
+async def test_llm_primary_bozuk_db_degeri_auto_sayilir(session):
+    # Bozuk/eski bir değer sistemi LLM'siz bırakmaz, güvenli varsayılana
+    # düşer (CLAUDE.md ilkesiyle tutarlı: hatalı veri sessizce çökertmez).
+    session.add(Setting(key="llm_primary", value="eski-surum-degeri"))
+    await session.flush()
+    assert await get_llm_primary(session) == "auto"
+
+
+# --------------------------------------------------------------- get_active_provider
+
+
+def _stub_health(monkeypatch, *, vllm: bool, ollama: bool) -> None:
+    async def _vllm_healthy():
+        return vllm
+
+    async def _ollama_healthy():
+        return ollama
+
+    monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
+    monkeypatch.setattr(llm_provider, "ollama_healthy", _ollama_healthy)
+    llm_provider.reset_health_cache()
+
+
+async def test_get_active_provider_auto_vllm_saglikliyse_vllm_secilir(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=False)
+    provider = await get_active_provider(session)
+    assert isinstance(provider, VLLMProvider)
+
+
+async def test_get_active_provider_auto_vllm_cokerse_ollamaya_duser(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=False, ollama=True)
+    provider = await get_active_provider(session)
+    assert isinstance(provider, OllamaProvider)
+
+
+async def test_get_active_provider_auto_ikisi_de_cokerse_none_doner(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=False, ollama=False)
+    provider = await get_active_provider(session)
+    assert provider is None
+
+
+async def test_get_active_provider_ollama_tercihinde_vllme_hic_dokunulmaz(session, monkeypatch):
+    calls: list[str] = []
+
+    async def _vllm_healthy():
+        calls.append("vllm")
+        return True
+
+    monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
+    llm_provider.reset_health_cache()
+
+    await set_llm_primary(session, "ollama")
+    provider = await get_active_provider(session)
+
+    assert isinstance(provider, OllamaProvider)
+    assert calls == []
+
+
+async def test_get_active_provider_vllm_zorla_erisilemezse_none_ollamaya_duşmez(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=False, ollama=True)
+    await set_llm_primary(session, "vllm")
+    provider = await get_active_provider(session)
+    assert provider is None
+
+
+async def test_get_active_provider_none_tercihinde_hic_saglik_kontrolu_yapmaz(session, monkeypatch):
+    calls: list[str] = []
+
+    async def _vllm_healthy():
+        calls.append("vllm")
+        return True
+
+    async def _ollama_healthy():
+        calls.append("ollama")
+        return True
+
+    monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
+    monkeypatch.setattr(llm_provider, "ollama_healthy", _ollama_healthy)
+    llm_provider.reset_health_cache()
+
+    await set_llm_primary(session, "none")
+    provider = await get_active_provider(session)
+
+    assert provider is None
+    assert calls == []
+
+
+# --------------------------------------------------------------- get_status
+
+
+async def test_get_status_ollama_tercihinde_bile_ikisini_de_kontrol_eder(session, monkeypatch):
+    # get_active_provider "ollama" tercihinde vLLM'e hiç dokunmaz (yukarıdaki
+    # test), ama admin panelin durumu (get_status) ikisini de her zaman
+    # gösterir — admin gerçek durumu görmeli, yalnızca aktif olanı değil.
+    _stub_health(monkeypatch, vllm=True, ollama=True)
+    await set_llm_primary(session, "ollama")
+
+    status = await get_status(session)
+
+    assert status.primary == "ollama"
+    assert status.active == "ollama"
+    assert status.vllm.ok is True
+    assert status.ollama.ok is True
+
+
+async def test_get_status_kaynak_bilgilerini_configten_dolduruyor(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "vllm_url", "http://10.100.0.2:8000")
+    monkeypatch.setattr(settings, "vllm_model", "Qwen/Qwen2.5-7B-Instruct-AWQ")
+    monkeypatch.setattr(settings, "ollama_url", "http://ollama:11434")
+    monkeypatch.setattr(settings, "llm_model", "qwen2.5:3b")
+    _stub_health(monkeypatch, vllm=False, ollama=False)
+
+    status = await get_status(session)
+
+    assert status.vllm.url == "http://10.100.0.2:8000"
+    assert status.vllm.model == "Qwen/Qwen2.5-7B-Instruct-AWQ"
+    assert status.ollama.url == "http://ollama:11434"
+    assert status.ollama.model == "qwen2.5:3b"
+    assert status.active == "none"
