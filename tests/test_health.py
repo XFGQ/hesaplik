@@ -233,12 +233,31 @@ async def test_llm_bozuk_yanit_cokertmez(monkeypatch):
 
 # ---------------------------------------------------------------- bot (dolaylı)
 
-async def test_bot_jeton_yoksa_yapilandirilmamis(session, monkeypatch):
+async def test_bot_jeton_api_surecinde_gorunmese_de_aktif_gosterilir(session, monkeypatch):
+    # Bug (2026-08): üretimde TELEGRAM_BOT_TOKEN yalnızca `bot` container'ının
+    # ortamında var, `api` süreci hiç göremez — ama bot gerçekten çalışıyor
+    # ve mesaj işliyor olabilir. Token bu süreçten okunamayacağı için karara
+    # hiç katılmamalı; tek gerçek iz deftere düşen son mesajdır.
+    monkeypatch.setattr(settings, "telegram_bot_token", None)
+    session.add(
+        RawMessage(channel="telegram", external_id="9010", chat_id="42", payload={"text": "selam"})
+    )
+    await session.flush()
+
+    check = await health.check_bot(session)
+    assert check.status == health.STATUS_OK
+    assert check.summary.startswith("Aktif")
+    assert check.measured is False
+
+
+async def test_bot_jeton_yoksa_ve_mesaj_da_yoksa_bilgi_durumu(session, monkeypatch):
+    # Token görünmüyor VE hiç mesaj da gelmemiş — bu ne kesin "kapalı" ne
+    # "hata" demektir, yalnızca "henüz bir şey görmedik" (STATUS_INFO).
     monkeypatch.setattr(settings, "telegram_bot_token", None)
 
     check = await health.check_bot(session)
     assert check.status == health.STATUS_INFO
-    assert check.summary == "Yapılandırılmamış"
+    assert check.summary == "Mesaj gelmemiş"
     assert check.measured is False
 
 

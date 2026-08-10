@@ -10,6 +10,7 @@ import pytest
 
 from app.models import Setting
 from app.services import llm_provider
+from app.services.llm_prompt import RESPONSE_JSON_SCHEMA, SYSTEM_PROMPT
 from app.services.llm_provider import (
     LLM_PRIMARY_DEFAULT,
     OllamaProvider,
@@ -469,6 +470,62 @@ async def test_vllm_bos_choices_icerikte_none_doner():
     async with _client_for(handler) as client:
         provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
         intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_vllm_istek_govdesinde_system_prompt_ve_guided_json_var():
+    # Gözlem (2026-08): vLLM 200 OK dönüp sohbet metniyle cevap verebiliyor
+    # — kontrol edilmesi gereken SYSTEM_PROMPT'un gönderilip gönderilmediği
+    # değil (zaten gönderiliyordu), modelin buna uymaması. guided_json bu
+    # durumda çıktıyı gramer düzeyinde JSON'a zorlayan ek bir güvence.
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return _vllm_response({
+            "kind": "list_all", "person_name": None, "qty": None, "unit": None,
+            "product": None, "amount": None, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        await provider.parse("kişileer")
+
+    messages = captured["body"]["messages"]
+    assert messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
+    assert messages[1] == {"role": "user", "content": "kişileer"}
+    assert captured["body"]["guided_json"] == RESPONSE_JSON_SCHEMA
+
+
+async def test_vllm_kod_bloguna_sarilmis_json_ayiklanir():
+    # Model bazen "İşte cevap:\n```json\n{...}\n```" gibi sarmalıyor —
+    # SADECE JSON istense de. _extract_json_object bunu tolere etmeli.
+    def handler(request):
+        return _vllm_response(
+            'İşte JSON:\n```json\n{"kind": "list_all", "person_name": null, '
+            '"qty": null, "unit": null, "product": null, "amount": null, '
+            '"district": null}\n```\nUmarım yardımcı olur.'
+        )
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("kişileer")
+
+    assert intent is not None
+    assert intent.kind == "list_all"
+
+
+async def test_vllm_sohbet_metni_json_icermiyorsa_none_doner():
+    # Gerçek repro (2026-08): model TAMAMEN sohbet cevabı veriyor, JSON hiç
+    # yok. Ayıklanacak bir şey olmadığı için None dönmeli — sistem çökmez,
+    # kural parser + "elle gir" ile devam eder.
+    def handler(request):
+        return _vllm_response("Kişiler hakkında daha fazla bilgi verebilmem için lütfen...")
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://10.100.0.2:8000", "model", client=client)
+        intent = await provider.parse("kişileer")
 
     assert intent is None
 

@@ -281,23 +281,20 @@ async def check_bot(session: AsyncSession) -> Check:
     """DOLAYLI. Bot ayrı bir container'da çalışır; API süreci onun canlı olup
     olmadığını göremez. Elimizdeki tek gerçek iz `raw_messages`: son Telegram
     mesajı yeniyse bot o an kesin ayaktaydı. Mesaj yoksa "sessiz" — kimse
-    yazmamış da olabilir, bu bir hata değildir."""
+    yazmamış da olabilir, bu bir hata değildir.
+
+    Bug (2026-08): önceden burada önce `settings.telegram_bot_token` boş mu
+    diye bakılıyordu — ama üretimde (docker-compose.prod.yml) `api` ve `bot`
+    AYRI container'lar ve TELEGRAM_BOT_TOKEN yalnızca `bot`un ortamına
+    geçiriliyor. API süreci bu değişkeni hiçbir zaman göremez, bu yüzden bot
+    gerçekten çalışırken bile panel hep "Yapılandırılmamış" diyordu. Token
+    bu süreçten güvenilir okunamayacağı için karara hiç katılmaz; durum
+    SADECE deftere düşen son mesajdan çıkarılır (zaten aşağıdaki dolaylı iz)."""
     label = "Telegram botu"
     note = (
         "Bot ayrı bir container'da çalışır; süreç durumu buradan görülemez. "
         "Durum, deftere düşen son Telegram mesajından çıkarılır."
     )
-
-    if not settings.telegram_bot_token:
-        return Check(
-            id="bot",
-            label=label,
-            status=STATUS_INFO,
-            summary="Yapılandırılmamış",
-            details=[("Jeton", "TELEGRAM_BOT_TOKEN tanımlı değil")],
-            measured=False,
-            note="Jeton yok; bot hiç başlatılmıyor. API ve web etkilenmez.",
-        )
 
     since = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
