@@ -44,7 +44,12 @@ Kurallar:
   Tutar/fiil YOKSA ama "borçlu/borcu/bakiyesi ne" gibi soru varsa
   "balance_query" — amount UYDURMA. İlgisiz cümlede kind:null.
 - Kişi listeleme: hepsi="list_all", borçlular="list_debtors", alacaklılar=
-  "list_creditors", ilçeye göre="list_district" (district doldurulur).
+  "list_creditors", ilçeye göre="list_district" (district doldurulur). Buraya
+  yalnızca kural motorunun ÇÖZEMEDİĞİ (yazım hatası, fazla/eksik boşluk,
+  farklı sıralama) cümleler gelir — SEN bunları tolere et: "kişileer",
+  "kişi ler", "kişilerr" gibi bozuk yazımlar da list_all'dır (kelimeyi TANI,
+  isim UYDURMA). "{yer}dan/{yer}den kimler var" -> list_district,
+  district="{yer}" (hal ekini sök: "bergamadan" -> "bergama").
 - person_name / kisi: METİNDE GEÇTİĞİ HALİYLE, AYNEN yaz. Çekim ekini SÖKME,
   harf ekleme/çıkarma/isim DEĞİŞTİRME yasak — bunu kod yapar. Örnek:
   "mehmedin" -> "mehmedin" (aynen, "mehmet" değil).
@@ -116,6 +121,46 @@ Kurallar:
 "ahmetin telefonu ne" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":"iletisim","tur":null,"kisi":"ahmetin"}
 
+"kişileer" ->
+{"kind":"list_all","person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"kişi ler" ->
+{"kind":"list_all","person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"bergamadan kimler var" ->
+{"kind":"list_district","person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":"bergama","islem":null,"tur":null,"kisi":null}
+
 "bugün hava çok güzel" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
 """
+
+# vLLM'in (Bosna, 2080 Super) OpenAI-uyumlu sunucusu için grammar-constrained
+# decoding ipucu (bkz. llm_provider.VLLMProvider — "guided_json" alanı vLLM'e
+# özgü, standart OpenAI şemasında yok). Gözlem (2026-08): SYSTEM_PROMPT'ta
+# "SADECE JSON döndür" yazsa ve response_format=json_object gönderilse bile
+# model bazen serbest sohbet metniyle cevap veriyor (200 OK, JSON değil) —
+# guided_json bu durumda çıktıyı gramer düzeyinde JSON'a zorlar, yalnızca
+# prompt metnine güvenmez. Ollama'ya dokunulmaz (format="json" zaten yeterli,
+# bkz. OllamaProvider) — yalnızca vLLM tarafında ek bir güvence katmanı.
+RESPONSE_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {
+            "type": ["string", "null"],
+            "enum": [
+                "debt", "payment", "balance_query", "list_all", "list_debtors",
+                "list_creditors", "list_district", None,
+            ],
+        },
+        "person_name": {"type": ["string", "null"]},
+        "qty": {"type": ["number", "null"]},
+        "unit": {"type": ["string", "null"]},
+        "product": {"type": ["string", "null"]},
+        "amount": {"type": ["number", "null"]},
+        "district": {"type": ["string", "null"]},
+        "islem": {"type": ["string", "null"], "enum": ["rapor", "bilgi_menu", "iletisim", None]},
+        "tur": {"type": ["string", "null"], "enum": ["genel", "gunluk", "kisi", None]},
+        "kisi": {"type": ["string", "null"]},
+    },
+    "required": [],
+}
