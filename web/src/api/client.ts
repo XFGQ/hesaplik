@@ -1,5 +1,6 @@
 import type {
   AdminLLMStatus,
+  AdminVllmControl,
   Balance,
   BackupRunResult,
   BackupSnapshot,
@@ -90,5 +91,14 @@ export const api = {
       method: "POST",
       headers: { "X-Admin-Password": password },
       body: JSON.stringify({ llm_primary: llmPrimary }),
+    }),
+
+  adminVllmControl: (password: string) =>
+    req<AdminVllmControl>("/admin/vllm-control", { headers: { "X-Admin-Password": password } }),
+  adminSetVllmDesired: (password: string, desired: "on" | "off") =>
+    req<AdminVllmControl>("/admin/vllm-control", {
+      method: "POST",
+      headers: { "X-Admin-Password": password },
+      body: JSON.stringify({ desired }),
     }),
 };

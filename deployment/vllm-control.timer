@@ -1,0 +1,12 @@
+[Unit]
+Description=Hesaplık - vLLM aç/kapat tercihini ~30 sn'de bir yokla (Bosna)
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=30s
+# Persistent=true YOK: kaçırılan bir yoklama sonradan telafi edilmemeli —
+# bir sonraki normal tetiklemede zaten güncel tercih uygulanır, art arda
+# birikmiş "gecikmiş" çalıştırmalara gerek yok.
+
+[Install]
+WantedBy=timers.target
