@@ -53,6 +53,42 @@ tail -f data/restore.log
 journalctl -u hesaplik-restore-apply.service -n 50
 ```
 
+## vLLM uzaktan aç/kapat (vllm-control) — BOSNA'da kurulur, İzmir'de DEĞİL
+
+"Yol B": panel (İzmir, /admin > LLM Yönetimi) yalnızca bir TERCİH yazar
+(`GET`/`POST /api/admin/vllm-control`); Bosna'daki bu birim tercihi kendi
+çeker (`GET /api/vllm-desired`, token korumalı) ve `docker start/stop/run`
+ile uygular. Panel Bosna'ya asla doğrudan komut göndermez — bkz.
+`app/services/vllm_control.py` ve `scripts/vllm-control.sh` modül başı
+yorumları.
+
+```
+# BOSNA'daki makinede:
+sudo cp deployment/vllm-control.service /etc/systemd/system/
+sudo cp deployment/vllm-control.timer   /etc/systemd/system/
+# Unit'lerdeki User=/WorkingDirectory= gerçek kuruluma göre düzeltilmeli.
+# Bosna'nın .env dosyasında (İzmir'in .env'inden AYRI) şunlar olmalı:
+#   VLLM_CONTROL_URL=http://10.100.0.1:8100   (İzmir'e WireGuard tünel IP'si)
+#   VLLM_CONTROL_TOKEN=...                     (İzmir'deki VLLM_CONTROL_TOKEN ile AYNI)
+sudo systemctl daemon-reload
+sudo systemctl enable --now vllm-control.timer
+```
+
+**Kurmadan önce elle deneyin.** `scripts/vllm-control.sh` taslaktır, uçtan uca
+denenmemiştir. `docker run` komutundaki model/parametreler script içinde
+sabittir (max-model-len 4096, gpu-memory-utilization 0.80, enforce-eager) —
+değiştirmeden önce Bosna'daki 2080 Super'de elle test edin.
+
+Timer kurulu değilken/İzmir'e erişilemezken script hiçbir şey yapmaz — vLLM
+son bilinen durumunda kalır, rastgele açılıp kapanmaz.
+
+İzleme:
+
+```
+tail -f data/vllm-control.log
+journalctl -u vllm-control.service -n 50
+```
+
 ## Manuel çalıştırma / test
 
 ```

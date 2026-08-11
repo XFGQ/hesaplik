@@ -92,6 +92,14 @@ export type AdminLLMStatus = {
   ollama: AdminLLMSource;
 };
 
+export type AdminVllmControl = {
+  desired: "on" | "off";
+  reachable: boolean;
+  // İstenen ile gerçek farklı — Bosna'daki host script'i henüz uygulamamış
+  // (~30 sn gecikme payı).
+  pending: boolean;
+};
+
 export type BackupSnapshot = {
   id: string;
   time: string;

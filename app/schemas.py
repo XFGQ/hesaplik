@@ -159,3 +159,21 @@ class AdminLLMStatusOut(BaseModel):
 
 class AdminLLMPreferenceIn(BaseModel):
     llm_primary: str
+
+
+class AdminVllmControlOut(BaseModel):
+    desired: str        # "on" | "off" — panelin DB'ye yazdığı tercih
+    reachable: bool      # vLLM şu an gerçekten cevap veriyor mu (health check)
+    pending: bool         # istenen ile gerçek farklı — Bosna script'i henüz uygulamamış (~30sn)
+
+
+class AdminVllmControlIn(BaseModel):
+    desired: str
+
+
+class VllmDesiredOut(BaseModel):
+    """Bosna'nın çektiği uç (GET /api/vllm-desired) — token korumalı, admin
+    şifresi istemez. Kasıtlı minimal: yalnızca tercih, başka hiçbir bilgi
+    sızdırmaz."""
+
+    desired: str

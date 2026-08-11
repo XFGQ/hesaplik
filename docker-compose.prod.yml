@@ -34,6 +34,9 @@ services:
       VLLM_URL: ${VLLM_URL:-}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
       VLLM_TIMEOUT: ${VLLM_TIMEOUT:-30}
+      # vLLM uzaktan aç/kapat ("Yol B"): Bosna'daki scripts/vllm-control.sh
+      # bu tokenla GET /api/vllm-desired'ı çeker (bkz. deployment/README.md).
+      VLLM_CONTROL_TOKEN: ${VLLM_CONTROL_TOKEN:-}
 
       LOG_LEVEL: ${LOG_LEVEL:-info}
 

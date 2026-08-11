@@ -427,6 +427,13 @@ def reset_health_cache() -> None:
     _health_cache.clear()
 
 
+async def vllm_reachable_cached() -> bool:
+    """vLLM aç/kapat panelinin (bkz. app/services/vllm_control.py) "gerçek"
+    durumu için: get_status ile aynı 10 sn önbellekli kontrol, dışa açık
+    (routes.py _cached_health'e doğrudan erişmesin diye)."""
+    return await _cached_health("vllm")
+
+
 # --------------------------------------------------------------- tercih (DB)
 #
 # settings tablosunda "llm_primary" anahtarı — runtime'da admin panelden
