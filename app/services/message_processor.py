@@ -397,7 +397,12 @@ async def record_resolved(
 
     meta = TxMeta(
         created_by=TELEGRAM_ACTOR,
-        source=TxSource.TELEGRAM_TEXT,
+        # raw.voice_transcript yalnızca sesli mesajlardan gelen raw_messages
+        # satırlarında dolu (bkz. app/bot/main.py > on_voice) — bu satırdan
+        # doğan HER kayıt (ilk parça, kuyruktaki sonraki parça, onay sonrası
+        # tamamlanan kayıt fark etmez) aynı raw'ı taşıdığı için ayrıca bir
+        # tx_source parametresi taşımaya gerek yok.
+        source=TxSource.TELEGRAM_VOICE if raw.voice_transcript else TxSource.TELEGRAM_TEXT,
         raw_text=text,
         trace_id=str(raw.id) if raw.id is not None else None,
     )

@@ -622,7 +622,7 @@ def _row_out(raw: RawMessage, tx_row: Transaction | None, person_name: str | Non
         processed_at=raw.processed_at,
         channel=raw.channel,
         chat_id=raw.chat_id,
-        text=message_trace.payload_text(raw.payload),
+        text=message_trace.display_text(raw),
         detected_kind=raw.detected_kind,
         detected_person=raw.detected_person,
         detected_amount=raw.detected_amount,
@@ -722,7 +722,7 @@ async def llm_monitor(
             LlmMonitorRowOut(
                 id=r.id,
                 received_at=r.received_at,
-                text=message_trace.payload_text(r.payload),
+                text=message_trace.display_text(r),
                 detected_kind=r.detected_kind,
                 detected_person=r.detected_person,
                 parse_ms=r.parse_ms,

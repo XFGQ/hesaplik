@@ -60,7 +60,16 @@ from telegram.ext import (
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Person, Product, RawMessage, TxKind
-from app.services import catalog, llm_provider, message_processor, message_splitter, person_archive, person_edit, report
+from app.services import (
+    catalog,
+    llm_provider,
+    message_processor,
+    message_splitter,
+    person_archive,
+    person_edit,
+    report,
+    stt,
+)
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
@@ -89,6 +98,9 @@ ANLASILAMADI_METNI = (
     "Tam anlayamadım. Örnek: \"Ahmet 20 balya saman aldı 1500 lira borç\".\n"
     "Ya da uygulamadan elle girebilirsin."
 )
+
+VOICE_KAPALI_METNI = "Sesli mesaj desteği şu an kapalı, yazarak gönderir misin?"
+VOICE_ANLASILAMADI_METNI = "Sesi anlayamadım, yazarak gönderir misin?"
 
 # Salt okunur sorgu niyetleri: bulunamayan kişi için "Ekleyeyim mi?"
 # sorulmaz (bkz. PERSON_NOT_FOUND kolları), sadece "defterde yok" denir —
@@ -975,17 +987,6 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _handle_edit_field_value_text(update, context, edit_field_flow, text)
         return
 
-    # Tek mesajda birden çok işlem olabilir (CLAUDE.md > "Tek mesajda
-    # birden çok istek", Grup 5): bölme SADECE her parça bağımsız olarak
-    # geçerli bir işleme parse edilebiliyorsa yapılır, şüphede tek bırakılır
-    # (bkz. app/services/message_splitter.py). Tek parça varsa (çoğunlukla)
-    # aşağıdaki akış TEK bir mesaj gibi davranır — davranış değişmez.
-    pieces = message_splitter.split_into_requests(text)
-    is_multi = len(pieces) > 1
-
-    if is_multi:
-        await update.message.reply_text(f"{len(pieces)} işlem algılandı, sırayla işliyorum:")
-
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
     # belli olmadığından baştan gösterilir. Regex anında çözerse tek bir
     # typing zararsız; LLM'e düşerse (~13 sn) periyodik yenilenir.
@@ -993,43 +994,105 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Aynı session boyunca: save_raw_message hemen commit edilir (mesaj
     # asla kaybolmaz), sonra aynı session'da işlenir — raw nesnesi başka
     # bir session'a taşınırsa flush() processed_at/transaction_id
-    # güncellemesini göremez. Çoklu işlemde TÜM parçalar için AYNI raw
-    # kullanılır (gelen tek bir Telegram güncellemesi) — her parça ayrı
-    # process_raw_message çağrısıyla kendi Transaction'ını oluşturur.
+    # güncellemesini göremez.
     async with SessionLocal() as session:
         raw = await save_raw_message(session, update.to_dict())
         await session.commit()
+        await _process_text(update, context, session, raw, text, chat_id)
 
-        for idx, piece in enumerate(pieces):
-            async with typing_action(context.bot, chat_id):
-                result = await message_processor.process_raw_message(session, raw, piece)
-                await session.commit()
 
-            await _reply_outcome(context, result, raw, piece, update.message, is_multi)
+async def _process_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    session,
+    raw: RawMessage,
+    text: str,
+    chat_id: int,
+) -> None:
+    """Düz metni (kullanıcının yazdığı ya da sesten çevrilmiş) işler —
+    on_text VE on_voice tarafından paylaşılır: ses, metne dönüşünce AYNI
+    akışa (parser -> LLM fallback -> intent_resolver) girer (CLAUDE.md >
+    "Telegram sesli mesajları için speech-to-text ekle"). `raw` zaten
+    save_raw_message ile yazılmış ve commit edilmiş olmalı; sesli mesajda
+    ayrıca voice_transcript de dolu olur (bkz. on_voice) — record_resolved
+    bunu görüp Transaction.source'u TELEGRAM_VOICE yazar.
 
-            # Bu işlem kullanıcıdan onay/seçim bekliyorsa (ör. "hangisi?",
-            # ürün önerisi, silme onayı) sıradaki parça OTOMATİK işlenmez —
-            # kalan parçalar bir KUYRUĞA (chat_data["pending_queue"]) konur.
-            # Kullanıcı bu onayı cevaplayınca (bkz. _advance_queue, ilgili
-            # onay/seçim callback'lerinin/işleyicilerinin sonunda çağrılır)
-            # kuyruktaki bir sonraki parça OTOMATİK işlenir — art arda birden
-            # çok onay gerekse bile hiçbiri atlanmaz (CLAUDE.md > "Tek
-            # mesajda birden çok istek").
-            if result.outcome not in _COMPLETES_WITHOUT_INPUT:
-                remaining = pieces[idx + 1 :]
-                if remaining:
-                    context.chat_data["pending_queue"] = {
-                        "raw_message_id": raw.id,
-                        "remaining": remaining,
-                    }
-                break
+    Tek mesajda birden çok işlem olabilir (CLAUDE.md > "Tek mesajda birden
+    çok istek", Grup 5): bölme SADECE her parça bağımsız olarak geçerli bir
+    işleme parse edilebiliyorsa yapılır, şüphede tek bırakılır (bkz.
+    app/services/message_splitter.py). Tek parça varsa (çoğunlukla) aşağıdaki
+    akış TEK bir mesaj gibi davranır — davranış değişmez. Çoklu işlemde TÜM
+    parçalar için AYNI raw kullanılır (gelen tek bir Telegram güncellemesi/ses
+    kaydı) — her parça ayrı process_raw_message çağrısıyla kendi
+    Transaction'ını oluşturur."""
+    pieces = message_splitter.split_into_requests(text)
+    is_multi = len(pieces) > 1
+
+    if is_multi:
+        await update.message.reply_text(f"{len(pieces)} işlem algılandı, sırayla işliyorum:")
+
+    for idx, piece in enumerate(pieces):
+        async with typing_action(context.bot, chat_id):
+            result = await message_processor.process_raw_message(session, raw, piece)
+            await session.commit()
+
+        await _reply_outcome(context, result, raw, piece, update.message, is_multi)
+
+        # Bu işlem kullanıcıdan onay/seçim bekliyorsa (ör. "hangisi?", ürün
+        # önerisi, silme onayı) sıradaki parça OTOMATİK işlenmez — kalan
+        # parçalar bir KUYRUĞA (chat_data["pending_queue"]) konur. Kullanıcı
+        # bu onayı cevaplayınca (bkz. _advance_queue, ilgili onay/seçim
+        # callback'lerinin/işleyicilerinin sonunda çağrılır) kuyruktaki bir
+        # sonraki parça OTOMATİK işlenir — art arda birden çok onay gerekse
+        # bile hiçbiri atlanmaz (CLAUDE.md > "Tek mesajda birden çok istek").
+        if result.outcome not in _COMPLETES_WITHOUT_INPUT:
+            remaining = pieces[idx + 1 :]
+            if remaining:
+                context.chat_data["pending_queue"] = {
+                    "raw_message_id": raw.id,
+                    "remaining": remaining,
+                }
+            break
 
 
 async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sesli mesaj: Telegram'dan .ogg indirilir, Groq whisper-large-v3 ile
+    Türkçe metne çevrilir, sonra sanki kullanıcı yazmış gibi AYNI akışa
+    (_process_text) verilir (CLAUDE.md > "Telegram sesli mesajları için
+    speech-to-text ekle"). Mesaj asla kaybolmaz: raw_messages'a Groq'a hiç
+    gitmeden ÖNCE yazılır — GROQ_API_KEY yoksa ya da çeviri başarısızsa bile
+    ham ses kaydının izi durur, kullanıcıdan yazması istenir."""
+    chat_id = update.effective_chat.id
+
     async with SessionLocal() as session:
-        await save_raw_message(session, update.to_dict())
+        raw = await save_raw_message(session, update.to_dict())
+        raw_id = raw.id
         await session.commit()
-    await update.message.reply_text("Ses kaydını aldım, şimdilik yazıyla gönderir misin?")
+
+    provider = stt.get_stt_provider()
+    if provider is None:
+        await update.message.reply_text(VOICE_KAPALI_METNI)
+        return
+
+    tg_file = await context.bot.get_file(update.message.voice.file_id)
+    audio = bytes(await tg_file.download_as_bytearray())
+
+    async with typing_action(context.bot, chat_id):
+        text = await provider.transcribe(audio)
+
+    if not text:
+        await update.message.reply_text(VOICE_ANLASILAMADI_METNI)
+        return
+
+    # Kullanıcı ne anladığımızı görsün — yanlışsa yazarak düzeltebilir
+    # (CLAUDE.md: "Kullanıcıya önce '🎤 anladım: <metin>' gibi geri bildirim").
+    await update.message.reply_text(f"🎤 Anladım: {text}")
+
+    async with SessionLocal() as session:
+        raw = await session.get(RawMessage, raw_id)
+        raw.voice_transcript = text
+        await session.commit()
+        await _process_text(update, context, session, raw, text, chat_id)
 
 
 async def _handle_new_person_text(
