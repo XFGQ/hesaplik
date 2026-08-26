@@ -1,4 +1,5 @@
 #!/bin/bash
+
 source .env
 
 # Test edilecek modellerin listesi (Buraya listeni ekleyebilirsin)
