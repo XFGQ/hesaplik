@@ -62,6 +62,19 @@ def test_payload_text_bilinmeyen_bicim_none():
     assert message_trace.payload_text(None) is None
 
 
+def test_display_text_voice_transcript_varsa_onu_doner():
+    raw = RawMessage(
+        payload={"message": {"chat": {"id": 1}, "voice": {"file_id": "abc"}}},
+        voice_transcript="ahmet 500 tl verdi",
+    )
+    assert message_trace.display_text(raw) == "ahmet 500 tl verdi"
+
+
+def test_display_text_voice_transcript_yoksa_payload_text_kullanilir():
+    raw = RawMessage(payload={"message": {"chat": {"id": 1}, "text": "ahmet 500 tl verdi"}})
+    assert message_trace.display_text(raw) == "ahmet 500 tl verdi"
+
+
 # ---------------------------------------------------------------- kayıt akışı
 
 async def test_borc_kaydinda_izleme_yazilir(session, ahmet):

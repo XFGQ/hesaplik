@@ -73,6 +73,16 @@ class Settings(BaseSettings):
     nvidia_model: str = "openai/gpt-oss-20b"
     nvidia_timeout: float = 15.0
 
+    # Groq STT (Faz 5 — sesli komut). OpenAI-uyumlu /audio/transcriptions
+    # ucu: {groq_stt_url}/audio/transcriptions, Authorization: Bearer
+    # {groq_api_key}. api_key BOŞSA (varsayılan) sesli mesaj desteği
+    # tamamen kapalıdır — bot kullanıcıya yazmasını ister, ÇÖKMEZ (bkz.
+    # app/services/stt.py). api_key GİZLİDİR, hiçbir yerde loglanmaz.
+    groq_api_key: str = ""
+    groq_stt_url: str = "https://api.groq.com/openai/v1"
+    groq_stt_model: str = "whisper-large-v3"
+    groq_stt_timeout: float = 30.0
+
     # vLLM uzaktan aç/kapat ("Yol B", bkz. app/services/vllm_control.py).
     # Bosna'daki host script'i (scripts/vllm-control.sh) GET /api/vllm-desired
     # ucunu bu tokenla çeker — admin şifresinden AYRI ve daha dar yetkili

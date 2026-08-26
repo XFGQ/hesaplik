@@ -274,6 +274,9 @@ class RawMessage(Base):
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     transaction_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("transactions.id"))
+    # Sesli mesajın Groq'la çevrilmiş metni (Faz 5). payload asla değişmez,
+    # bu yüzden çeviri ayrı bir kolonda tutulur (bkz. message_trace.display_text).
+    voice_transcript: Mapped[str | None] = mapped_column(Text)
 
     # --- izleme (admin paneli "İşlem Akışı")
     detected_kind: Mapped[str | None] = mapped_column(Text)
