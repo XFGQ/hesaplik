@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # önbelleklenir (bkz. llm_provider._cached_health).
     llm_health_timeout: float = 3.0
 
+    # vLLM uzaktan aç/kapat ("Yol B", bkz. app/services/vllm_control.py).
+    # Bosna'daki host script'i (scripts/vllm-control.sh) GET /api/vllm-desired
+    # ucunu bu tokenla çeker — admin şifresinden AYRI ve daha dar yetkili
+    # (yalnızca bu tek uca erişir). BOŞ ise uç HER ZAMAN 401 döner (fail
+    # closed) — yapılandırılmamış bir kurulumda kazara açık kalmaz.
+    vllm_control_token: str | None = None
+
     # Admin panel (/admin) şifresi. Boşsa panel tamamen kapalıdır (503) —
     # yanlışlıkla açık admin uç noktası kalmasın diye varsayılan boş.
     admin_password: str | None = None

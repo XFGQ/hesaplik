@@ -1,7 +1,3 @@
-# Hesaplık üretim (İzmir sunucusu, Debian + mevcut Nginx)
-# Caddy YOK — sunucudaki mevcut Nginx reverse proxy kullanılıyor.
-# API yalnızca 127.0.0.1:8100'e bağlanır; Nginx duman.rinnesoft.com'u buraya proxy'ler.
-# Postgres dışarı AÇILMAZ (sadece compose ağı içinde) — mevcut MariaDB'ye dokunmaz.
 name: hesaplik
 
 services:
@@ -12,7 +8,6 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-hesaplik}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?parola gerekli}
       POSTGRES_DB: ${POSTGRES_DB:-hesaplik}
-    # port YOK — dışarı açılmıyor, sadece iç ağ
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
@@ -30,24 +25,28 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hesaplik}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-hesaplik}
+
       LLM_PROVIDER: ${LLM_PROVIDER:-none}
       OLLAMA_URL: ${OLLAMA_URL:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+
+      VLLM_URL: ${VLLM_URL:-}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      VLLM_TIMEOUT: ${VLLM_TIMEOUT:-30}
+      # vLLM uzaktan aç/kapat ("Yol B"): Bosna'daki scripts/vllm-control.sh
+      # bu tokenla GET /api/vllm-desired'ı çeker (bkz. deployment/README.md).
+      VLLM_CONTROL_TOKEN: ${VLLM_CONTROL_TOKEN:-}
+
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      # Yedek LİSTELEME için (GET /api/backups). Yedeği host'taki systemd
-      # timer alır; container depoya yalnızca bakar, yazmaz.
+
       RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/data/backups}
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+
     volumes:
-      # Kaynak (host) ve hedef (container) yolu AYNI olmalı: restic depoyu
-      # RESTIC_REPOSITORY'deki mutlak yolda arar, o yüzden host'taki yol
-      # container içinde de birebir aynı yerde görünür.
-      # Salt okunur: container yedek alamaz, yalnızca listeler.
-      # Uzak depo (s3:/rclone:) kullanılırsa bu satır kaldırılmalı.
       - ${RESTIC_REPOSITORY:-./data/backups}:${RESTIC_REPOSITORY:-/data/backups}:ro
-    # SADECE localhost:8100 — Nginx buraya proxy'ler, dışarı kapalı
+
     ports:
       - "127.0.0.1:8100:8000"
 
@@ -59,12 +58,19 @@ services:
         condition: service_healthy
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-hesaplik}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-hesaplik}
+
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?bot token gerekli}
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+
       LLM_PROVIDER: ${LLM_PROVIDER:-none}
       OLLAMA_URL: ${OLLAMA_URL:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+
+      VLLM_URL: ${VLLM_URL:-}
+      VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
+      VLLM_TIMEOUT: ${VLLM_TIMEOUT:-30}
+
     command: python -m app.bot.main
 
   ollama:
@@ -75,8 +81,6 @@ services:
       OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
     volumes:
       - ollama_data:/root/.ollama
-    # port dışarı açılmaz — sadece hesaplik ağı içinden (api/bot erişir)
-
 
 volumes:
   pgdata:

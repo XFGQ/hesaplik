@@ -17,7 +17,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { adminApi, Unauthorized } from "../api/admin";
 import { api, ApiError } from "../api/client";
-import type { AdminLLMStatus } from "../api/types";
+import type { AdminLLMStatus, AdminVllmControl } from "../api/types";
 import AdminBackups from "../components/admin/AdminBackups";
 import AdminFlow from "../components/admin/AdminFlow";
 import AdminHealth from "../components/admin/AdminHealth";
@@ -349,6 +349,87 @@ function LlmPanel({ password }: { password: string }) {
           </p>
         )}
       </div>
+
+      <VllmControlPanel password={password} />
     </>
+  );
+}
+
+/* vLLM cihazı aç/kapat ("Yol B"): panel Bosna'ya doğrudan komut göndermez,
+ * yalnızca bir TERCİH yazar (/api/admin/vllm-control). Bosna'daki host
+ * script'i bu tercihi kendi çekip uygular (~30 sn gecikme payı) — bu yüzden
+ * "istenen" (panelin yazdığı) ile "gerçek" (vLLM şu an cevap veriyor mu) ayrı
+ * gösterilir; ikisi arasında fark varsa "başlatılıyor/kapatılıyor" denir. */
+function gercekDurumMetni(data: AdminVllmControl): string {
+  if (data.pending) return data.desired === "on" ? "Başlatılıyor… (~30 sn)" : "Kapatılıyor… (~30 sn)";
+  return data.desired === "on" ? "Erişilebilir" : "Kapalı";
+}
+
+function VllmControlPanel({ password }: { password: string }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+
+  const control = useQuery({
+    queryKey: ["admin-vllm-control", password],
+    queryFn: () => api.adminVllmControl(password),
+    refetchInterval: 5_000,
+  });
+
+  const setDesired = useMutation({
+    mutationFn: (desired: "on" | "off") => api.adminSetVllmDesired(password, desired),
+    onSuccess: (data) => {
+      qc.setQueryData(["admin-vllm-control", password], data);
+      toast(
+        data.desired === "on"
+          ? "vLLM açılıyor — ~30 saniyede uygulanır"
+          : "vLLM kapatılıyor — ~30 saniyede uygulanır",
+        "success",
+      );
+    },
+    onError: (e) => toast(e instanceof ApiError ? e.message : "Güncelleme başarısız", "info"),
+  });
+
+  if (control.isLoading || control.error) return null;
+
+  const data = control.data!;
+
+  return (
+    <div className="panel">
+      <p className="panel-title">vLLM Cihazı (Bosna 2080 Super)</p>
+
+      <div className="admin-source">
+        <span className="admin-source-name">İstenen</span>
+        <span className="admin-source-meta">{data.desired === "on" ? "Açık" : "Kapalı"}</span>
+      </div>
+      <div className="admin-source">
+        <span className="admin-source-name">
+          <StatusDot ok={data.reachable} />
+          Gerçek
+        </span>
+        <span className="admin-source-meta">{gercekDurumMetni(data)}</span>
+      </div>
+
+      <div className="admin-pref" style={{ marginTop: 10 }}>
+        <button
+          aria-pressed={data.desired === "on"}
+          disabled={setDesired.isPending || data.desired === "on"}
+          onClick={() => setDesired.mutate("on")}
+        >
+          vLLM'i Aç
+        </button>
+        <button
+          aria-pressed={data.desired === "off"}
+          disabled={setDesired.isPending || data.desired === "off"}
+          onClick={() => setDesired.mutate("off")}
+        >
+          vLLM'i Kapat
+        </button>
+      </div>
+
+      <p className="hint" style={{ marginTop: 10 }}>
+        Kapatınca ekran kartının belleği boşalır, GPU'yu başka iş için
+        kullanabilirsiniz. Değişiklik ~30 saniyede uygulanır.
+      </p>
+    </div>
   );
 }

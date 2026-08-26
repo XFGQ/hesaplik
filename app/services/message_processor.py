@@ -110,8 +110,50 @@ async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str)
         parse_source = message_trace.SOURCE_REGEX
 
     resolved = await resolve(session, intent)
-    return await handle_resolved(
+    result = await handle_resolved(
         session, raw, resolved, text, source=source, parse_ms=parse_ms, parse_source=parse_source
+    )
+
+    if source == "rule" and result.outcome == ProcessOutcome.SEARCH and not result.persons:
+        result = await _retry_empty_search_with_llm(session, raw, text, result, parse_ms)
+
+    return result
+
+
+async def _retry_empty_search_with_llm(
+    session: AsyncSession,
+    raw: RawMessage,
+    text: str,
+    fallback: ProcessResult,
+    parse_ms: int | None,
+) -> ProcessResult:
+    """Kural parser'ın tek kelimelik "arama" yakalayıcısı (parser.py >
+    _try_single_word_search) HER eşleşmeyen kelimeyi bir isim/ilçe araması
+    sayar — bu da parse() hiçbir zaman None dönmediği için LLM fallback'in
+    hiç devreye girmemesine yol açıyordu (bkz. "kişileer", "ahmetbeylilier"
+    gibi yazım hataları: kural parser "search" ile "çözdüm" sanıyor).
+
+    Arama SONUÇSUZ kaldığında (kimseyle eşleşmedi) bu düşük güvenli bir
+    çözüm sayılır ve LLM'e bir şans daha verilir — belki kelime aslında
+    bilinen bir komutun yazım hatasıydı. LLM de bir şey çıkaramazsa
+    (None ya da UNRECOGNIZED) orijinal "eşleşen kişi yok" sonucu aynen
+    kalır; gerçek (kayıtlı kimseyle eşleşmeyen) bir arama için ekstra bir
+    LLM çağrısı dışında hiçbir davranış değişikliği olmaz."""
+    provider = await llm_provider.get_active_provider(session)
+    if provider is None:
+        return fallback
+
+    llm_intent = await provider.parse(text)
+    if llm_intent is None:
+        return fallback
+
+    llm_resolved = await resolve(session, llm_intent)
+    if llm_resolved.status == ResolutionStatus.UNRECOGNIZED:
+        return fallback
+
+    return await handle_resolved(
+        session, raw, llm_resolved, text,
+        source="llm", parse_ms=parse_ms, parse_source=message_trace.SOURCE_LLM,
     )
 
 

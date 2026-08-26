@@ -1,0 +1,13 @@
+[Unit]
+Description=Hesaplık - vLLM aç/kapat tercihini İzmir'den çekip uygula (Bosna)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=hesaplik
+WorkingDirectory=/opt/hesaplik
+ExecStart=/opt/hesaplik/scripts/vllm-control.sh
+# docker run/pull ilk seferde biraz sürebilir (imaj yerelde yoksa çekilir);
+# sonraki çalıştırmalar (start/stop) saniyeler sürer.
+TimeoutStartSec=300

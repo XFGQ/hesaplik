@@ -1,7 +1,7 @@
 import secrets
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import Response
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.db import get_session
 from app.models import (
+    AuditLog,
     Person,
     PriceHistory,
     Product,
@@ -24,6 +25,8 @@ from app.schemas import (
     AdminLLMPreferenceIn,
     AdminLLMSourceOut,
     AdminLLMStatusOut,
+    AdminVllmControlIn,
+    AdminVllmControlOut,
     ArchiveIn,
     BackupRunOut,
     BackupSnapshotOut,
@@ -43,8 +46,9 @@ from app.schemas import (
     TxLineOut,
     TxOut,
     TxWithProductOut,
+    VllmDesiredOut,
 )
-from app.services import backup, catalog, ledger, llm_provider, queries, report
+from app.services import backup, catalog, ledger, llm_provider, queries, report, vllm_control
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
@@ -482,3 +486,75 @@ async def admin_llm_update(body: AdminLLMPreferenceIn, session: AsyncSession = D
         raise HTTPException(422, "Geçersiz tercih")
     await llm_provider.set_llm_primary(session, body.llm_primary)
     return _llm_status_out(await llm_provider.get_status(session))
+
+
+# ----------------------------------------------------- vLLM cihaz aç/kapat ("Yol B")
+#
+# Bkz. app/services/vllm_control.py > modül docstring'i. Panel burada
+# yalnızca bir TERCİH yazar (settings.vllm_desired); Bosna'daki host
+# script'i bunu ayrı, token korumalı bir uçtan (aşağıdaki /vllm-desired)
+# kendisi çeker ve uygular. Panel Bosna'ya hiçbir zaman doğrudan komut
+# göndermez.
+
+
+async def _vllm_control_out(desired: str) -> AdminVllmControlOut:
+    reachable = await llm_provider.vllm_reachable_cached()
+    return AdminVllmControlOut(
+        desired=desired, reachable=reachable, pending=vllm_control.is_pending(desired, reachable)
+    )
+
+
+@router.get(
+    "/admin/vllm-control", response_model=AdminVllmControlOut, dependencies=[Depends(require_admin)]
+)
+async def admin_vllm_control_status(session: AsyncSession = Depends(get_session)):
+    return await _vllm_control_out(await vllm_control.get_vllm_desired(session))
+
+
+@router.post(
+    "/admin/vllm-control", response_model=AdminVllmControlOut, dependencies=[Depends(require_admin)]
+)
+async def admin_vllm_control_update(
+    body: AdminVllmControlIn, request: Request, session: AsyncSession = Depends(get_session)
+):
+    if body.desired not in vllm_control.VLLM_DESIRED_VALUES:
+        raise HTTPException(422, "Geçersiz tercih")
+
+    before = await vllm_control.get_vllm_desired(session)
+    await vllm_control.set_vllm_desired(session, body.desired)
+    session.add(
+        AuditLog(
+            actor=f"admin-panel@{request.client.host if request.client else 'bilinmeyen'}",
+            action="set_vllm_desired",
+            entity="settings",
+            entity_id=vllm_control.VLLM_DESIRED_KEY,
+            before={"value": before},
+            after={"value": body.desired},
+        )
+    )
+    await session.flush()
+
+    return await _vllm_control_out(body.desired)
+
+
+async def require_vllm_control_token(x_vllm_control_token: str | None = Header(default=None)) -> None:
+    """Bosna'nın çektiği /vllm-desired ucunu korur. Admin şifresinden AYRI
+    ve daha dar yetkili bir token — .env VLLM_CONTROL_TOKEN. Token
+    yapılandırılmamışsa (boş) uç HER ZAMAN 401 döner (fail closed): kazara
+    açık bir kontrol ucu kalmasın."""
+    if (
+        not settings.vllm_control_token
+        or not x_vllm_control_token
+        or not secrets.compare_digest(x_vllm_control_token, settings.vllm_control_token)
+    ):
+        raise HTTPException(401, "Yetkisiz")
+
+
+@router.get(
+    "/vllm-desired", response_model=VllmDesiredOut, dependencies=[Depends(require_vllm_control_token)]
+)
+async def vllm_desired(session: AsyncSession = Depends(get_session)):
+    """Bosna'nın (scripts/vllm-control.sh, ~30 sn'de bir) çektiği uç. Admin
+    şifresi İSTEMEZ — yalnızca yukarıdaki token yeterli, çünkü bu script
+    tarayıcı oturumu değil bir sunucu-sunucu çağrısıdır."""
+    return VllmDesiredOut(desired=await vllm_control.get_vllm_desired(session))

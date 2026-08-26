@@ -23,6 +23,7 @@ from __future__ import annotations
 import difflib
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -33,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Setting
 from app.services.catalog import normalize
-from app.services.llm_prompt import SYSTEM_PROMPT
+from app.services.llm_prompt import RESPONSE_JSON_SCHEMA, SYSTEM_PROMPT
 from app.services.name_utils import strip_turkish_suffix
 from app.services.parser import ParsedIntent
 
@@ -159,6 +160,36 @@ def _report_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedI
     return ParsedIntent(kind=kind)
 
 
+_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _extract_json_object(content: str) -> dict | None:
+    """LLM çıktısı bazen SADECE JSON olmuyor — markdown kod bloğuna sarılmış
+    ya da öncesinde/sonrasında sohbet metniyle geliyor (gözlem 2026-08: vLLM
+    200 OK dönüyor ama SYSTEM_PROMPT'un "SADECE JSON döndür" talimatına
+    uymayıp serbest metinle cevap verebiliyor — response_format=json_object
+    her zaman zorlamıyor, bkz. VLLMProvider'daki guided_json). Önce içeriğin
+    TAMAMINI doğrudan JSON olarak dener, olmazsa metindeki İLK süslü parantez
+    bloğunu ayıklayıp tekrar dener. Hiçbir yerde geçerli bir JSON nesnesi
+    yoksa (gerçek sohbet metni, hiç JSON içermiyor) None döner — bu durumda
+    ayıklanacak bir şey yoktur, model gerçekten anlamamıştır."""
+    for candidate in (content, _first_json_block(content)):
+        if candidate is None:
+            continue
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def _first_json_block(content: str) -> str | None:
+    match = _JSON_BLOCK_RE.search(content)
+    return match.group(0) if match else None
+
+
 def parsed_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIntent | None:
     """LLM'in ürettiği JSON sözlüğünü ParsedIntent'e çevirir. Şema dışı ya
     da anlamsız bir çıktı gelirse None döner (LLM çözemedi sayılır).
@@ -254,12 +285,9 @@ class OllamaProvider:
         if not content:
             return None
 
-        try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
+        data = _extract_json_object(content)
+        if data is None:
             logger.warning("Ollama geçersiz JSON döndürdü: %r", content)
-            return None
-        if not isinstance(data, dict):
             return None
 
         return parsed_intent_from_json(data, text)
@@ -313,6 +341,12 @@ class VLLMProvider:
                 {"role": "user", "content": text},
             ],
             "response_format": {"type": "json_object"},
+            # vLLM'e özgü grammar-constrained decoding ipucu (bkz.
+            # llm_prompt.RESPONSE_JSON_SCHEMA docstring'i): response_format
+            # tek başına her zaman yeterli olmuyor, model bazen serbest
+            # sohbet metniyle cevap veriyor (200 OK, JSON değil). Sunucu bu
+            # alanı tanımıyorsa (eski vLLM sürümü) sessizce yok sayılır.
+            "guided_json": RESPONSE_JSON_SCHEMA,
             "temperature": 0,
         }
         body = await self._request(payload)
@@ -326,12 +360,9 @@ class VLLMProvider:
         if not content:
             return None
 
-        try:
-            data = json.loads(content)
-        except (json.JSONDecodeError, TypeError):
+        data = _extract_json_object(content)
+        if data is None:
             logger.warning("vLLM geçersiz JSON döndürdü: %r", content)
-            return None
-        if not isinstance(data, dict):
             return None
 
         return parsed_intent_from_json(data, text)
@@ -394,6 +425,13 @@ def reset_health_cache() -> None:
     """Test yardımcı fonksiyonu: sağlık önbelleğini temizler (testler
     arasında sızıntı olmasın diye conftest'te otomatik çağrılır)."""
     _health_cache.clear()
+
+
+async def vllm_reachable_cached() -> bool:
+    """vLLM aç/kapat panelinin (bkz. app/services/vllm_control.py) "gerçek"
+    durumu için: get_status ile aynı 10 sn önbellekli kontrol, dışa açık
+    (routes.py _cached_health'e doğrudan erişmesin diye)."""
+    return await _cached_health("vllm")
 
 
 # --------------------------------------------------------------- tercih (DB)
