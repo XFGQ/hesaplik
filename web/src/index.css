@@ -1926,3 +1926,120 @@ input.amount {
   color: var(--stamp);
   box-shadow: inset 0 0 0 1px var(--stamp);
 }
+
+/* --- özet karo şeridi (LLM izleme, istek kuyruğu) */
+
+.admin-stat-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.admin-stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+
+.admin-stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+
+.admin-stat-value {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* --- sekmeler (Kişiler & İşlemler: aktif/arşiv) */
+
+.admin-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+
+.admin-subtabs {
+  margin-bottom: 12px;
+}
+
+.admin-tab {
+  padding: 7px 14px;
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.admin-tab-active {
+  background: var(--card);
+  color: var(--ink);
+  border-color: var(--ink-soft);
+  font-weight: 500;
+}
+
+/* --- istek kuyruğu durum rozetleri */
+
+.admin-queue-beklemede {
+  color: var(--uyari);
+  background: var(--uyari-bg);
+}
+
+.admin-queue-isleniyor {
+  color: var(--tahsilat);
+  background: var(--tahsilat-bg);
+}
+
+.admin-queue-tamamlandi {
+  color: var(--success);
+  background: var(--success-bg);
+}
+
+.admin-queue-basarisiz {
+  color: var(--borc);
+  background: var(--borc-bg);
+}
+
+.admin-queue-iptal {
+  color: var(--ink-faint);
+  background: var(--card);
+  border-color: var(--rule);
+}
+
+/* --- kişi hareket alt tablosu (satır içi genişleme) */
+
+.admin-subtable {
+  min-width: 0;
+  background: var(--paper);
+}
+
+.admin-subtable th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-soft);
+}
+
+/* --- denetim kaydı before/after JSON */
+
+.admin-json {
+  margin: 0;
+  padding: 10px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}

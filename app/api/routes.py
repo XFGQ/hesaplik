@@ -470,6 +470,7 @@ def _llm_status_out(status: llm_provider.LLMStatus) -> AdminLLMStatusOut:
     return AdminLLMStatusOut(
         primary=status.primary,
         active=status.active,
+        nvidia=AdminLLMSourceOut(ok=status.nvidia.ok, url=status.nvidia.url, model=status.nvidia.model),
         vllm=AdminLLMSourceOut(ok=status.vllm.ok, url=status.vllm.url, model=status.vllm.model),
         ollama=AdminLLMSourceOut(ok=status.ollama.ok, url=status.ollama.url, model=status.ollama.model),
     )

@@ -14,15 +14,19 @@ from app.schemas import AdminLLMPreferenceIn
 from app.services import llm_provider
 
 
-def _stub_health(monkeypatch, *, vllm: bool, ollama: bool) -> None:
+def _stub_health(monkeypatch, *, vllm: bool, ollama: bool, nvidia: bool = False) -> None:
     async def _vllm_healthy():
         return vllm
 
     async def _ollama_healthy():
         return ollama
 
+    async def _nvidia_healthy():
+        return nvidia
+
     monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
     monkeypatch.setattr(llm_provider, "ollama_healthy", _ollama_healthy)
+    monkeypatch.setattr(llm_provider, "nvidia_healthy", _nvidia_healthy)
     llm_provider.reset_health_cache()
 
 
@@ -72,6 +76,14 @@ async def test_admin_llm_status_aktif_kaynagi_dogru_bildirir(session, monkeypatc
     assert out.active == "vllm"
     assert out.vllm.ok is True
     assert out.ollama.ok is False
+    assert out.nvidia.ok is False
+
+
+async def test_admin_llm_status_nvidia_saglikliysa_aktif_nvidia_olur(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=False, nvidia=True)
+    out = await admin_llm_status(session=session)
+    assert out.active == "nvidia"
+    assert out.nvidia.ok is True
 
 
 async def test_admin_llm_update_tercihi_db_ye_yazar(session, monkeypatch):
@@ -81,6 +93,15 @@ async def test_admin_llm_update_tercihi_db_ye_yazar(session, monkeypatch):
     assert out.primary == "ollama"
     assert out.active == "ollama"
     assert await llm_provider.get_llm_primary(session) == "ollama"
+
+
+async def test_admin_llm_update_nvidia_zorla_tercihi_db_ye_yazar(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=True)
+    out = await admin_llm_update(AdminLLMPreferenceIn(llm_primary="nvidia"), session=session)
+
+    assert out.primary == "nvidia"
+    assert out.active == "nvidia"
+    assert await llm_provider.get_llm_primary(session) == "nvidia"
 
 
 async def test_admin_llm_update_gecersiz_deger_422(session):

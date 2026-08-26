@@ -1,6 +1,7 @@
-"""OllamaProvider/VLLMProvider ve dinamik kaynak seçimi testleri. Gerçek
-Ollama/vLLM'e ASLA bağlanılmaz — httpx MockTransport ile ağ çağrısı taklit
-edilir, sağlık kontrolleri ise vllm_healthy/ollama_healthy monkeypatch'iyle."""
+"""OllamaProvider/VLLMProvider/NVIDIAProvider ve dinamik kaynak seçimi
+testleri. Gerçek Ollama/vLLM/NVIDIA'ya ASLA bağlanılmaz — httpx
+MockTransport ile ağ çağrısı taklit edilir, sağlık kontrolleri ise
+nvidia_healthy/vllm_healthy/ollama_healthy monkeypatch'iyle."""
 
 import json
 from decimal import Decimal
@@ -13,6 +14,7 @@ from app.services import llm_provider
 from app.services.llm_prompt import RESPONSE_JSON_SCHEMA, SYSTEM_PROMPT
 from app.services.llm_provider import (
     LLM_PRIMARY_DEFAULT,
+    NVIDIAProvider,
     OllamaProvider,
     VLLMProvider,
     get_active_provider,
@@ -530,30 +532,226 @@ async def test_vllm_sohbet_metni_json_icermiyorsa_none_doner():
     assert intent is None
 
 
+# --------------------------------------------------------------- NVIDIAProvider
+#
+# Ollama/vLLM'den tek farkı OpenAI-uyumlu istek/yanıt şekli + Authorization
+# header'ı; doğrulama/güvenlik katmanı aynı parsed_intent_from_json'dan
+# geçtiği için burada tekrar edilmiyor, yalnızca HTTP hattı + rate limit
+# (429) davranışı doğrulanıyor.
+
+
+def _nvidia_response(content: dict | str) -> httpx.Response:
+    body = content if isinstance(content, str) else json.dumps(content)
+    return httpx.Response(200, json={"choices": [{"message": {"content": body}}]})
+
+
+async def test_nvidia_saglikli_yanit_parsed_intent_doner():
+    def handler(request):
+        assert request.url.path == "/v1/chat/completions"
+        assert request.headers["authorization"] == "Bearer nvapi-test"
+        return _nvidia_response({
+            "kind": "debt", "person_name": "furkan", "qty": 20, "unit": "balya",
+            "product": "saman", "amount": 15000, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider(
+            "https://integrate.api.nvidia.com/v1", "nvapi-test",
+            "qwen/qwen2.5-72b-instruct", client=client,
+        )
+        intent = await provider.parse("furkana 20 balya saman verdim 15000 tl borç yazsana")
+
+    assert intent is not None
+    assert intent.kind == "debt"
+    assert intent.person_name == "furkan"
+    assert intent.amount == Decimal("15000")
+
+
+async def test_nvidia_baglanti_hatasinda_none_doner():
+    def handler(request):
+        raise httpx.ConnectError("bağlanamadı", request=request)
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_nvidia_timeoutta_none_doner():
+    def handler(request):
+        raise httpx.ReadTimeout("zaman aşımı", request=request)
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_nvidia_http_hata_kodunda_none_doner():
+    def handler(request):
+        return httpx.Response(500, text="internal error")
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_nvidia_gecersiz_json_icerikte_none_doner():
+    def handler(request):
+        return _nvidia_response("bu bir json değil")
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_nvidia_bos_choices_icerikte_none_doner():
+    def handler(request):
+        return httpx.Response(200, json={"choices": []})
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+
+
+async def test_nvidia_429_rate_limit_none_doner_ve_cooldowna_girer():
+    # 40 istek/dk limiti dolunca NVIDIA 429 döner: provider bunu None
+    # sayar (mesaj "anlaşılamadı" değil, LLM'e hiç gitmemiş gibi davranır)
+    # VE nvidia_healthy()'nin bir süre ağa çıkmadan False dönmesini sağlar
+    # (bkz. _mark_nvidia_rate_limited) — auto modun bir sonraki mesajda
+    # NVIDIA'yı tekrar deneyip tekrar 429 yememesi, doğrudan vLLM'e
+    # düşmesi için.
+    llm_provider.reset_health_cache()
+
+    def handler(request):
+        return httpx.Response(429, text="rate limit exceeded")
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        intent = await provider.parse("herhangi bir cümle")
+
+    assert intent is None
+    assert llm_provider._nvidia_rate_limited() is True
+
+    llm_provider.reset_health_cache()
+
+
+async def test_nvidia_istek_govdesinde_system_prompt_var():
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return _nvidia_response({
+            "kind": "list_all", "person_name": None, "qty": None, "unit": None,
+            "product": None, "amount": None, "district": None,
+        })
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        await provider.parse("kişileer")
+
+    messages = captured["body"]["messages"]
+    assert messages[0] == {"role": "system", "content": SYSTEM_PROMPT}
+    assert messages[1] == {"role": "user", "content": "kişileer"}
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+
+
+# --------------------------------------------------------------- nvidia_healthy
+
+
+async def test_nvidia_healthy_api_key_yoksa_aga_hic_cikmadan_false_doner(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "nvidia_api_key", "")
+    calls = []
+
+    async def _fake_probe(*args, **kwargs):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(llm_provider, "_probe", _fake_probe)
+    assert await llm_provider.nvidia_healthy() is False
+    assert calls == []
+
+
+async def test_nvidia_healthy_cooldownda_aga_hic_cikmadan_false_doner(monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "nvidia_api_key", "nvapi-test")
+    llm_provider._mark_nvidia_rate_limited()
+    calls = []
+
+    async def _fake_probe(*args, **kwargs):
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(llm_provider, "_probe", _fake_probe)
+    try:
+        assert await llm_provider.nvidia_healthy() is False
+        assert calls == []
+    finally:
+        llm_provider.reset_health_cache()
+
+
 # --------------------------------------------------------------- select_source
 #
 # Saf karar fonksiyonu (ağa çıkmaz) — get_active_provider ve get_status'un
-# ikisinin de aynı mantığı paylaştığını garanti eder.
+# ikisinin de aynı mantığı paylaştığını garanti eder. Dört katman: NVIDIA >
+# vLLM > Ollama > none.
 
 
 def test_select_source_none_her_zaman_kapali():
-    assert select_source("none", vllm_ok=True, ollama_ok=True) == "none"
+    assert select_source("none", vllm_ok=True, ollama_ok=True, nvidia_ok=True) == "none"
 
 
-def test_select_source_ollama_zorla_vllme_bakmaz():
-    # vLLM sağlıklı olsa bile "ollama" tercihi Ollama'yı seçer — GPU'yu
-    # kullanıcı kendi kullanmak istediğinde "tek tuş kapat" senaryosu.
-    assert select_source("ollama", vllm_ok=True, ollama_ok=False) == "ollama"
+def test_select_source_ollama_zorla_digerlerine_bakmaz():
+    # vLLM/NVIDIA sağlıklı olsa bile "ollama" tercihi Ollama'yı seçer —
+    # GPU'yu kullanıcı kendi kullanmak istediğinde "tek tuş kapat" senaryosu.
+    assert select_source("ollama", vllm_ok=True, ollama_ok=False, nvidia_ok=True) == "ollama"
 
 
 def test_select_source_vllm_zorla_saglikliysa_vllm():
-    assert select_source("vllm", vllm_ok=True, ollama_ok=True) == "vllm"
+    assert select_source("vllm", vllm_ok=True, ollama_ok=True, nvidia_ok=True) == "vllm"
 
 
 def test_select_source_vllm_zorla_erisilemezse_none_ollamaya_duşmez():
     # Kullanıcı özellikle vLLM istemiştir; erişilemezse none'a düşer,
     # sessizce Ollama'ya kaymaz.
-    assert select_source("vllm", vllm_ok=False, ollama_ok=True) == "none"
+    assert select_source("vllm", vllm_ok=False, ollama_ok=True, nvidia_ok=True) == "none"
+
+
+def test_select_source_nvidia_zorla_saglikliysa_nvidia():
+    assert select_source("nvidia", vllm_ok=True, ollama_ok=True, nvidia_ok=True) == "nvidia"
+
+
+def test_select_source_nvidia_zorla_erisilemezse_none_vllme_duşmez():
+    # Kullanıcı özellikle NVIDIA istemiştir; erişilemezse/limit doluysa
+    # none'a düşer, sessizce vLLM'e kaymaz — vllm zorla ile simetrik.
+    assert select_source("nvidia", vllm_ok=True, ollama_ok=True, nvidia_ok=False) == "none"
+
+
+def test_select_source_auto_nvidia_saglikliysa_nvidia():
+    assert select_source("auto", vllm_ok=True, ollama_ok=True, nvidia_ok=True) == "nvidia"
+
+
+def test_select_source_auto_nvidia_cokerse_vllme_duser():
+    assert select_source("auto", vllm_ok=True, ollama_ok=True, nvidia_ok=False) == "vllm"
+
+
+def test_select_source_auto_nvidia_ve_vllm_cokerse_ollamaya_duser():
+    assert select_source("auto", vllm_ok=False, ollama_ok=True, nvidia_ok=False) == "ollama"
+
+
+def test_select_source_auto_ucu_de_cokerse_none():
+    assert select_source("auto", vllm_ok=False, ollama_ok=False, nvidia_ok=False) == "none"
 
 
 def test_select_source_auto_vllm_saglikliysa_vllm():
@@ -571,6 +769,7 @@ def test_select_source_auto_ikisi_de_cokerse_none():
 def test_select_source_taninmayan_deger_auto_gibi_davranir():
     assert select_source("bozuk-deger", vllm_ok=True, ollama_ok=False) == "vllm"
     assert select_source("bozuk-deger", vllm_ok=False, ollama_ok=False) == "none"
+    assert select_source("bozuk-deger", vllm_ok=False, ollama_ok=False, nvidia_ok=True) == "nvidia"
 
 
 # --------------------------------------------------------------- tercih (DB)
@@ -601,15 +800,19 @@ async def test_llm_primary_bozuk_db_degeri_auto_sayilir(session):
 # --------------------------------------------------------------- get_active_provider
 
 
-def _stub_health(monkeypatch, *, vllm: bool, ollama: bool) -> None:
+def _stub_health(monkeypatch, *, vllm: bool, ollama: bool, nvidia: bool = False) -> None:
     async def _vllm_healthy():
         return vllm
 
     async def _ollama_healthy():
         return ollama
 
+    async def _nvidia_healthy():
+        return nvidia
+
     monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
     monkeypatch.setattr(llm_provider, "ollama_healthy", _ollama_healthy)
+    monkeypatch.setattr(llm_provider, "nvidia_healthy", _nvidia_healthy)
     llm_provider.reset_health_cache()
 
 
@@ -631,14 +834,19 @@ async def test_get_active_provider_auto_ikisi_de_cokerse_none_doner(session, mon
     assert provider is None
 
 
-async def test_get_active_provider_ollama_tercihinde_vllme_hic_dokunulmaz(session, monkeypatch):
+async def test_get_active_provider_ollama_tercihinde_digerlerine_hic_dokunulmaz(session, monkeypatch):
     calls: list[str] = []
 
     async def _vllm_healthy():
         calls.append("vllm")
         return True
 
+    async def _nvidia_healthy():
+        calls.append("nvidia")
+        return True
+
     monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
+    monkeypatch.setattr(llm_provider, "nvidia_healthy", _nvidia_healthy)
     llm_provider.reset_health_cache()
 
     await set_llm_primary(session, "ollama")
@@ -666,8 +874,13 @@ async def test_get_active_provider_none_tercihinde_hic_saglik_kontrolu_yapmaz(se
         calls.append("ollama")
         return True
 
+    async def _nvidia_healthy():
+        calls.append("nvidia")
+        return True
+
     monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
     monkeypatch.setattr(llm_provider, "ollama_healthy", _ollama_healthy)
+    monkeypatch.setattr(llm_provider, "nvidia_healthy", _nvidia_healthy)
     llm_provider.reset_health_cache()
 
     await set_llm_primary(session, "none")
@@ -677,35 +890,112 @@ async def test_get_active_provider_none_tercihinde_hic_saglik_kontrolu_yapmaz(se
     assert calls == []
 
 
+# ------------------------------------------------- get_active_provider (NVIDIA)
+
+
+async def test_get_active_provider_auto_nvidia_saglikliysa_nvidia_secilir(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=True)
+    provider = await get_active_provider(session)
+    assert isinstance(provider, NVIDIAProvider)
+
+
+async def test_get_active_provider_auto_nvidia_cokerse_vllme_duser(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=False)
+    provider = await get_active_provider(session)
+    assert isinstance(provider, VLLMProvider)
+
+
+async def test_get_active_provider_auto_nvidia_sagliliyken_vllme_hic_dokunulmaz(session, monkeypatch):
+    calls: list[str] = []
+
+    async def _vllm_healthy():
+        calls.append("vllm")
+        return True
+
+    async def _nvidia_healthy():
+        return True
+
+    monkeypatch.setattr(llm_provider, "vllm_healthy", _vllm_healthy)
+    monkeypatch.setattr(llm_provider, "nvidia_healthy", _nvidia_healthy)
+    llm_provider.reset_health_cache()
+
+    provider = await get_active_provider(session)
+
+    assert isinstance(provider, NVIDIAProvider)
+    assert calls == []
+
+
+async def test_get_active_provider_nvidia_zorla_saglikliysa_nvidia(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=True)
+    await set_llm_primary(session, "nvidia")
+    provider = await get_active_provider(session)
+    assert isinstance(provider, NVIDIAProvider)
+
+
+async def test_get_active_provider_nvidia_zorla_erisilemezse_none_vllme_duşmez(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=False)
+    await set_llm_primary(session, "nvidia")
+    provider = await get_active_provider(session)
+    assert provider is None
+
+
+async def test_get_active_provider_nvidia_ayarlari_dogru_gecirilir(session, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "nvidia_url", "https://integrate.api.nvidia.com/v1")
+    monkeypatch.setattr(settings, "nvidia_api_key", "nvapi-gizli")
+    monkeypatch.setattr(settings, "nvidia_model", "qwen/qwen2.5-72b-instruct")
+    _stub_health(monkeypatch, vllm=False, ollama=False, nvidia=True)
+
+    provider = await get_active_provider(session)
+
+    assert isinstance(provider, NVIDIAProvider)
+    assert provider.base_url == "https://integrate.api.nvidia.com/v1"
+    assert provider.api_key == "nvapi-gizli"
+    assert provider.model == "qwen/qwen2.5-72b-instruct"
+
+
 # --------------------------------------------------------------- get_status
 
 
-async def test_get_status_ollama_tercihinde_bile_ikisini_de_kontrol_eder(session, monkeypatch):
-    # get_active_provider "ollama" tercihinde vLLM'e hiç dokunmaz (yukarıdaki
-    # test), ama admin panelin durumu (get_status) ikisini de her zaman
-    # gösterir — admin gerçek durumu görmeli, yalnızca aktif olanı değil.
-    _stub_health(monkeypatch, vllm=True, ollama=True)
+async def test_get_status_ollama_tercihinde_bile_ucunu_de_kontrol_eder(session, monkeypatch):
+    # get_active_provider "ollama" tercihinde diğerlerine hiç dokunmaz
+    # (yukarıdaki test), ama admin panelin durumu (get_status) üçünü de
+    # her zaman gösterir — admin gerçek durumu görmeli, yalnızca aktif
+    # olanı değil.
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=True)
     await set_llm_primary(session, "ollama")
 
     status = await get_status(session)
 
     assert status.primary == "ollama"
     assert status.active == "ollama"
+    assert status.nvidia.ok is True
     assert status.vllm.ok is True
     assert status.ollama.ok is True
+
+
+async def test_get_status_auto_nvidia_saglikliysa_aktif_nvidia_olur(session, monkeypatch):
+    _stub_health(monkeypatch, vllm=True, ollama=True, nvidia=True)
+    status = await get_status(session)
+    assert status.active == "nvidia"
 
 
 async def test_get_status_kaynak_bilgilerini_configten_dolduruyor(session, monkeypatch):
     from app.config import settings
 
+    monkeypatch.setattr(settings, "nvidia_url", "https://integrate.api.nvidia.com/v1")
+    monkeypatch.setattr(settings, "nvidia_model", "qwen/qwen2.5-72b-instruct")
     monkeypatch.setattr(settings, "vllm_url", "http://10.100.0.2:8000")
     monkeypatch.setattr(settings, "vllm_model", "Qwen/Qwen2.5-7B-Instruct-AWQ")
     monkeypatch.setattr(settings, "ollama_url", "http://ollama:11434")
     monkeypatch.setattr(settings, "llm_model", "qwen2.5:3b")
-    _stub_health(monkeypatch, vllm=False, ollama=False)
+    _stub_health(monkeypatch, vllm=False, ollama=False, nvidia=False)
 
     status = await get_status(session)
 
+    assert status.nvidia.url == "https://integrate.api.nvidia.com/v1"
+    assert status.nvidia.model == "qwen/qwen2.5-72b-instruct"
     assert status.vllm.url == "http://10.100.0.2:8000"
     assert status.vllm.model == "Qwen/Qwen2.5-7B-Instruct-AWQ"
     assert status.ollama.url == "http://ollama:11434"

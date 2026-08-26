@@ -1,8 +1,9 @@
-/* Admin paneli (/admin) — Faz 7 iskeleti.
+/* Admin paneli (/admin) — Faz 7.
  *
- * Sol menü + sağ içerik. "İşlem Akışı", "Sistem Sağlığı", "Yedekleme" ve
- * "LLM Yönetimi" dolu; kalan bölümler menüde görünür ama "Yakında" der
- * (yer tutuyorlar, sırayla doldurulacak — bkz. admin.md).
+ * Sol menü + sağ içerik. Yalnızca "Kontroller" (LLM aç/kapat, model, yedek
+ * — yazma işlemleri) henüz "Yakında"; diğer tüm bölümler dolu. Yeni dört
+ * bölüm (LLM İzleme, İstek Kuyruğu, Loglar, Kişiler & İşlemler) salt
+ * okunur — bkz. admin.md.
  *
  * Oturum: şifre doğruysa sunucu httpOnly çerez bırakır. Sayfa açılışında
  * /me sorulur; 401 ise şifre ekranı gösterilir. Token JS'te tutulmaz.
@@ -19,8 +20,12 @@ import { adminApi, Unauthorized } from "../api/admin";
 import { api, ApiError } from "../api/client";
 import type { AdminLLMStatus, AdminVllmControl } from "../api/types";
 import AdminBackups from "../components/admin/AdminBackups";
+import AdminData from "../components/admin/AdminData";
 import AdminFlow from "../components/admin/AdminFlow";
 import AdminHealth from "../components/admin/AdminHealth";
+import AdminLlmMonitor from "../components/admin/AdminLlmMonitor";
+import AdminLogs from "../components/admin/AdminLogs";
+import AdminQueue from "../components/admin/AdminQueue";
 import { useToast } from "../lib/toast";
 
 type SectionId =
@@ -28,6 +33,7 @@ type SectionId =
   | "health"
   | "backups"
   | "llm"
+  | "llm-monitor"
   | "queue"
   | "logs"
   | "data"
@@ -55,9 +61,30 @@ const SECTIONS: Section[] = [
     hint: "Kaynak durumu, vLLM/Ollama tercihi",
     ready: true,
   },
-  { id: "queue", label: "İstek Kuyruğu", hint: "Bekleyen ve yarım kalan istekler" },
-  { id: "logs", label: "Loglar", hint: "Bot ve API kayıtları" },
-  { id: "data", label: "Kişiler & İşlemler", hint: "Veri yönetimi, arşiv" },
+  {
+    id: "llm-monitor",
+    label: "LLM İzleme",
+    hint: "LLM'e düşen mesajlar, süre, başarı oranı",
+    ready: true,
+  },
+  {
+    id: "queue",
+    label: "İstek Kuyruğu",
+    hint: "Bekleyen ve yarım kalan istekler",
+    ready: true,
+  },
+  {
+    id: "logs",
+    label: "Loglar",
+    hint: "Sistem denetim kayıtları (audit_log)",
+    ready: true,
+  },
+  {
+    id: "data",
+    label: "Kişiler & İşlemler",
+    hint: "Salt okunur veri gezgini, arşiv",
+    ready: true,
+  },
   { id: "controls", label: "Kontroller", hint: "LLM aç/kapat, model, yedek" },
 ];
 
@@ -134,6 +161,10 @@ export default function Admin() {
         {section === "health" && <AdminHealth onUnauthorized={() => setAuthed(false)} />}
         {section === "backups" && <AdminBackups onUnauthorized={() => setAuthed(false)} />}
         {section === "llm" && <LlmSection />}
+        {section === "llm-monitor" && <AdminLlmMonitor onUnauthorized={() => setAuthed(false)} />}
+        {section === "queue" && <AdminQueue onUnauthorized={() => setAuthed(false)} />}
+        {section === "logs" && <AdminLogs onUnauthorized={() => setAuthed(false)} />}
+        {section === "data" && <AdminData onUnauthorized={() => setAuthed(false)} />}
         {!active.ready && <Soon />}
       </main>
     </div>
@@ -254,12 +285,14 @@ function LlmSection() {
 
 const PREFERENCES: { value: string; label: string }[] = [
   { value: "auto", label: "Otomatik" },
+  { value: "nvidia", label: "NVIDIA zorla" },
   { value: "vllm", label: "vLLM zorla" },
   { value: "ollama", label: "Ollama zorla" },
   { value: "none", label: "Kapalı" },
 ];
 
 const SOURCE_LABEL: Record<AdminLLMStatus["active"], string> = {
+  nvidia: "NVIDIA",
   vllm: "vLLM",
   ollama: "Ollama",
   none: "Kapalı",
@@ -313,6 +346,15 @@ function LlmPanel({ password }: { password: string }) {
         <p className="panel-title">Kaynak durumu</p>
         <div className="admin-source">
           <span className="admin-source-name">
+            <StatusDot ok={data.nvidia.ok} />
+            NVIDIA (bulut)
+          </span>
+          <span className="admin-source-meta">
+            {data.nvidia.ok ? data.nvidia.model : "erişilemiyor"}
+          </span>
+        </div>
+        <div className="admin-source">
+          <span className="admin-source-name">
             <StatusDot ok={data.vllm.ok} />
             vLLM (Bosna)
           </span>
@@ -345,7 +387,7 @@ function LlmPanel({ password }: { password: string }) {
         </div>
         {data.primary === "ollama" && (
           <p className="hint" style={{ marginTop: 10 }}>
-            vLLM'e hiç dokunulmuyor — GPU'yu kendiniz kullanabilirsiniz.
+            NVIDIA'ya ve vLLM'e hiç dokunulmuyor — GPU'yu kendiniz kullanabilirsiniz.
           </p>
         )}
       </div>
