@@ -10,15 +10,15 @@ tarafında /api/admin/* uçları şifre/token kontrolü ister (korumasız veri
 sızmaz).
 
 **İskelet — sol menü (bölümler), sağ içerik:**
-Tüm bölümler menüde görünür ama şimdilik ilk ikisi dolu, diğerleri
-"yakında" placeholder:
+Yalnızca "Kontroller" (yazma işlemi — LLM aç/kapat, model, yedek) henüz
+placeholder; diğer tüm bölümler dolu:
 1. İşlem Akışı (DOLU) — müşteri ne dedi → sistem ne algıladı → ne yaptı
 2. Sistem Sağlığı (DOLU) — api/bot/db/ollama/yedek durumu
 2b. Yedekleme (DOLU, geri yükleme AŞAMALI) — yedek listesi + "ana veri yap"
-3. LLM İzleme (placeholder) — çağrılar, süreler, başarı
-4. İstek Kuyruğu (placeholder) — pending_requests durumları
-5. Loglar (placeholder) — bot/api log
-6. Kişiler & İşlemler (placeholder) — veri yönetimi
+3. LLM İzleme (DOLU) — çağrılar, süreler, başarı
+4. İstek Kuyruğu (DOLU) — pending_requests durumları
+5. Loglar (DOLU) — audit_log denetim kaydı
+6. Kişiler & İşlemler (DOLU) — salt okunur veri gezgini + arşiv
 7. Kontroller (placeholder) — LLM aç/kapat, model, yedek
 
 **İşlem Akışı bölümü (ilk gerçek içerik):**
@@ -77,6 +77,42 @@ audit_log kaydı yazar ve "istek alındı" der. **API pg_restore çalıştırmaz
 **Ölçülemeyen uydurulmaz.** Host diski, systemd timer'ı, bot sürecinin
 canlılığı API container'ının içinden görülemez; bunlar ya dolaylı gösterilir
 (measured=false + açıklama) ya da hiç gösterilmez. CPU/RAM/disk kartı YOK.
+
+**LLM İzleme (GET /api/admin/llm-monitor, 2026-08-26):**
+"LLM Yönetimi"nden (yukarıdaki switch — vLLM/Ollama tercihi) AYRI bölüm: bu
+bir analitik. raw_messages'ta yalnızca `parse_source='llm'` düşen (regex'in
+çözemediği, yavaş yola giden) satırlar listelenir. Üstte özet karo şeridi:
+toplam çağrı, ortalama süre (parse_ms), başarı oranı, başarılı/başarısız
+sayısı. "Başarı" = LLM kullanılabilir sonuç üretti (kaydedildi/yanıtlandı/
+soru soruldu); "başarısızlık" = hata veya anlaşılamadı. İstatistik
+FİLTRELENMİŞ kümenin tamamı üzerinden, yalnız görünen sayfa değil. Filtre:
+sonuç, tarih aralığı.
+
+**İstek Kuyruğu (GET /api/admin/queue, 2026-08-26):**
+pending_requests (CLAUDE.md > "Çoklu istek — kalıcı istek kuyruğu").
+Üstte durum sayıları (beklemede/işleniyor/tamamlandı/başarısız/iptal,
+filtreden bağımsız — kuyruğun tamamı), altta filtrelenebilir liste
+(metin, sıra no, durum, sonuç/hata, zaman).
+
+**Kişiler & İşlemler (GET /api/admin/persons, /persons/{id}/transactions,
+/archived-persons, /archived-transactions, 2026-08-26):**
+Salt okunur veri gezgini, hiçbir yazma işlemi yok. İki sekme:
+- Aktif defter: kişi listesi (public /api/persons ile aynı sorgu —
+  `queries.list_persons_with_balance`), bakiye, açık kalemler, arama/
+  kapsam filtresi (hepsi/borçlular/alacaklılar). Satıra tıklayınca o
+  kişinin TÜM hareketleri (durumu ne olursa olsun, salt okunur denetim
+  amaçlı) satır içinde açılır.
+- Arşiv: "Sil" = arşivle kararının (CLAUDE.md) denetim görünümü. İki alt
+  sekme: silinen kişiler (archived_persons — arşivlenen bakiye, sebep, kim/
+  ne zaman) ve silinen hareketler (archived_transactions, kişiye
+  daraltılabilir).
+
+**Loglar (GET /api/admin/audit-log, 2026-08-26):**
+audit_log tablosu: kim/ne zaman/neyi değiştirdi (borç/tahsilat ekleme,
+ters kayıt, hareket/kişi arşivleme, kişi düzenleme, geri yükleme isteği —
+hepsi buraya yazar). Container stdout logları DEĞİL, yalnızca DB denetim
+kaydı. Filtre: kim (actor), işlem (action), varlık (entity), tarih. Satıra
+tıklanınca before/after JSON'ı açılır.
 
 **Tasarım:** profesyonel, koyu mod (mevcut tema), okunur, yoğun bilgi ama
 dağınık değil. Mevcut web'in stiliyle tutarlı (Layout, renkler).
