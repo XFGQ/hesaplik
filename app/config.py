@@ -56,6 +56,23 @@ class Settings(BaseSettings):
     # önbelleklenir (bkz. llm_provider._cached_health).
     llm_health_timeout: float = 3.0
 
+    # NVIDIA NIM (bulut, Faz 4c) — DÖRDÜNCÜ ve EN ÖNCELİKLİ katman. OpenAI
+    # uyumlu API: {nvidia_url}/chat/completions, Authorization: Bearer
+    # {nvidia_api_key}. api_key BOŞSA (varsayılan) NVIDIA hiç denenmez,
+    # sistem vLLM/Ollama/none'a düşer (bkz. app/services/llm_provider.py >
+    # select_source). api_key GİZLİDİR, hiçbir yerde loglanmaz.
+    #
+    # Model: Qwen2.5, Llama'nın aksine Türkçe'yi resmi olarak desteklenen
+    # diller arasında listeliyor (29 dil) — bu yüzden qwen/qwen2.5-72b-
+    # instruct varsayılan seçildi (mevcut vLLM/Ollama katmanlarıyla da aynı
+    # aile, tutarlı davranış). NVIDIA rate limit'i (40 istek/dk) 429 ile
+    # kendini gösterir; NVIDIAProvider bunu None döner ve auto modda bir
+    # sonraki health check'te vLLM'e düşülür (bkz. nvidia_healthy).
+    nvidia_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_api_key: str = ""
+    nvidia_model: str = "openai/gpt-oss-20b"
+    nvidia_timeout: float = 15.0
+
     # vLLM uzaktan aç/kapat ("Yol B", bkz. app/services/vllm_control.py).
     # Bosna'daki host script'i (scripts/vllm-control.sh) GET /api/vllm-desired
     # ucunu bu tokenla çeker — admin şifresinden AYRI ve daha dar yetkili

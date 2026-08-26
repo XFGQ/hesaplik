@@ -6,16 +6,19 @@ LLM çıktısı asla doğrudan güvenilmez: intent_resolver'daki kişi eşleşti
 (pg_trgm + SIMILARITY_STRONG/GAP) ve catalog kuralları aynen uygulanır
 (CLAUDE.md > "Faz 4 — LLM").
 
-İki eş değerde sağlayıcı var: VLLMProvider (Bosna, 2080 Super, BİRİNCİL —
-hızlı) ve OllamaProvider (İzmir, YEDEK — yavaş ama her zaman orada). İkisi
-de aynı SYSTEM_PROMPT'u kullanır, aynı parsed_intent_from_json doğrulama/
-güvenlik katmanından geçer; tek fark HTTP istek/yanıt şekli.
+Dört katmanlı sağlayıcı var, öncelik sırasıyla: NVIDIAProvider (bulut NIM,
+EN ZEKİ — ama ağ bağımlı + rate limit'li), VLLMProvider (Bosna, 2080
+Super, hızlı), OllamaProvider (İzmir, YEDEK — yavaş ama her zaman orada).
+Hepsi aynı SYSTEM_PROMPT'u kullanır, aynı parsed_intent_from_json
+doğrulama/güvenlik katmanından geçer; tek fark HTTP istek/yanıt şekli ve
+(NVIDIA'da) kimlik doğrulama.
 
 Hangi sağlayıcının aktif olacağı artık sabit config'ten değil, DB'deki
 settings.llm_primary'den (runtime, admin panelden /admin değiştirilebilir)
-belirlenir — get_active_provider(session) bkz. Kaynaklardan hiçbiri
-erişilemezse `parse()` None döner, sistem ÇÖKMEZ — kural parser + "elle
-gir" ile çalışmaya devam eder.
+belirlenir — get_active_provider(session) bkz. "auto" modda katman
+sırasıyla düşülür: NVIDIA sağlıksız/limit dolu -> vLLM, o da yoksa
+Ollama, o da yoksa none. Kaynaklardan hiçbiri erişilemezse `parse()` None
+döner, sistem ÇÖKMEZ — kural parser + "elle gir" ile çalışmaya devam eder.
 """
 
 from __future__ import annotations
@@ -368,6 +371,116 @@ class VLLMProvider:
         return parsed_intent_from_json(data, text)
 
 
+# --------------------------------------------------------------- NVIDIA rate limit
+#
+# NVIDIA NIM 40 istek/dk ile sınırlı. NVIDIAProvider.parse() 429 aldığında
+# bir süre "rate limited" işaretlenir; nvidia_healthy() bu süre boyunca
+# HİÇ ağa çıkmadan False döner — hem limiti health check'in kendisi
+# tüketmesin diye hem de auto modun aynı dakika içinde tekrar tekrar 429
+# yiyerek zaman kaybetmemesi için. Modül seviyesinde, süreç ömrü boyunca
+# tutulur (test_llm_provider.py'de reset_health_cache ile birlikte
+# temizlenir).
+
+_NVIDIA_RATE_LIMIT_COOLDOWN = 60.0
+_nvidia_rate_limited_until = 0.0
+
+
+def _mark_nvidia_rate_limited() -> None:
+    global _nvidia_rate_limited_until
+    _nvidia_rate_limited_until = time.monotonic() + _NVIDIA_RATE_LIMIT_COOLDOWN
+
+
+def _nvidia_rate_limited() -> bool:
+    return time.monotonic() < _nvidia_rate_limited_until
+
+
+class NVIDIAProvider:
+    """NVIDIA NIM (bulut, integrate.api.nvidia.com) üzerinden çalışır —
+    OpenAI-uyumlu /chat/completions, Authorization: Bearer {api_key}.
+    EN ÖNCELİKLİ katman (Faz 4c): bulutta en güçlü model burada çalışır,
+    ama tek başına güvenilir değil (ağ bağımlılığı + 40 istek/dk rate
+    limit) — bu yüzden erişilemezse ya da limit dolarsa (429) sessizce bir
+    sonraki katmana (vLLM) düşülür (bkz. select_source, nvidia_healthy).
+
+    VLLMProvider/OllamaProvider ile AYNI SYSTEM_PROMPT, AYNI
+    parsed_intent_from_json doğrulama/güvenlik katmanı (isim halüsinasyon
+    kontrolü, VALID_KINDS, Decimal çevirimi) aynen uygulanır — tek fark
+    HTTP istek/yanıt şekli ve kimlik doğrulama. api_key hiçbir log
+    satırına yazılmaz.
+
+    `client` parametresi yalnızca testler içindir (httpx.MockTransport ile
+    gerçek ağa çıkmadan mock'lamak için); normal kullanımda boş bırakılır,
+    her çağrıda kısa ömürlü bir AsyncClient açılır.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        timeout: float = 15.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.timeout = timeout
+        self._client = client
+
+    async def _request(self, payload: dict) -> dict | None:
+        url = f"{self.base_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {self.api_key}"}
+        try:
+            if self._client is not None:
+                resp = await self._client.post(url, json=payload, headers=headers)
+            else:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    resp = await client.post(url, json=payload, headers=headers)
+        except httpx.HTTPError as e:
+            logger.warning("NVIDIA NIM'e erişilemedi: %s", e)
+            return None
+
+        if resp.status_code == 429:
+            logger.warning("NVIDIA NIM rate limit doldu (429), bir sonraki katmana düşülüyor")
+            _mark_nvidia_rate_limited()
+            return None
+
+        try:
+            resp.raise_for_status()
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("NVIDIA NIM geçersiz yanıt döndürdü: %s", e)
+            return None
+
+    async def parse(self, text: str) -> ParsedIntent | None:
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": text},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+        }
+        body = await self._request(payload)
+        if body is None:
+            return None
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return None
+        if not content:
+            return None
+
+        data = _extract_json_object(content)
+        if data is None:
+            logger.warning("NVIDIA NIM geçersiz JSON döndürdü: %r", content)
+            return None
+
+        return parsed_intent_from_json(data, text)
+
+
 # --------------------------------------------------------------- sağlık kontrolü
 #
 # "auto" modda hangi kaynağın kullanılacağına ve admin panelin (/admin)
@@ -376,13 +489,33 @@ class VLLMProvider:
 # _cached_health ile 10 sn önbelleklenir.
 
 
-async def _probe(url: str, timeout: float) -> bool:
+async def _probe(url: str, timeout: float, headers: dict[str, str] | None = None) -> bool:
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.get(url)
-        return resp.status_code < 500
+            resp = await client.get(url, headers=headers)
+        # 429 (rate limit) "sunucu ayakta ama şu an kullanılamaz" demektir,
+        # < 500 olsa da sağlıklı sayılmaz (NVIDIA'nın 40 istek/dk limiti).
+        return resp.status_code < 500 and resp.status_code != 429
     except httpx.HTTPError:
         return False
+
+
+async def nvidia_healthy() -> bool:
+    """NVIDIA NIM sağlığı. api_key yapılandırılmamışsa (varsayılan) hiç
+    ağa çıkmadan False döner. Yakın zamanda 429 yediyse (_nvidia_rate_
+    limited) de ağa çıkmadan False döner — health check'in kendisi rate
+    limit bütçesini tüketmesin diye (CLAUDE.md: sağlık kontrolü ucuz ve
+    hızlı olmalı). Aksi halde hafif bir /models isteğiyle yoklanır."""
+    from app.config import settings  # döngüsel import olmasın diye gecikmeli
+
+    if not settings.nvidia_api_key:
+        return False
+    if _nvidia_rate_limited():
+        return False
+    headers = {"Authorization": f"Bearer {settings.nvidia_api_key}"}
+    return await _probe(
+        f"{settings.nvidia_url.rstrip('/')}/models", settings.llm_health_timeout, headers=headers
+    )
 
 
 async def vllm_healthy() -> bool:
@@ -408,23 +541,29 @@ _health_cache: dict[str, tuple[float, bool]] = {}
 
 
 async def _cached_health(source: str) -> bool:
-    """vllm_healthy/ollama_healthy sonucunu _HEALTH_CACHE_TTL saniye
-    önbellekler ki her mesajda health check ağa çıkmasın. `source`:
-    "vllm" | "ollama"."""
+    """nvidia_healthy/vllm_healthy/ollama_healthy sonucunu _HEALTH_CACHE_TTL
+    saniye önbellekler ki her mesajda health check ağa çıkmasın. `source`:
+    "nvidia" | "vllm" | "ollama". Modül seviyesindeki fonksiyon adları
+    ÇAĞRI ANINDA (globals() ile) okunur, dict'e önceden bağlanmaz — testler
+    monkeypatch.setattr(llm_provider, "vllm_healthy", ...) ile bu isimleri
+    değiştirir, önceden bağlanmış bir referans bu değişikliği görmezdi."""
     now = time.monotonic()
     cached = _health_cache.get(source)
     if cached is not None and (now - cached[0]) < _HEALTH_CACHE_TTL:
         return cached[1]
-    check = vllm_healthy if source == "vllm" else ollama_healthy
+    check = globals()[f"{source}_healthy"]
     ok = await check()
     _health_cache[source] = (now, ok)
     return ok
 
 
 def reset_health_cache() -> None:
-    """Test yardımcı fonksiyonu: sağlık önbelleğini temizler (testler
-    arasında sızıntı olmasın diye conftest'te otomatik çağrılır)."""
+    """Test yardımcı fonksiyonu: sağlık önbelleğini VE NVIDIA rate limit
+    cooldown'unu temizler (testler arasında sızıntı olmasın diye
+    conftest'te otomatik çağrılır)."""
+    global _nvidia_rate_limited_until
     _health_cache.clear()
+    _nvidia_rate_limited_until = 0.0
 
 
 async def vllm_reachable_cached() -> bool:
@@ -440,7 +579,7 @@ async def vllm_reachable_cached() -> bool:
 # (/admin) değiştirilir, .env değil (CLAUDE.md > "Dinamik LLM geçişi").
 
 LLM_PRIMARY_KEY = "llm_primary"
-LLM_PRIMARY_VALUES = ("auto", "vllm", "ollama", "none")
+LLM_PRIMARY_VALUES = ("auto", "nvidia", "vllm", "ollama", "none")
 LLM_PRIMARY_DEFAULT = "auto"
 
 
@@ -464,18 +603,23 @@ async def set_llm_primary(session: AsyncSession, value: str) -> None:
     await session.flush()
 
 
-def select_source(primary: str, vllm_ok: bool, ollama_ok: bool) -> str:
+def select_source(primary: str, vllm_ok: bool, ollama_ok: bool, nvidia_ok: bool = False) -> str:
     """Tercihe ve sağlık durumuna göre hangi kaynağın kullanılacağını
     belirleyen SAF fonksiyon (ağa çıkmaz) — hem get_active_provider hem
     admin durum uç noktası (/api/admin/llm) bunu kullanır ki seçim mantığı
     tek yerde yaşasın, ikisi asla birbirinden sapmasın.
 
     - "none": her zaman kapalı.
-    - "ollama": her zaman Ollama — vLLM'e hiç dokunulmaz (kullanıcı GPU'yu
-      kendi kullanmak istediğinde "tek tuş kapat" senaryosu).
+    - "ollama": her zaman Ollama — vLLM'e ve NVIDIA'ya hiç dokunulmaz
+      (kullanıcı GPU'yu kendi kullanmak istediğinde "tek tuş kapat"
+      senaryosu).
     - "vllm": zorla vLLM; erişilemezse NONE'a düşer, Ollama'ya değil
       (kullanıcı özellikle vLLM istemiştir).
-    - "auto" (ya da tanınmayan değer): vLLM sağlıklıysa vLLM, değilse
+    - "nvidia": zorla NVIDIA; erişilemezse/limit doluysa NONE'a düşer,
+      vLLM'e değil (kullanıcı özellikle NVIDIA istemiştir — aynı "zorla"
+      simetrisi vllm ile aynı).
+    - "auto" (ya da tanınmayan değer): öncelik NVIDIA > vLLM > Ollama >
+      none — NVIDIA sağlıklıysa NVIDIA, değilse vLLM, o da değilse
       Ollama, o da değilse none.
     """
     if primary == "none":
@@ -484,6 +628,10 @@ def select_source(primary: str, vllm_ok: bool, ollama_ok: bool) -> str:
         return "ollama"
     if primary == "vllm":
         return "vllm" if vllm_ok else "none"
+    if primary == "nvidia":
+        return "nvidia" if nvidia_ok else "none"
+    if nvidia_ok:
+        return "nvidia"
     if vllm_ok:
         return "vllm"
     if ollama_ok:
@@ -496,9 +644,11 @@ async def get_active_provider(session: AsyncSession) -> LLMProvider | None:
     aktif sağlayıcıyı döner. "none" ya da hiçbir kaynak erişilemiyorsa
     None (LLM'e hiç gidilmez, kural parser + "elle gir" ile devam edilir).
 
-    "ollama" tercihinde vLLM'e HİÇ dokunulmaz (health check bile atılmaz)
-    — GPU'yu kullanıcı kendi kullanmak istediğinde bu davranış kasıtlıdır.
-    """
+    "ollama" tercihinde vLLM'e ve NVIDIA'ya HİÇ dokunulmaz (health check
+    bile atılmaz) — GPU'yu kullanıcı kendi kullanmak istediğinde bu
+    davranış kasıtlıdır. Diğer dallarda katmanlar sırayla (NVIDIA -> vLLM
+    -> Ollama) ve yalnızca gerektiğinde yoklanır — bir üst katman
+    sağlıklıysa alttakine hiç ağ çağrısı atılmaz."""
     from app.config import settings  # döngüsel import olmasın diye gecikmeli
 
     primary = await get_llm_primary(session)
@@ -506,19 +656,31 @@ async def get_active_provider(session: AsyncSession) -> LLMProvider | None:
     if primary == "ollama":
         return OllamaProvider(settings.ollama_url, settings.llm_model, timeout=settings.llm_timeout)
 
-    # "ollama" dışındaki tüm dallarda vLLM sağlığı gerekiyor; Ollama sağlığı
-    # yalnızca "auto"da (ve vLLM sağlıksızsa) — gereksiz ağ çağrısından
-    # kaçınmak için kısa devre yapılır (select_source'a zaten hesaplanmış
-    # bayraklar geçilir).
-    vllm_ok = await _cached_health("vllm") if primary != "none" else False
-    ollama_ok = await _cached_health("ollama") if (primary == "auto" and not vllm_ok) else False
+    nvidia_ok = await _cached_health("nvidia") if primary in ("auto", "nvidia") else False
+    vllm_ok = (
+        await _cached_health("vllm")
+        if primary == "vllm" or (primary == "auto" and not nvidia_ok)
+        else False
+    )
+    ollama_ok = (
+        await _cached_health("ollama")
+        if primary == "auto" and not nvidia_ok and not vllm_ok
+        else False
+    )
 
-    source = select_source(primary, vllm_ok, ollama_ok)
+    source = select_source(primary, vllm_ok, ollama_ok, nvidia_ok)
+    if source == "nvidia":
+        return NVIDIAProvider(
+            settings.nvidia_url, settings.nvidia_api_key, settings.nvidia_model,
+            timeout=settings.nvidia_timeout,
+        )
     if source == "vllm":
         return VLLMProvider(settings.vllm_url, settings.vllm_model, timeout=settings.vllm_timeout)
     if source == "ollama":
         return OllamaProvider(settings.ollama_url, settings.llm_model, timeout=settings.llm_timeout)
 
+    if primary == "nvidia":
+        logger.warning("llm_primary=nvidia ama NVIDIA erişilemiyor, LLM devre dışı (vLLM'e düşülmez)")
     if primary == "vllm":
         logger.warning("llm_primary=vllm ama vLLM erişilemiyor, LLM devre dışı (Ollama'ya düşülmez)")
     return None
@@ -538,6 +700,7 @@ class SourceStatus:
 class LLMStatus:
     primary: str
     active: str
+    nvidia: SourceStatus
     vllm: SourceStatus
     ollama: SourceStatus
 
@@ -545,19 +708,21 @@ class LLMStatus:
 async def get_status(session: AsyncSession) -> LLMStatus:
     """Admin panelin (/api/admin/llm) gösterdiği anlık durum. select_source
     ile aynı saf karar mantığını kullanır, ama get_active_provider'daki kısa
-    devreden (ör. "ollama" tercihinde vLLM'e hiç dokunmama) FARKLI olarak
-    HER İKİ kaynağı da her zaman yoklar — admin ikisinin de gerçek durumunu
-    görmek ister, yalnızca aktif olanınkini değil."""
+    devreden (ör. "ollama" tercihinde vLLM'e/NVIDIA'ya hiç dokunmama)
+    FARKLI olarak HER ÜÇ kaynağı da her zaman yoklar — admin üçünün de
+    gerçek durumunu görmek ister, yalnızca aktif olanınkini değil."""
     from app.config import settings  # döngüsel import olmasın diye gecikmeli
 
     primary = await get_llm_primary(session)
+    nvidia_ok = await _cached_health("nvidia")
     vllm_ok = await _cached_health("vllm")
     ollama_ok = await _cached_health("ollama")
-    active = select_source(primary, vllm_ok, ollama_ok)
+    active = select_source(primary, vllm_ok, ollama_ok, nvidia_ok)
 
     return LLMStatus(
         primary=primary,
         active=active,
+        nvidia=SourceStatus(ok=nvidia_ok, url=settings.nvidia_url, model=settings.nvidia_model),
         vllm=SourceStatus(ok=vllm_ok, url=settings.vllm_url, model=settings.vllm_model),
         ollama=SourceStatus(ok=ollama_ok, url=settings.ollama_url, model=settings.llm_model),
     )

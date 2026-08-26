@@ -153,6 +153,7 @@ class AdminLLMSourceOut(BaseModel):
 class AdminLLMStatusOut(BaseModel):
     primary: str
     active: str
+    nvidia: AdminLLMSourceOut
     vllm: AdminLLMSourceOut
     ollama: AdminLLMSourceOut
 

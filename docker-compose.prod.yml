@@ -31,6 +31,12 @@ services:
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
 
+      # NVIDIA NIM (bulut, Faz 4c) — dördüncü ve en öncelikli katman.
+      # Boşsa hiç denenmez, sistem vLLM/Ollama/none'a düşer.
+      NVIDIA_URL: ${NVIDIA_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-qwen/qwen2.5-72b-instruct}
+
       VLLM_URL: ${VLLM_URL:-}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}
       VLLM_TIMEOUT: ${VLLM_TIMEOUT:-30}
@@ -66,6 +72,10 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       LLM_TIMEOUT: ${LLM_TIMEOUT:-90}
+
+      NVIDIA_URL: ${NVIDIA_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      NVIDIA_MODEL: ${NVIDIA_MODEL:-qwen/qwen2.5-72b-instruct}
 
       VLLM_URL: ${VLLM_URL:-}
       VLLM_MODEL: ${VLLM_MODEL:-Qwen/Qwen2.5-7B-Instruct-AWQ}

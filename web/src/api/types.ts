@@ -86,8 +86,9 @@ export type AdminLLMSource = {
 };
 
 export type AdminLLMStatus = {
-  primary: "auto" | "vllm" | "ollama" | "none";
-  active: "vllm" | "ollama" | "none";
+  primary: "auto" | "nvidia" | "vllm" | "ollama" | "none";
+  active: "nvidia" | "vllm" | "ollama" | "none";
+  nvidia: AdminLLMSource;
   vllm: AdminLLMSource;
   ollama: AdminLLMSource;
 };
