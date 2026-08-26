@@ -55,7 +55,7 @@ services:
 
     ports:
       - "127.0.0.1:8100:8000"
-
+      - "10.100.0.1:8100:8000"
   bot:
     build: .
     restart: unless-stopped
