@@ -4,6 +4,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
 import { hhmm, money } from "../lib/format";
+import { applyTheme, getStoredTheme, type Theme } from "../lib/theme";
 import { useToast } from "../lib/toast";
 import SettingsModal from "./SettingsModal";
 
@@ -15,6 +16,12 @@ export default function Layout() {
   const [showSettings, setShowSettings] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(() => new Date());
   const [refreshing, setRefreshing] = useState(false);
+  const [theme, setTheme] = useState<Theme>(getStoredTheme);
+
+  function chooseTheme(next: Theme) {
+    setTheme(next);
+    applyTheme(next);
+  }
 
   const people = useQuery({ queryKey: ["persons"], queryFn: () => api.persons() });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
@@ -92,6 +99,14 @@ export default function Layout() {
             title="Ayarlar"
           >
             ⚙
+          </button>
+          <button
+            className="side-icon-btn"
+            onClick={() => chooseTheme(theme === "dark" ? "light" : "dark")}
+            aria-label={theme === "dark" ? "Açık moda geç" : "Koyu moda geç"}
+            title={theme === "dark" ? "Açık moda geç" : "Koyu moda geç"}
+          >
+            {theme === "dark" ? "☀" : "☾"}
           </button>
           <span className="side-updated">Güncellendi · {hhmm(updatedAt)}</span>
         </div>
