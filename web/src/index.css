@@ -1,7 +1,8 @@
 /* Hesaplık — veresiye defteri
-   Koyu mod statik, light mod yok. Tutarlar mono ve tabular: alt alta
+   Koyu mod varsayılan, açık mod seçilebilir ([data-theme="light"] ile
+   Layout.tsx'teki değiştiriciden). Tutarlar mono ve tabular: alt alta
    hizalanmayan rakam defterde okunmaz. Renk iki iş yapar: borç kırmızı,
-   tahsilat mavi. */
+   tahsilat mavi — bu anlam her iki modda da korunur. */
 
 :root {
   --paper: #0e1013;
@@ -34,6 +35,35 @@
   --pad: 16px;
 
   color-scheme: dark;
+}
+
+/* Açık mod — koyu moddaki anlam korunur (borç kırmızı, tahsilat mavi),
+   yalnızca ton açık zemine göre yeniden ayarlanır. Tüm metin renkleri
+   WCAG AA (>=4.5:1) hedefiyle seçildi (60 yaş okunabilirliği). */
+:root[data-theme="light"] {
+  --paper: #faf9f6;
+  --card: #eeece6;
+  --panel: #f4f2ec;
+  --rule: #d8d4cb;
+  --rule-strong: #c3beb2;
+  --ink: #1a1d21;
+  --ink-soft: #4b5361;
+  --ink-faint: #5b6270;
+
+  --borc: #ad251d;
+  --borc-bg: #fbeae8;
+  --tahsilat: #175fc0;
+  --tahsilat-bg: #e8f1fd;
+  --stamp: #175fc0;
+  --stamp-bg: #e8f1fd;
+
+  --success: #186b43;
+  --success-bg: #e6f4ea;
+
+  --uyari: #744a0c;
+  --uyari-bg: #faf0da;
+
+  color-scheme: light;
 }
 
 * {
