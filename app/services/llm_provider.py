@@ -80,6 +80,10 @@ REPORT_TUR_TO_KIND = {
 class LLMProvider(Protocol):
     async def parse(self, text: str) -> ParsedIntent | None: ...
 
+    async def chat_json(
+        self, system_prompt: str, user_text: str, max_tokens: int | None = None
+    ) -> dict | None: ...
+
 
 def _clean_str(value) -> str | None:
     if not isinstance(value, str):
@@ -233,6 +237,90 @@ def parsed_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIn
     )
 
 
+# --------------------------------------------------------------- isim eşleştirme (öngörücü teyit)
+#
+# CLAUDE.md > "İsim eşleştirme + öngörücü teyit": pg_trgm hiçbir aday
+# bulamadığında (ör. "doman" -> "Duman" benzerliği 0.33, SIMILARITY_CANDIDATE
+# 0.35'in altında kalıyor) son çare LLM'e danışılır — kayıtlı kişi listesi
+# verilir, "kullanıcı bunu yazdı, hangisini kastetmiş olabilir?" diye
+# sorulur. Çağıran (intent_resolver.find_person_match) yalnızca pg_trgm SIFIR
+# aday bulduğunda buraya düşer; normal (net ya da adaylı) eşleşmede bu hiç
+# çalışmaz, hızlı yol etkilenmez.
+#
+# NVIDIA'nın gpt-oss-20b modeli reasoning yapabildiği için max_tokens düşük
+# kalırsa content null dönebiliyor (bkz. NVIDIAProvider.chat_json) — bu
+# yüzden burada reasoning+content ikisine yetecek kadar geniş bir bütçe
+# kullanılır.
+NAME_MATCH_MAX_TOKENS = 400
+
+# Tek seferde LLM'e gönderilecek kayıtlı kişi sayısının üst sınırı: prompt
+# büyüklüğünü (ve dolayısıyla gecikmeyi/rate limit tüketimini) sınırlar. Çok
+# büyük bir müşteri tabanında bile bu, "isim tam eşleşmedi" durumunun (nadir)
+# son çare adımıdır — üst sınıra takılan işletmeler için eksiksizlik yerine
+# hız/maliyet tercih edilir.
+NAME_MATCH_CANDIDATE_LIMIT = 300
+
+
+def _build_name_match_prompt(candidate_names: list[str]) -> str:
+    joined = "\n".join(f"- {name}" for name in candidate_names)
+    return (
+        "Bir cari hesap defterinde kayıtlı kişi listesi aşağıdadır. Kullanıcı "
+        "bir isim yazdı ama otomatik (bulanık) eşleştirme hiçbir aday "
+        "bulamadı — yazım hatası ya da eksik/fazla harf olabilir "
+        "(\"doman\" -> \"Duman\" gibi). Kullanıcının YAZDIĞI isimle listedeki "
+        "hangi kişiyi kastetmiş OLABİLECEĞİNİ bul.\n\n"
+        f"Kayıtlı kişiler:\n{joined}\n\n"
+        "SADECE şu JSON'u döndür, başka hiçbir metin/açıklama yazma:\n"
+        '{"eslesen_kisi": string|null}\n\n'
+        "Kurallar:\n"
+        "- eslesen_kisi, yukarıdaki listedeki isimlerden BİRİYLE HARFİ "
+        "HARFİNE aynı olmalı. Listede olmayan bir isim UYDURMA.\n"
+        "- Makul, açık bir eşleşme yoksa ya da emin değilsen null döndür — "
+        "tahmin ETME, yanlış kişiyi göstermek yanlış kişiye para yazılmasına "
+        "yol açabilir."
+    )
+
+
+async def suggest_person_match(
+    provider: LLMProvider, name_raw: str, candidate_names: list[str]
+) -> str | None:
+    """pg_trgm sıfır aday bulduğunda son çare: LLM'e kayıtlı isim listesini
+    verip kullanıcının hangisini kastetmiş olabileceğini sorar.
+
+    GÜVENLİK: LLM'in döndürdüğü isim candidate_names listesindeki (normalize
+    edilmiş) bir isimle BİREBİR eşleşmiyorsa asla güvenilmez ve None döner —
+    LLM listede olmayan bir isim uyduramaz (CLAUDE.md > "KRİTİK — LLM isim
+    bozuyor" ile aynı ilke: LLM öneri sunar, karar/doğrulama kod tarafında).
+    """
+    if not candidate_names:
+        return None
+
+    chat_json = getattr(provider, "chat_json", None)
+    if chat_json is None:
+        return None
+
+    data = await chat_json(
+        _build_name_match_prompt(candidate_names), name_raw, max_tokens=NAME_MATCH_MAX_TOKENS
+    )
+    if not data:
+        return None
+
+    suggested = _clean_str(data.get("eslesen_kisi"))
+    if suggested is None:
+        return None
+
+    suggested_norm = normalize(suggested)
+    for candidate in candidate_names:
+        if normalize(candidate) == suggested_norm:
+            return candidate
+
+    logger.warning(
+        "LLM isim eşleştirme listede olmayan bir isim döndürdü, güvenilmiyor: %r",
+        suggested,
+    )
+    return None
+
+
 class OllamaProvider:
     """Ollama /api/chat üzerinden çalışır. format=json ile JSON zorlanır.
     Bağlantı hatası/timeout/geçersiz yanıt -> None döner, sistemi
@@ -294,6 +382,33 @@ class OllamaProvider:
             return None
 
         return parsed_intent_from_json(data, text)
+
+    async def chat_json(
+        self, system_prompt: str, user_text: str, max_tokens: int | None = None
+    ) -> dict | None:
+        """parse()'tan bağımsız, serbest sistem prompt'uyla tek seferlik bir
+        JSON isteği (bkz. CLAUDE.md > isim eşleştirme + öngörücü teyit,
+        llm_provider.suggest_person_match). Ollama'da reasoning/content
+        ayrımı yok, max_tokens burada yalnızca arayüz tutarlılığı için var."""
+        payload: dict = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            "format": "json",
+            "stream": False,
+        }
+        if max_tokens is not None:
+            payload["options"] = {"num_predict": max_tokens}
+        body = await self._request(payload)
+        if body is None:
+            return None
+
+        content = (body.get("message") or {}).get("content")
+        if not content:
+            return None
+        return _extract_json_object(content)
 
 
 class VLLMProvider:
@@ -369,6 +484,36 @@ class VLLMProvider:
             return None
 
         return parsed_intent_from_json(data, text)
+
+    async def chat_json(
+        self, system_prompt: str, user_text: str, max_tokens: int | None = None
+    ) -> dict | None:
+        """parse()'tan bağımsız, serbest sistem prompt'uyla tek seferlik bir
+        JSON isteği (bkz. llm_provider.suggest_person_match). guided_json
+        BİLEREK eklenmez — o intent şemasına özgü (RESPONSE_JSON_SCHEMA),
+        bu genel amaçlı metodun çıktı şekli çağırana göre değişir."""
+        payload: dict = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        body = await self._request(payload)
+        if body is None:
+            return None
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return None
+        if not content:
+            return None
+        return _extract_json_object(content)
 
 
 # --------------------------------------------------------------- NVIDIA rate limit
@@ -479,6 +624,41 @@ class NVIDIAProvider:
             return None
 
         return parsed_intent_from_json(data, text)
+
+    async def chat_json(
+        self, system_prompt: str, user_text: str, max_tokens: int | None = None
+    ) -> dict | None:
+        """parse()'tan bağımsız, serbest sistem prompt'uyla tek seferlik bir
+        JSON isteği (bkz. llm_provider.suggest_person_match). NVIDIA'nın
+        gpt-oss-20b modeli reasoning yapabiliyor: max_tokens düşük kalırsa
+        tüm bütçe reasoning'e gidip "content" null dönebiliyor. Çağıran
+        (suggest_person_match) bu yüzden max_tokens'ı reasoning+content
+        ikisine yetecek kadar geniş verir; content yine de boş/null gelirse
+        (ör. model çok uzun reasoning yaptıysa) REASONING ALANINA HİÇ
+        BAKILMADAN None dönülür — güvenli taraf, isim uydurmaktansa "bulamadım"
+        sayılır."""
+        payload: dict = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        body = await self._request(payload)
+        if body is None:
+            return None
+
+        try:
+            content = body["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return None
+        if not content:
+            return None
+        return _extract_json_object(content)
 
 
 # --------------------------------------------------------------- sağlık kontrolü

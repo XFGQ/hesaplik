@@ -26,24 +26,35 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
               person_contact (doğrudan kişi kartı gösterilir, sorulmaz).
             "{isim} bilgi ver/bilgi/bilgileri" -> belirsiz, info_menu (bot
               bakiye/kişi bilgileri/ekstre arasında SORAR).
-  Sorgu:    "kişileri listele/sırala" -> list_all
+  Sorgu:    "kişileri/insanları/müşterileri/herkesi/hepsini listele/göster/
+              getir" -> list_all (bkz. LIST_VERBS, LIST_ALL_WORDS)
             "borçluları listele" -> list_debtors
             "alacaklıları listele" -> list_creditors
             "{ilçe}lileri listele" -> list_district (ör. "bergamalıları listele")
   Sorgu (Grup 1, CLAUDE.md > "Bot sorgu anlama — kapsamlı genişletme"):
-            "kişiler" / "kişileri say" / "sistemdeki kişiler" / "tüm kişiler" /
-              "kimler var" -> list_all (fiilsiz, bkz. _try_bare_list_all)
-            "bergamalılar" (fiilsiz, tek kelime) -> list_district (bkz.
-              _try_bare_district_query)
-            "{isim} bakiye/borç/borc/durum/hesap/cari/cariye/alacak/alacağı"
-              VEYA ters sıra "{anahtar} {isim}" -> balance_query (bkz.
-              BALANCE_KEYWORDS_BARE, _try_bare_balance_query). Bunlar
+            "kişiler" / "insanlar" / "müşteriler" / "kişileri say" /
+              "sistemdeki kişiler" / "tüm kişiler" / "kimler var" / "listele"
+              (tek başına) / "kişi listesi" / "müşteri listesi" -> list_all
+              (fiilsiz, bkz. _try_bare_list_query)
+            "borçlular" / "kim borçlu" / "borçlu olanlar" -> list_debtors,
+            "alacaklılar" / "kim alacaklı" / "alacaklı olanlar" ->
+              list_creditors (fiilsiz, bkz. _try_bare_list_query)
+            "bergamalılar" / "bergamadakiler" / "bergamadaki" (fiilsiz, tek
+              kelime) -> list_district (bkz. _try_bare_district_query,
+              _district_from_word — hem "-lı/-lar" çekim eki hem "-daki/
+              -deki" bulunma hâli eki çözülür)
+            "{isim} bakiye/borç/borc/borçlu/durum/hesap/cari/cariye/alacak/
+              alacağı" VEYA ters sıra "{anahtar} {isim}" -> balance_query
+              (bkz. BALANCE_KEYWORDS_BARE, _try_bare_balance_query). Bunlar
               inflected (borcu/hesabı/...) hâllerden AYRI bir küme: bare
               "borç"/"borc" zaten hem bir tutar işaretçisi hem "debt" kind
               sinyali olduğu için (bkz. _AMOUNT_MARKERS, _detect_kind),
               BALANCE_KEYWORDS'e (inflected, guard'ın kullandığı küme)
               karıştırılırsa "...aldı 15000 tl borç" gibi normal borç
               cümleleri yanlışlıkla çelişki sayılıp None dönerdi.
+            "{isim} ne kadar" (hiçbir anahtar kelime olmadan, sondan "ne
+              kadar" ile biten cümle) -> balance_query (bkz.
+              _try_bare_ne_kadar_query).
             Tek kelime (komut/fiil YOKSA) -> search (Telegram arama gibi,
               isim/soyad/ilçede geçen herkesi listeler, bkz. _try_single_word_search).
   Rapor (CLAUDE.md > "Rapor komutları — gelişmiş anlama"), en spesifikten
@@ -112,7 +123,7 @@ BALANCE_FILLERS = {"ne", "nedir", "kaç", "kadar", "söyle", "göster", "var", "
 # görülürse bare eşleşme hiç denenmez, debt/payment akışına bırakılır.
 BALANCE_KEYWORDS_BARE = {
     "bakiye", "borç", "borc", "durum", "hesap", "cari", "cariye",
-    "alacak", "alacağı",
+    "alacak", "alacağı", "borçlu", "borclu",
 }
 
 # Net iletişim/konum niyeti (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
@@ -131,9 +142,21 @@ PERSON_CONTACT_KEYWORDS = {
 # (bkz. app/bot/main.py > info_menu akışı).
 INFO_MENU_KEYWORDS = {"bilgi", "bilgisi", "bilgisini", "bilgiler", "bilgileri", "bilgilerini"}
 
-LIST_VERBS = {"listele", "sırala", "listeler", "sıralar", "listelesene", "sıralasana"}
-LIST_FILLERS = {"tüm", "tum", "bütün", "butun", "hepsini", "hepsi", "lütfen", "lutfen", "bana"}
-LIST_ALL_WORDS = {"kişileri", "kisileri", "kişiler", "kisiler", "herkesi", "herkes"}
+LIST_VERBS = {
+    "listele", "sırala", "listeler", "sıralar", "listelesene", "sıralasana",
+    "göster", "getir",
+}
+LIST_FILLERS = {"tüm", "tum", "bütün", "butun", "lütfen", "lutfen", "bana"}
+# "hepsi"/"hepsini" BİLEREK dolgu değil (LIST_ALL_WORDS'te): "hepsini listele"
+# gibi bir cümlede tek başına "hepsini" kalınca (diğer dolgular çıkınca) bu
+# ismin KENDİSİ liste isteğinin öznesidir, dolgu değil (bkz. _try_list_query
+# head kontrolü — dolgu olsaydı head boş kalır, eşleşme kaçardı).
+LIST_ALL_WORDS = {
+    "kişileri", "kisileri", "kişiler", "kisiler", "herkesi", "herkes",
+    "hepsini", "hepsi",
+    "insanları", "insanlari", "insanlar",
+    "müşterileri", "musterileri", "müşteriler", "musteriler",
+}
 LIST_DEBTORS_WORDS = {"borçluları", "borclulari", "borçlular", "borclular"}
 LIST_CREDITORS_WORDS = {"alacaklıları", "alacaklilari", "alacaklılar", "alacaklilar"}
 
@@ -204,6 +227,31 @@ def _strip_district_suffix(word: str) -> str | None:
             stripped = stripped[: -len(suf)]
             return stripped
     return None
+
+
+# Bulunma hâli + çoğul-aitlik eki ("-daki/-deki/-taki/-teki", opsiyonel
+# "-ler/-lar" ile): "bergamadakiler" -> "bergama" (Bergama'da olanlar),
+# "ankaradaki" -> "ankara". _strip_district_suffix'ten AYRI bir örüntü —
+# o yalnızca çoğul/belirtme+"-li/-lı" (bergamalıları) ekini çözer, bu ise
+# "X'te olan(lar)" örüntüsünü. Uzun biçim (çoğullu) önce denenir ki
+# "bergamadakiler" "bergamadaki" + artık kelimeye bölünmesin.
+_DISTRICT_LOCATIVE_SUFFIXES = ("dakiler", "takiler", "deki", "teki", "daki", "taki")
+
+
+def _strip_district_locative_suffix(word: str) -> str | None:
+    """"bergamadakiler"/"bergamadaki" -> "bergama". Ek yoksa None."""
+    for suf in _DISTRICT_LOCATIVE_SUFFIXES:
+        if word.endswith(suf) and len(word) > len(suf) + 1:
+            return word[: -len(suf)]
+    return None
+
+
+def _district_from_word(word: str) -> str | None:
+    """Bir kelimeyi ilçe adına çözer: önce çekim eki (_strip_district_suffix,
+    "bergamalıları" gibi), olmazsa bulunma hâli eki (_strip_district_locative_
+    suffix, "bergamadakiler" gibi). İkisi de yoksa None."""
+    return _strip_district_suffix(word) or _strip_district_locative_suffix(word)
+
 
 # Niyet belirlendikten sonra kişi/ürün metninden temizlenen kelimeler.
 STOPWORDS = DEBT_WORDS | PAYMENT_WORDS | {
@@ -711,6 +759,29 @@ def _try_bare_balance_query(tokens: list[str]) -> ParsedIntent | None:
     return ParsedIntent(kind="balance_query", person_name=person)
 
 
+def _try_bare_ne_kadar_query(tokens: list[str]) -> ParsedIntent | None:
+    """"{isim} ne kadar" (hiçbir bakiye anahtar kelimesi olmadan, sondan "ne
+    kadar" ile biten cümle) -> balance_query. Yalnızca _try_balance_query VE
+    _try_bare_balance_query hiçbir anahtar kelime bulamadığında (ikisi de
+    None döndüğünde) çağrılır — bu yüzden burada ayrıca bir anahtar kelime
+    çelişkisi kontrolüne gerek yok, sadece borç/tahsilat fiili ve sayı
+    güvenlik frenleri (bkz. _try_bare_balance_query ile aynı gerekçe)
+    tekrarlanır."""
+    if len(tokens) < 3 or tokens[-2:] != ["ne", "kadar"]:
+        return None
+
+    token_set = set(tokens)
+    if token_set & (DEBT_WORDS | PAYMENT_WORDS):
+        return None
+    if any(_consume_number(tokens, i) is not None for i in range(len(tokens))):
+        return None
+
+    person = " ".join(tokens[:-2]).strip()
+    if not person:
+        return None
+    return ParsedIntent(kind="balance_query", person_name=person)
+
+
 def _try_person_contact_query(tokens: list[str]) -> ParsedIntent | None:
     """"{isim} telefonu/numarası/adresi" / "{isim} nerede oturuyor" -> net
     iletişim/konum niyeti, sormadan doğrudan kişi kartı gösterilir."""
@@ -754,7 +825,7 @@ def _try_list_query(tokens: list[str]) -> ParsedIntent | None:
     if word in LIST_CREDITORS_WORDS:
         return ParsedIntent(kind="list_creditors")
 
-    district = _strip_district_suffix(word)
+    district = _district_from_word(word)
     if district:
         return ParsedIntent(kind="list_district", district=district)
     return None
@@ -763,25 +834,51 @@ def _try_list_query(tokens: list[str]) -> ParsedIntent | None:
 # Grup 1, madde 4 (CLAUDE.md > "Bot sorgu anlama"): "kişiler" gibi bir liste
 # isteği FİİLSİZ de gelebilir ("kişileri listele" değil sadece "kişiler").
 # "sistemdeki" bu bağlamda ek bir dolgu kelimesi (LIST_FILLERS zaten
-# tüm/tum/bütün/butun/hepsini/hepsi/lütfen/lutfen/bana içeriyor).
-_BARE_LIST_ALL_QUALIFIERS = LIST_FILLERS | {"sistemdeki"}
-# "kişileri say" / "kimler var": fiil yerine geçen sabit iki kelimelik
-# kalıplar, filler çıkarma mantığına uymadıkları için ayrı kontrol edilir.
-_BARE_LIST_ALL_FIXED_PHRASES = {
-    ("kişileri", "say"), ("kisileri", "say"),
-    ("kimler", "var"),
+# tüm/tum/bütün/butun/lütfen/lutfen/bana içeriyor).
+_BARE_LIST_QUALIFIERS = LIST_FILLERS | {"sistemdeki"}
+# Fiil yerine geçen sabit kalıplar — filler çıkarma mantığına uymadıkları
+# (ör. "kim", "var", "olanlar" gerçek kelimeler, dolgu değil) için ayrı
+# kontrol edilir. Değer, döndürülecek ParsedIntent.kind'tir.
+_BARE_LIST_FIXED_PHRASES: dict[tuple[str, ...], str] = {
+    ("kişileri", "say"): "list_all",
+    ("kisileri", "say"): "list_all",
+    ("kimler", "var"): "list_all",
+    ("listele",): "list_all",
+    ("müşteri", "listesi"): "list_all",
+    ("musteri", "listesi"): "list_all",
+    ("kişi", "listesi"): "list_all",
+    ("kisi", "listesi"): "list_all",
+    ("kim", "borçlu"): "list_debtors",
+    ("kim", "borclu"): "list_debtors",
+    ("kim", "borçlu", "var"): "list_debtors",
+    ("kim", "borclu", "var"): "list_debtors",
+    ("borçlu", "olanlar"): "list_debtors",
+    ("borclu", "olanlar"): "list_debtors",
+    ("kim", "alacaklı"): "list_creditors",
+    ("kim", "alacakli"): "list_creditors",
+    ("alacaklı", "olanlar"): "list_creditors",
+    ("alacakli", "olanlar"): "list_creditors",
 }
 
 
-def _try_bare_list_all(tokens: list[str]) -> ParsedIntent | None:
+def _try_bare_list_query(tokens: list[str]) -> ParsedIntent | None:
     """"kişiler", "tüm kişiler", "sistemdeki kişiler", "kişileri say",
-    "kimler var" -> list_all, hiçbir listele/sırala fiili olmadan."""
-    if tuple(tokens) in _BARE_LIST_ALL_FIXED_PHRASES:
-        return ParsedIntent(kind="list_all")
+    "kimler var", "listele" (tek), "kişi listesi", "borçlular", "kim
+    borçlu", "borçlu olanlar" vb. -> list_all/list_debtors/list_creditors,
+    hiçbir listele/sırala fiili olmadan."""
+    fixed_kind = _BARE_LIST_FIXED_PHRASES.get(tuple(tokens))
+    if fixed_kind is not None:
+        return ParsedIntent(kind=fixed_kind)
 
-    remaining = [t for t in tokens if t not in _BARE_LIST_ALL_QUALIFIERS]
-    if remaining and all(t in LIST_ALL_WORDS for t in remaining):
+    remaining = [t for t in tokens if t not in _BARE_LIST_QUALIFIERS]
+    if not remaining:
+        return None
+    if all(t in LIST_ALL_WORDS for t in remaining):
         return ParsedIntent(kind="list_all")
+    if all(t in LIST_DEBTORS_WORDS for t in remaining):
+        return ParsedIntent(kind="list_debtors")
+    if all(t in LIST_CREDITORS_WORDS for t in remaining):
+        return ParsedIntent(kind="list_creditors")
     return None
 
 
@@ -789,19 +886,24 @@ def _try_bare_list_all(tokens: list[str]) -> ParsedIntent | None:
 # bir kelime de bir ilçe listesi isteği sayılır (madde 4). Ama LIST_ALL/
 # DEBTORS/CREDITORS kelimeleri de tesadüfen "-ler"/"-lar" ile bitebildiği
 # için ("kişiler", "borçlular", "alacaklılar") bunlar KESİNLİKLE hariç
-# tutulur — yoksa "borçlular" yanlışlıkla district="borç" sanılırdı.
+# tutulur — yoksa "borçlular" yanlışlıkla district="borç" sanılırdı. Bu
+# hariç tutma artık pratikte hiç devreye girmiyor: _try_bare_list_query
+# (yukarıda, parse() sırasında bundan ÖNCE denenir) "borçlular" gibi
+# kelimeleri zaten list_debtors olarak yakalayıp döndüğü için buraya hiç
+# ulaşmıyor — yine de ikinci bir güvenlik katmanı olarak korunur.
 _DISTRICT_BARE_EXCLUDED = LIST_ALL_WORDS | LIST_DEBTORS_WORDS | LIST_CREDITORS_WORDS
 
 
 def _try_bare_district_query(tokens: list[str]) -> ParsedIntent | None:
-    """"bergamalılar" (tek kelime, fiilsiz) -> list_district. "bergamalıları
-    listele" ile aynı anlam, yalnızca fiil eksik."""
+    """"bergamalılar"/"bergamadakiler" (tek kelime, fiilsiz) ->
+    list_district. "bergamalıları listele" ile aynı anlam, yalnızca fiil
+    eksik."""
     if len(tokens) != 1:
         return None
     word = tokens[0]
     if word in _DISTRICT_BARE_EXCLUDED:
         return None
-    district = _strip_district_suffix(word)
+    district = _district_from_word(word)
     if district:
         return ParsedIntent(kind="list_district", district=district)
     return None
@@ -925,18 +1027,14 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if listing is not None:
         return listing
 
-    bare_list_all = _try_bare_list_all(tokens)
-    if bare_list_all is not None:
-        return bare_list_all
-
-    bare_district = _try_bare_district_query(tokens)
-    if bare_district is not None:
-        return bare_district
-
-    # Rapor niyetleri en spesifikten en geneline denenir (genel/günlük/kişi
-    # önce, tek başına "rapor" en sona): "genel raporu"/"günlük raporu" gibi
-    # kalıplar "raporu" kişi-eki ile de eşleşebildiği için, kişi kontrolü
-    # bunlardan SONRA çalışmalı — yoksa "genel"/"günlük" bir kişi adı sanılır.
+    # Rapor genel/günlük niyetleri BARE liste kontrolünden ÖNCE denenir:
+    # "müşteriler" artık hem bir bare liste kelimesi (LIST_ALL_WORDS) hem de
+    # bir rapor ismi (REPORT_GENERAL_NOUNS) olduğu için, "bütün müşteriler"
+    # gibi nitelik+isim ikilisi (report_general'ın kendi, daha spesifik
+    # kalıbı) bare liste kontrolüne düşüp "kişi listesi" sanılmadan önce
+    # burada yakalanmalı. Tek başına "müşteriler" (nitelik YOK) bu kontrolden
+    # geçmez (REPORT_GENERAL_QUALIFIERS kesişimi boş kalır), bare liste
+    # kontrolüne aynen düşmeye devam eder.
     report_general = _try_report_general(tokens)
     if report_general is not None:
         return report_general
@@ -945,6 +1043,19 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if report_daily is not None:
         return report_daily
 
+    bare_list_all = _try_bare_list_query(tokens)
+    if bare_list_all is not None:
+        return bare_list_all
+
+    bare_district = _try_bare_district_query(tokens)
+    if bare_district is not None:
+        return bare_district
+
+    # Rapor niyetleri en spesifikten en geneline denenir (genel/günlük - ki
+    # ikisi de yukarıda bare liste kontrolünden önce zaten denendi - kişi en
+    # sona): "genel raporu"/"günlük raporu" gibi kalıplar "raporu" kişi-eki
+    # ile de eşleşebildiği için, kişi kontrolü bunlardan SONRA çalışmalı —
+    # yoksa "genel"/"günlük" bir kişi adı sanılır.
     report_person = _try_report_person_query(tokens)
     if report_person is not None:
         return report_person
@@ -1014,6 +1125,10 @@ def parse(raw_text: str) -> ParsedIntent | None:
     bare_balance = _try_bare_balance_query(tokens)
     if bare_balance is not None:
         return bare_balance
+
+    bare_ne_kadar = _try_bare_ne_kadar_query(tokens)
+    if bare_ne_kadar is not None:
+        return bare_ne_kadar
 
     # Kind, tutar çıkarılmadan ÖNCE tespit edilir: "borç" hem bir fiil
     # sinyali hem de (bkz. _extract_amount) tutarın bitişiğindeki bir

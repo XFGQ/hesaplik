@@ -97,6 +97,63 @@ async def test_kisi_bulunamadi(session):
     assert resolved.person_name_raw == "hic yok boyle biri"
 
 
+# --------------------------------------------------------------- isim eşleştirme + öngörücü
+# teyit (CLAUDE.md > "İsim eşleştirme + öngörücü teyit", 2026-08): pg_trgm
+# HİÇBİR aday bulamadığında (ör. "doman", "Furkan Duman"a karşı ~0.20
+# benzerlik — SIMILARITY_CANDIDATE 0.35'in çok altında) son çare LLM'e
+# danışılır. fake_llm.name_match LLM'in "eslesen_kisi" alanını taklit eder.
+
+
+async def test_llm_onerisi_tek_aday_olarak_sunulur(session, furkan_duman, fake_llm):
+    fake_llm.name_match = "Furkan Duman"
+    intent = ParsedIntent(kind="debt", person_name="doman", amount=Decimal("100"))
+    resolved = await resolve(session, intent)
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert len(resolved.person_candidates) == 1
+    assert resolved.person_candidates[0].id == furkan_duman.id
+
+
+async def test_llm_onerisi_otomatik_baglanmaz_sormadan_kaydetmez(session, furkan_duman, fake_llm):
+    # LLM doğru kişiyi bulsa bile READY'ye hiç düşmemeli — kullanıcı yine
+    # onaylamalı (NEEDS_CONFIRMATION), asla sormadan direkt kayıt olmamalı.
+    fake_llm.name_match = "Furkan Duman"
+    intent = ParsedIntent(kind="debt", person_name="doman", amount=Decimal("100"))
+    resolved = await resolve(session, intent)
+    assert resolved.status != ResolutionStatus.READY
+
+
+async def test_llm_uydurulmus_isim_reddedilir(session, furkan_duman, fake_llm):
+    # LLM kayıtlı listede OLMAYAN bir isim döndürürse (uydurma/halüsinasyon)
+    # asla güvenilmez — mevcut "kişi bulunamadı" davranışı aynen sürer.
+    fake_llm.name_match = "Hiç Kayıtlı Olmayan Biri"
+    intent = ParsedIntent(kind="debt", person_name="doman", amount=Decimal("100"))
+    resolved = await resolve(session, intent)
+    assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
+
+
+async def test_llm_hicbir_oneri_bulamazsa_kisi_bulunamadi(session, furkan_duman, fake_llm):
+    fake_llm.name_match = None
+    intent = ParsedIntent(kind="debt", person_name="doman", amount=Decimal("100"))
+    resolved = await resolve(session, intent)
+    assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
+
+
+async def test_llm_net_eslesmede_hic_cagirilmaz(session, two_ahmets, fake_llm):
+    # Net (birebir) eşleşmede pg_trgm'e bile gerek yok — LLM'e hiç
+    # danışılmamalı (hızlı yol etkilenmemeli).
+    intent = ParsedIntent(kind="debt", person_name="ahmet yılmaz", amount=Decimal("100"))
+    await resolve(session, intent)
+    assert fake_llm.chat_json_calls == []
+
+
+async def test_llm_pgtrgm_aday_varken_cagirilmaz(session, two_ahmets, fake_llm):
+    # pg_trgm zaten aday bulduysa (ör. "ahmet yı") LLM'e hiç danışılmamalı —
+    # yalnızca SIFIR aday durumunda son çare devreye girer.
+    intent = ParsedIntent(kind="debt", person_name="ahmet yı", amount=Decimal("100"))
+    await resolve(session, intent)
+    assert fake_llm.chat_json_calls == []
+
+
 async def test_none_intent_anlasilmadi(session):
     resolved = await resolve(session, None)
     assert resolved.status == ResolutionStatus.UNRECOGNIZED

@@ -16,6 +16,15 @@ verir. Şüphede sor: yanlış kişiye borç yazmak bir sorudan çok daha pahal�
 çağrılır; belirsiz durumda henüz yeni ürün açılmaz. Ürün adı da bulanıksa
 (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)", Grup 5 — "samaan" gibi yazım
 hataları) PRODUCT_NEEDS_CONFIRMATION dönülür, otomatik bağlanmaz/oluşturulmaz.
+
+İsim eşleştirme + öngörücü teyit (CLAUDE.md, 2026-08): pg_trgm HİÇBİR aday
+bulamadığında (ör. "doman" -> "Duman" benzerliği SIMILARITY_CANDIDATE'in
+altında kalıyor) son çare olarak LLM'e danışılır (bkz. find_person_match ->
+llm_provider.suggest_person_match). LLM kayıtlı isim listesinden bir aday
+önerirse, bu aday TEK bir "candidate" olarak mevcut NEEDS_CONFIRMATION
+akışına sokulur — kullanıcı yine "hangisini demek istedin?" sorusuyla
+karşılaşır, LLM'in önerisi asla sormadan otomatik bağlanmaz. LLM de bir şey
+bulamazsa (ya da erişilemezse) davranış aynen eskisi gibi kalır: PERSON_NOT_FOUND.
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Person, Product
-from app.services import catalog
+from app.services import catalog, llm_provider
 from app.services.name_utils import strip_turkish_suffix
 from app.services.parser import ParsedIntent
 
@@ -131,6 +140,12 @@ async def find_person_match(
     )
     rows = (await session.execute(stmt)).all()
     if not rows:
+        suggestion = await _llm_suggest_person(session, key)
+        if suggestion is not None:
+            # LLM'in önerisi TEK bir "aday" olarak mevcut NEEDS_CONFIRMATION
+            # akışına sokulur — otomatik bağlanmaz, kullanıcı yine "hangisini
+            # demek istedin?" (+ "Yeni kişi ekle") ile onaylar/reddeder.
+            return None, [suggestion]
         return None, []
 
     candidates = [row[0] for row in rows]
@@ -144,6 +159,39 @@ async def find_person_match(
             return candidates[0], []
 
     return None, candidates
+
+
+async def _llm_suggest_person(session: AsyncSession, key: str) -> Person | None:
+    """pg_trgm SIFIR aday bulduğunda son çare (CLAUDE.md > "İsim eşleştirme
+    + öngörücü teyit"): aktif LLM varsa kayıtlı isim listesini verip
+    kullanıcının yazdığı ismin (`key`, ek/hitap/bağlam kelimeleri zaten
+    ayıklanmış) hangi kayıtlı kişiye karşılık gelebileceğini sorar. LLM
+    erişilemiyorsa, kayıtlı kimse yoksa ya da güvenilir bir öneri
+    dönmüyorsa (bkz. llm_provider.suggest_person_match — listede olmayan
+    isimler reddedilir) None döner ve çağıran mevcut "kişi bulunamadı"
+    davranışına aynen devam eder."""
+    provider = await llm_provider.get_active_provider(session)
+    if provider is None:
+        return None
+
+    names_stmt = (
+        select(Person.full_name)
+        .where(Person.is_active.is_(True))
+        .order_by(Person.full_name)
+        .limit(llm_provider.NAME_MATCH_CANDIDATE_LIMIT)
+    )
+    names = list((await session.execute(names_stmt)).scalars().all())
+    if not names:
+        return None
+
+    matched_name = await llm_provider.suggest_person_match(provider, key, names)
+    if matched_name is None:
+        return None
+
+    match_stmt = select(Person).where(
+        func.lower(Person.full_name) == matched_name.lower(), Person.is_active.is_(True)
+    )
+    return (await session.execute(match_stmt)).scalar_one_or_none()
 
 
 async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> ResolvedIntent:
