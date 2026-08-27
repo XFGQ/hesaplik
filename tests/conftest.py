@@ -34,11 +34,21 @@ class FakeLLMProvider:
     """LLMProvider Protocol'ünü karşılayan, ağa hiç çıkmayan sahte
     sağlayıcı. `intent` None ise "LLM de çözemedi" davranışını taklit
     eder (UNRECOGNIZED'a düşer); bir ParsedIntent verilirse her çağrıda
-    onu döner. Deterministiktir — aynı girdi her koşuda aynı sonucu verir."""
+    onu döner. Deterministiktir — aynı girdi her koşuda aynı sonucu verir.
+
+    `name_match` ayrıca isim eşleştirme + öngörücü teyit testleri için
+    (bkz. app/services/llm_provider.suggest_person_match,
+    intent_resolver._llm_suggest_person): None ise chat_json hiçbir eşleşme
+    bulamamış gibi davranır (eslesen_kisi: null), bir isim verilirse o ismi
+    "eslesen_kisi" olarak döner (gerçek isim doğrulaması suggest_person_match
+    içinde zaten yapılıyor, burada sahte sağlayıcı yalnızca LLM'in HAM
+    çıktısını taklit eder)."""
 
     def __init__(self, intent: ParsedIntent | None = None):
         self.intent = intent
         self.calls: list[str] = []
+        self.name_match: str | None = None
+        self.chat_json_calls: list[tuple[str, str]] = []
 
     @property
     def called(self) -> bool:
@@ -47,6 +57,12 @@ class FakeLLMProvider:
     async def parse(self, text: str) -> ParsedIntent | None:
         self.calls.append(text)
         return self.intent
+
+    async def chat_json(
+        self, system_prompt: str, user_text: str, max_tokens: int | None = None
+    ) -> dict | None:
+        self.chat_json_calls.append((system_prompt, user_text))
+        return {"eslesen_kisi": self.name_match}
 
 
 @pytest.fixture(autouse=True)

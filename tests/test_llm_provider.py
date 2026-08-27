@@ -664,6 +664,162 @@ async def test_nvidia_istek_govdesinde_system_prompt_var():
     assert captured["body"]["response_format"] == {"type": "json_object"}
 
 
+# --------------------------------------------------------------- chat_json (parse()'tan
+# bağımsız, isim eşleştirme gibi serbest promptlu tek seferlik istekler için)
+
+
+async def test_nvidia_chat_json_serbest_prompt_ve_max_tokens_govdede():
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return _nvidia_response({"eslesen_kisi": "Furkan Duman"})
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        data = await provider.chat_json("özel sistem prompt", "doman", max_tokens=400)
+
+    assert data == {"eslesen_kisi": "Furkan Duman"}
+    assert captured["body"]["messages"][0] == {"role": "system", "content": "özel sistem prompt"}
+    assert captured["body"]["messages"][1] == {"role": "user", "content": "doman"}
+    assert captured["body"]["max_tokens"] == 400
+    # guided_json intent şemasına özgü (RESPONSE_JSON_SCHEMA) — chat_json'da
+    # olmamalı, çıktı şekli çağırana göre değişir.
+    assert "guided_json" not in captured["body"]
+
+
+async def test_nvidia_chat_json_content_null_reasoninge_dusmeden_none_doner():
+    # gpt-oss-20b reasoning yapabiliyor: max_tokens düşükse content null
+    # dönebiliyor. reasoning_content alanı olsa bile ORAYA HİÇ bakılmadan
+    # güvenli None dönmeli.
+    def handler(request):
+        return httpx.Response(200, json={
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "reasoning_content": "Furkan Duman olabilir ama emin değilim...",
+                }
+            }]
+        })
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        data = await provider.chat_json("sistem", "doman", max_tokens=400)
+
+    assert data is None
+
+
+async def test_nvidia_chat_json_baglanti_hatasinda_none_doner():
+    def handler(request):
+        raise httpx.ConnectError("bağlanamadı", request=request)
+
+    async with _client_for(handler) as client:
+        provider = NVIDIAProvider("https://integrate.api.nvidia.com/v1", "nvapi-test", "model", client=client)
+        data = await provider.chat_json("sistem", "doman")
+
+    assert data is None
+
+
+async def test_vllm_chat_json_guided_json_yok_max_tokens_var():
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(
+            200, json={"choices": [{"message": {"content": json.dumps({"eslesen_kisi": None})}}]}
+        )
+
+    async with _client_for(handler) as client:
+        provider = VLLMProvider("http://bosna:8000", "model", client=client)
+        data = await provider.chat_json("sistem", "doman", max_tokens=400)
+
+    assert data == {"eslesen_kisi": None}
+    assert "guided_json" not in captured["body"]
+    assert captured["body"]["max_tokens"] == 400
+
+
+async def test_ollama_chat_json_calisir():
+    def handler(request):
+        assert request.url.path == "/api/chat"
+        return _chat_response({"eslesen_kisi": "Furkan Duman"})
+
+    async with _client_for(handler) as client:
+        provider = OllamaProvider("http://localhost:11434", "qwen2.5:7b", client=client)
+        data = await provider.chat_json("sistem", "doman")
+
+    assert data == {"eslesen_kisi": "Furkan Duman"}
+
+
+# --------------------------------------------------------------- suggest_person_match
+#
+# CLAUDE.md > "İsim eşleştirme + öngörücü teyit": LLM'in önerdiği isim
+# candidate_names listesindeki BİREBİR bir isimle eşleşmiyorsa asla
+# güvenilmez (uydurma isim kabul edilmez).
+
+
+class _StubChatJsonProvider:
+    def __init__(self, response: dict | None):
+        self.response = response
+        self.calls: list[tuple[str, str]] = []
+
+    async def parse(self, text):  # pragma: no cover - suggest_person_match kullanmıyor
+        raise NotImplementedError
+
+    async def chat_json(self, system_prompt, user_text, max_tokens=None):
+        self.calls.append((system_prompt, user_text))
+        return self.response
+
+
+async def test_suggest_person_match_gecerli_aday_kabul_edilir():
+    provider = _StubChatJsonProvider({"eslesen_kisi": "Furkan Duman"})
+    result = await llm_provider.suggest_person_match(provider, "doman", ["Furkan Duman", "Ali Veli"])
+    assert result == "Furkan Duman"
+
+
+async def test_suggest_person_match_listede_olmayan_isim_reddedilir():
+    # LLM listede OLMAYAN bir isim uydurursa asla güvenilmez.
+    provider = _StubChatJsonProvider({"eslesen_kisi": "Hiç Kayıtlı Olmayan Biri"})
+    result = await llm_provider.suggest_person_match(provider, "doman", ["Furkan Duman", "Ali Veli"])
+    assert result is None
+
+
+async def test_suggest_person_match_null_ise_none_doner():
+    provider = _StubChatJsonProvider({"eslesen_kisi": None})
+    result = await llm_provider.suggest_person_match(provider, "doman", ["Furkan Duman"])
+    assert result is None
+
+
+async def test_suggest_person_match_bos_yanit_none_doner():
+    provider = _StubChatJsonProvider(None)
+    result = await llm_provider.suggest_person_match(provider, "doman", ["Furkan Duman"])
+    assert result is None
+
+
+async def test_suggest_person_match_aday_listesi_bosken_hic_cagirmaz():
+    provider = _StubChatJsonProvider({"eslesen_kisi": "Furkan Duman"})
+    result = await llm_provider.suggest_person_match(provider, "doman", [])
+    assert result is None
+    assert provider.calls == []
+
+
+async def test_suggest_person_match_chat_json_yoksa_none_doner():
+    # chat_json metodu olmayan bir provider (Protocol'ü karşılamıyor) —
+    # patlamak yerine güvenli None dönmeli.
+    class _NoChatJson:
+        async def parse(self, text):
+            return None
+
+    result = await llm_provider.suggest_person_match(_NoChatJson(), "doman", ["Furkan Duman"])
+    assert result is None
+
+
+async def test_suggest_person_match_buyuk_kucuk_harf_normalize_edilir():
+    provider = _StubChatJsonProvider({"eslesen_kisi": "furkan duman"})
+    result = await llm_provider.suggest_person_match(provider, "doman", ["Furkan Duman"])
+    assert result == "Furkan Duman"
+
+
 # --------------------------------------------------------------- nvidia_healthy
 
 
