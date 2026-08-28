@@ -1,6 +1,7 @@
 import os
 
 import asyncpg
+import bcrypt
 import httpx
 import pytest
 import pytest_asyncio
@@ -9,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.config import settings
-from app.services import llm_provider
+from app.services import auth, llm_provider
 from app.services.parser import ParsedIntent
 
 # .env'deki TEST_DSN gibi değişkenler için (app.config kendi .env'ini
@@ -102,6 +103,38 @@ def no_real_network(monkeypatch):
 
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", _blocked)
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _blocked)
+
+
+# ------------------------------------------------------------------ auth (JWT)
+#
+# Tüm testler aynı sabit kullanıcı/şifre çiftini kullanır. Hash düşük
+# rounds'la (4) üretilir — güvenlik için değil, bcrypt kasıtlı yavaş ve
+# testlerde onlarca kez doğrulanıyor; üretimde gensalt() varsayılanı (12)
+# kullanılır (bkz. app/services/auth.py).
+AUTH_USERNAME = "test-kullanici"
+AUTH_PASSWORD = "cok-gizli-parola"
+_AUTH_PASSWORD_HASH = bcrypt.hashpw(AUTH_PASSWORD.encode("utf-8"), bcrypt.gensalt(4)).decode("utf-8")
+
+
+@pytest.fixture
+def auth_account(monkeypatch):
+    """auth_username/auth_password_hash/jwt_secret'ı ayarlar, giriş
+    kilidini temizler. Testler AUTH_USERNAME/AUTH_PASSWORD ile giriş
+    yapabilir."""
+    monkeypatch.setattr(settings, "auth_username", AUTH_USERNAME)
+    monkeypatch.setattr(settings, "auth_password_hash", _AUTH_PASSWORD_HASH)
+    monkeypatch.setattr(settings, "jwt_secret", "test-jwt-secret-do-not-use-in-prod")
+    monkeypatch.setattr(settings, "jwt_expire_hours", 24)
+    auth._failures.clear()
+    return AUTH_USERNAME, AUTH_PASSWORD
+
+
+@pytest.fixture
+def auth_headers(auth_account):
+    """Geçerli bir Authorization header'ı — endpoint fonksiyonlarını
+    doğrudan çağıran testler için değil, HTTP üzerinden çağıranlar için."""
+    token, _ = auth.create_access_token(AUTH_USERNAME)
+    return {"Authorization": f"Bearer {token}"}
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")

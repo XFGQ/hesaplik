@@ -1,8 +1,11 @@
 """Admin paneli uçları (/api/admin/*) — Faz 7.
 
-Tümü `admin_auth.require_admin` arkasında: token yoksa/geçersizse 401, hiçbir
-veri dönmez. Tek istisna `POST /login` (token'ı o üretir) ve `GET /me`
-(oturumun geçerli olup olmadığını söyler, veri sızdırmaz).
+Tümü `auth.require_auth` (JWT, bkz. app/services/auth.py) arkasında: token
+yoksa/geçersizse 401, hiçbir veri dönmez. Giriş ve "oturum geçerli mi"
+sorgusu artık burada değil, tek hesabın ortak girişinde — `/api/auth/login`
+ve `/api/auth/me` (bkz. app/api/auth.py). Bu dosyadaki tek şifre sorgusu,
+en yıkıcı işlem olan geri yükleme onayında ikinci bir tur olarak kalır
+(`POST /backups/restore`, aşağıda).
 
 Dolu bölümler:
 
@@ -35,7 +38,7 @@ from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,7 +56,7 @@ from app.models import (
     Transaction,
     TransactionLine,
 )
-from app.services import admin_auth, backup, health, message_trace, queries, request_queue, restore
+from app.services import auth, backup, health, message_trace, queries, request_queue, restore
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -76,20 +79,6 @@ def _locked_out(key: str, now: float) -> bool:
 
 
 # ---------------------------------------------------------------- şemalar
-
-class LoginIn(BaseModel):
-    password: str
-
-
-class LoginOut(BaseModel):
-    ok: bool
-    token: str
-    expires_in: int
-
-
-class MeOut(BaseModel):
-    ok: bool
-
 
 class FlowTxOut(BaseModel):
     """İzlenen mesajdan doğan defter kaydı (varsa)."""
@@ -373,53 +362,9 @@ class RestoreStatusOut(BaseModel):
     request: RestoreRequestOut | None     # aktif yoksa EN SON istek
 
 
-# ---------------------------------------------------------------- oturum
-
-@router.post("/login", response_model=LoginOut)
-async def login(body: LoginIn, request: Request, response: Response):
-    """Doğru şifre → httpOnly çerez + token. Yanlış şifre → 401, hiçbir
-    ipucu yok. ADMIN_PASSWORD tanımsızsa panel kapalıdır (503)."""
-    if not admin_auth.is_enabled():
-        raise HTTPException(503, "Admin paneli yapılandırılmamış")
-
-    key = _client_key(request)
-    now = time.time()
-    if _locked_out(key, now):
-        raise HTTPException(429, "Çok fazla deneme, biraz sonra tekrar deneyin")
-
-    if not admin_auth.check_password(body.password):
-        _failures[key].append(now)
-        raise HTTPException(401, "Şifre hatalı")
-
-    _failures.pop(key, None)
-    token = admin_auth.create_token()
-    max_age = admin_auth.token_max_age()
-    response.set_cookie(
-        admin_auth.COOKIE_NAME,
-        token,
-        max_age=max_age,
-        httponly=True,     # JS okuyamaz
-        samesite="lax",
-        path="/",
-    )
-    return LoginOut(ok=True, token=token, expires_in=max_age)
-
-
-@router.post("/logout")
-async def logout(response: Response):
-    response.delete_cookie(admin_auth.COOKIE_NAME, path="/")
-    return {"ok": True}
-
-
-@router.get("/me", response_model=MeOut, dependencies=[admin_auth.AdminRequired])
-async def me():
-    """Panel açılışında "oturumum geçerli mi?" sorusu. Geçersizse 401."""
-    return MeOut(ok=True)
-
-
 # ---------------------------------------------------------------- sistem sağlığı
 
-@router.get("/health", response_model=HealthOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/health", response_model=HealthOut, dependencies=[auth.AuthRequired])
 async def system_health(session: AsyncSession = Depends(get_session)):
     """Bileşen bileşen "ne ayakta, ne değil". Veritabanı çökmüş olsa bile bu
     uç 200 döner: her kontrol kendi hatasını yakalayıp durum olarak bildirir,
@@ -450,7 +395,7 @@ async def system_health(session: AsyncSession = Depends(get_session)):
 
 # ---------------------------------------------------------------- yedekleme
 
-@router.get("/backups", response_model=BackupListOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/backups", response_model=BackupListOut, dependencies=[auth.AuthRequired])
 async def backups():
     """Yedek listesi, en yeni üstte. Depoya erişilemezse 503 + sebep: panel
     "yedek yok" ile "depo okunamıyor"u karıştırmasın, ikisi çok farklı."""
@@ -498,7 +443,7 @@ def _restore_out(req) -> RestoreRequestOut:
 
 
 @router.post(
-    "/backups/restore", response_model=RestoreStartOut, dependencies=[admin_auth.AdminRequired]
+    "/backups/restore", response_model=RestoreStartOut, dependencies=[auth.AuthRequired]
 )
 async def restore_backup(
     body: RestoreIn,
@@ -507,13 +452,14 @@ async def restore_backup(
 ):
     """"Ana veri yap": seçilen yedeği canlı veritabanı yapma İSTEĞİ.
 
-    İki kat koruma: oturum çerezi (AdminRequired) YETMEZ, şifre ISTEK
-    GÖVDESİNDE tekrar sorulur. Açık kalmış bir panel sekmesi tek tıkla
-    defterin üstüne yazamasın diye — bu, sistemdeki en yıkıcı işlem.
-    Yanlış şifre giriş ekranıyla aynı kilide takılır.
+    İki kat koruma: geçerli JWT (AuthRequired) YETMEZ, şifre ISTEK
+    GÖVDESİNDE tekrar sorulur (tek hesabın kendi şifresi, bcrypt ile
+    doğrulanır). Açık kalmış bir panel sekmesi tek tıkla defterin üstüne
+    yazamasın diye — bu, sistemdeki en yıkıcı işlem. Yanlış şifre giriş
+    ekranıyla aynı kilide takılır.
 
     Yanlış şifre 401 DEĞİL 403 döner: 401 istemcide "oturum düştü" demektir
-    ve paneli şifre ekranına atardı. Burada oturum geçerli, izin verilmeyen
+    ve paneli giriş ekranına atardı. Burada oturum geçerli, izin verilmeyen
     şey bu tek işlem — kullanıcı modalda "şifre hatalı" görüp tekrar dener.
 
     Geri yüklemeyi API YAPMAZ ("Yol A"): istek `restore_requests`e yazılır,
@@ -524,7 +470,7 @@ async def restore_backup(
     if _locked_out(key, now):
         raise HTTPException(429, "Çok fazla deneme, biraz sonra tekrar deneyin")
 
-    if not admin_auth.check_password(body.password):
+    if not auth.verify_password(body.password):
         _failures[key].append(now)
         raise HTTPException(403, "Şifre hatalı")
     _failures.pop(key, None)
@@ -548,7 +494,7 @@ async def restore_backup(
 @router.get(
     "/backups/restore/status",
     response_model=RestoreStatusOut,
-    dependencies=[admin_auth.AdminRequired],
+    dependencies=[auth.AuthRequired],
 )
 async def restore_status(session: AsyncSession = Depends(get_session)):
     """Süren geri yüklemenin durumu; yoksa EN SON isteğin sonucu. Panel bunu
@@ -564,7 +510,7 @@ async def restore_status(session: AsyncSession = Depends(get_session)):
 
 # ---------------------------------------------------------------- işlem akışı
 
-@router.get("/flow", response_model=FlowPageOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/flow", response_model=FlowPageOut, dependencies=[auth.AuthRequired])
 async def flow(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -662,7 +608,7 @@ _LLM_FAILURE_OUTCOMES = (message_trace.OUTCOME_ERROR, message_trace.OUTCOME_IGNO
 
 
 @router.get(
-    "/llm-monitor", response_model=LlmMonitorPageOut, dependencies=[admin_auth.AdminRequired]
+    "/llm-monitor", response_model=LlmMonitorPageOut, dependencies=[auth.AuthRequired]
 )
 async def llm_monitor(
     limit: int = Query(50, ge=1, le=200),
@@ -736,7 +682,7 @@ async def llm_monitor(
 
 # ---------------------------------------------------------------- istek kuyruğu
 
-@router.get("/queue", response_model=QueuePageOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/queue", response_model=QueuePageOut, dependencies=[auth.AuthRequired])
 async def queue(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -801,7 +747,7 @@ async def queue(
 
 # ---------------------------------------------------------------- kişiler & işlemler
 
-@router.get("/persons", response_model=AdminPersonListOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/persons", response_model=AdminPersonListOut, dependencies=[auth.AuthRequired])
 async def admin_persons(
     q: str | None = None,
     filter: str = "all",
@@ -837,7 +783,7 @@ async def admin_persons(
 @router.get(
     "/persons/{person_id}/transactions",
     response_model=AdminPersonTransactionsOut,
-    dependencies=[admin_auth.AdminRequired],
+    dependencies=[auth.AuthRequired],
 )
 async def admin_person_transactions(
     person_id: int,
@@ -896,7 +842,7 @@ async def admin_person_transactions(
 
 
 @router.get(
-    "/archived-persons", response_model=ArchivedPersonPageOut, dependencies=[admin_auth.AdminRequired]
+    "/archived-persons", response_model=ArchivedPersonPageOut, dependencies=[auth.AuthRequired]
 )
 async def archived_persons(
     limit: int = Query(50, ge=1, le=200),
@@ -946,7 +892,7 @@ async def archived_persons(
 @router.get(
     "/archived-transactions",
     response_model=ArchivedTransactionPageOut,
-    dependencies=[admin_auth.AdminRequired],
+    dependencies=[auth.AuthRequired],
 )
 async def archived_transactions(
     limit: int = Query(50, ge=1, le=200),
@@ -993,7 +939,7 @@ async def archived_transactions(
 
 # ---------------------------------------------------------------- loglar
 
-@router.get("/audit-log", response_model=AuditLogPageOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/audit-log", response_model=AuditLogPageOut, dependencies=[auth.AuthRequired])
 async def audit_log(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),

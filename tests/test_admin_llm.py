@@ -1,15 +1,15 @@
-"""Admin LLM yönetimi: şifre koruması (/api/admin/llm) ve tercih güncelleme.
+"""Admin LLM yönetimi: tercih güncelleme (/api/admin/llm).
 
 Route handler'ları burada doğrudan çağrılır (routes.py'de başka hiçbir uç
-nokta için de FastAPI TestClient kullanılmıyor, aynı desene uyulur);
-require_admin'in FastAPI Depends kablolaması değil, ondan çağrılan saf
-_check_admin_password fonksiyonu test edilir."""
+nokta için de FastAPI TestClient kullanılmıyor, aynı desene uyulur) — bu
+yüzden `require_auth`'un FastAPI Depends kablolaması test edilmez, o
+app/services/auth.py ve tests/test_auth.py'nin işi. Burada yalnızca
+tercih güncelleme mantığı test edilir."""
 
 import pytest
 from fastapi import HTTPException
 
-from app.api.routes import _check_admin_password, admin_llm_status, admin_llm_update
-from app.config import settings
+from app.api.routes import admin_llm_status, admin_llm_update
 from app.schemas import AdminLLMPreferenceIn
 from app.services import llm_provider
 
@@ -28,42 +28,6 @@ def _stub_health(monkeypatch, *, vllm: bool, ollama: bool, nvidia: bool = False)
     monkeypatch.setattr(llm_provider, "ollama_healthy", _ollama_healthy)
     monkeypatch.setattr(llm_provider, "nvidia_healthy", _nvidia_healthy)
     llm_provider.reset_health_cache()
-
-
-# --------------------------------------------------------------- şifre koruması
-
-
-def test_admin_sifre_yapilandirilmamissa_503(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", None)
-    with pytest.raises(HTTPException) as exc:
-        _check_admin_password("herhangi")
-    assert exc.value.status_code == 503
-
-
-def test_admin_sifre_bos_stringse_de_503(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", "")
-    with pytest.raises(HTTPException) as exc:
-        _check_admin_password("herhangi")
-    assert exc.value.status_code == 503
-
-
-def test_admin_sifre_verilmezse_401(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", "gizli")
-    with pytest.raises(HTTPException) as exc:
-        _check_admin_password(None)
-    assert exc.value.status_code == 401
-
-
-def test_admin_sifre_yanlissa_401(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", "gizli")
-    with pytest.raises(HTTPException) as exc:
-        _check_admin_password("yanlis")
-    assert exc.value.status_code == 401
-
-
-def test_admin_sifre_dogruysa_gecer(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", "gizli")
-    _check_admin_password("gizli")  # exception atmamalı
 
 
 # --------------------------------------------------------------- durum + güncelleme

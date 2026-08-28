@@ -48,20 +48,15 @@ from app.schemas import (
     TxWithProductOut,
     VllmDesiredOut,
 )
-from app.services import backup, catalog, ledger, llm_provider, queries, report, vllm_control
+from app.services import auth, backup, catalog, ledger, llm_provider, queries, report, vllm_control
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
 
 
-def _actor() -> str:
-    # Faz 3'te JWT'den gelecek.
-    return "web"
-
-
 # --------------------------------------------------------------- kişiler
 
-@router.get("/persons", response_model=list[PersonRowOut])
+@router.get("/persons", response_model=list[PersonRowOut], dependencies=[auth.AuthRequired])
 async def list_persons(
     q: str | None = None,
     filter: str = "all",
@@ -98,7 +93,9 @@ async def list_persons(
     ]
 
 
-@router.post("/persons", response_model=PersonOut, status_code=201)
+@router.post(
+    "/persons", response_model=PersonOut, status_code=201, dependencies=[auth.AuthRequired]
+)
 async def create_person(body: PersonIn, session: AsyncSession = Depends(get_session)):
     person = Person(
         full_name=" ".join(body.full_name.split()),
@@ -113,7 +110,9 @@ async def create_person(body: PersonIn, session: AsyncSession = Depends(get_sess
     return person
 
 
-@router.get("/persons/{person_id}", response_model=PersonOut)
+@router.get(
+    "/persons/{person_id}", response_model=PersonOut, dependencies=[auth.AuthRequired]
+)
 async def get_person(person_id: int, session: AsyncSession = Depends(get_session)):
     person = await session.get(Person, person_id)
     if person is None or not person.is_active:
@@ -121,7 +120,9 @@ async def get_person(person_id: int, session: AsyncSession = Depends(get_session
     return person
 
 
-@router.put("/persons/{person_id}", response_model=PersonOut)
+@router.put(
+    "/persons/{person_id}", response_model=PersonOut, dependencies=[auth.AuthRequired]
+)
 async def update_person(
     person_id: int, body: PersonIn, session: AsyncSession = Depends(get_session)
 ):
@@ -139,7 +140,7 @@ async def update_person(
     return person
 
 
-@router.delete("/persons/{person_id}", status_code=204)
+@router.delete("/persons/{person_id}", status_code=204, dependencies=[auth.AuthRequired])
 async def delete_person(person_id: int, session: AsyncSession = Depends(get_session)):
     """Kişiyi listeden kaldırır (soft delete). Hareketleri silinmez; kullanıcı
     arayüzde yazarak onayladıktan sonra bakiye sıfır olmasa da silinebilir."""
@@ -153,7 +154,7 @@ async def delete_person(person_id: int, session: AsyncSession = Depends(get_sess
 
 # --------------------------------------------------------------- ürünler
 
-@router.get("/products", response_model=list[ProductOut])
+@router.get("/products", response_model=list[ProductOut], dependencies=[auth.AuthRequired])
 async def list_products(session: AsyncSession = Depends(get_session)):
     """Yazarken öneri listesi için. Fiyat varsa gelir, zorunlu değil."""
     latest = (
@@ -178,7 +179,9 @@ async def list_products(session: AsyncSession = Depends(get_session)):
     ]
 
 
-@router.post("/products", response_model=ProductOut, status_code=201)
+@router.post(
+    "/products", response_model=ProductOut, status_code=201, dependencies=[auth.AuthRequired]
+)
 async def create_product(body: ProductIn, session: AsyncSession = Depends(get_session)):
     existing = await catalog.find_product(session, body.name)
     if existing is not None:
@@ -207,7 +210,11 @@ async def create_product(body: ProductIn, session: AsyncSession = Depends(get_se
 # --------------------------------------------------------------- hareketler
 
 @router.post("/debts", response_model=TxWithProductOut, status_code=201)
-async def add_debt(body: DebtIn, session: AsyncSession = Depends(get_session)):
+async def add_debt(
+    body: DebtIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
+):
     """Ürün adı serbest yazılır. Tutar kullanıcının yazdığıdır; fiyat listesi bağlamaz."""
     if await session.get(Person, body.person_id) is None:
         raise HTTPException(404, "Kişi bulunamadı")
@@ -225,7 +232,7 @@ async def add_debt(body: DebtIn, session: AsyncSession = Depends(get_session)):
                 )
             ],
             TxMeta(
-                created_by=_actor(),
+                created_by=actor,
                 source=TxSource.WEB,
                 note=body.note,
                 occurred_at=body.occurred_at,
@@ -248,7 +255,11 @@ async def add_debt(body: DebtIn, session: AsyncSession = Depends(get_session)):
 
 
 @router.post("/payments", response_model=TxOut, status_code=201)
-async def add_payment(body: PaymentIn, session: AsyncSession = Depends(get_session)):
+async def add_payment(
+    body: PaymentIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
+):
     if await session.get(Person, body.person_id) is None:
         raise HTTPException(404, "Kişi bulunamadı")
 
@@ -268,7 +279,7 @@ async def add_payment(body: PaymentIn, session: AsyncSession = Depends(get_sessi
             session,
             body.person_id,
             body.amount,
-            TxMeta(created_by=_actor(), note=body.note, occurred_at=body.occurred_at),
+            TxMeta(created_by=actor, note=body.note, occurred_at=body.occurred_at),
             lines=lines,
         )
     except (LedgerError, ValueError) as e:
@@ -276,26 +287,36 @@ async def add_payment(body: PaymentIn, session: AsyncSession = Depends(get_sessi
 
 
 @router.post("/transactions/{tx_id}/reverse", response_model=TxOut, status_code=201)
-async def reverse_tx(tx_id: int, body: ReverseIn, session: AsyncSession = Depends(get_session)):
+async def reverse_tx(
+    tx_id: int,
+    body: ReverseIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
+):
     try:
-        return await ledger.reverse(session, tx_id, actor=_actor(), reason=body.reason)
+        return await ledger.reverse(session, tx_id, actor=actor, reason=body.reason)
     except LedgerError as e:
         raise HTTPException(422, str(e)) from e
 
 
 @router.delete("/transactions/{tx_id}", status_code=204)
 async def delete_transaction(
-    tx_id: int, body: ArchiveIn, session: AsyncSession = Depends(get_session)
+    tx_id: int,
+    body: ArchiveIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
 ):
     """Sil = arşive taşı. Kayıt yok edilmez, archived_transactions'a kopyalanıp
     canlı defterden çıkarılır."""
     try:
-        await ledger.archive_transaction(session, tx_id, actor=_actor(), reason=body.reason)
+        await ledger.archive_transaction(session, tx_id, actor=actor, reason=body.reason)
     except LedgerError as e:
         raise HTTPException(422, str(e)) from e
 
 
-@router.get("/persons/{person_id}/balance", response_model=BalanceOut)
+@router.get(
+    "/persons/{person_id}/balance", response_model=BalanceOut, dependencies=[auth.AuthRequired]
+)
 async def balance(person_id: int, session: AsyncSession = Depends(get_session)):
     if await session.get(Person, person_id) is None:
         raise HTTPException(404, "Kişi bulunamadı")
@@ -308,7 +329,11 @@ async def balance(person_id: int, session: AsyncSession = Depends(get_session)):
     )
 
 
-@router.get("/persons/{person_id}/transactions", response_model=list[TxDetailOut])
+@router.get(
+    "/persons/{person_id}/transactions",
+    response_model=list[TxDetailOut],
+    dependencies=[auth.AuthRequired],
+)
 async def person_transactions(
     person_id: int, limit: int = 200, session: AsyncSession = Depends(get_session)
 ):
@@ -358,13 +383,15 @@ async def person_transactions(
 
 # --------------------------------------------------------------- ayarlar
 
-@router.get("/settings", response_model=dict[str, str])
+@router.get("/settings", response_model=dict[str, str], dependencies=[auth.AuthRequired])
 async def list_settings(session: AsyncSession = Depends(get_session)):
     rows = (await session.execute(select(Setting))).scalars().all()
     return {s.key: s.value for s in rows}
 
 
-@router.put("/settings/{key}", response_model=SettingOut)
+@router.put(
+    "/settings/{key}", response_model=SettingOut, dependencies=[auth.AuthRequired]
+)
 async def update_setting(
     key: str, body: SettingIn, session: AsyncSession = Depends(get_session)
 ):
@@ -390,7 +417,7 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
     )
 
 
-@router.get("/reports/daily")
+@router.get("/reports/daily", dependencies=[auth.AuthRequired])
 async def report_daily(
     gun: date | None = Query(default=None, alias="date"),
     session: AsyncSession = Depends(get_session),
@@ -401,14 +428,14 @@ async def report_daily(
     return _pdf_response(pdf, f"rapor_gunluk_{gun.isoformat()}.pdf")
 
 
-@router.get("/reports/general")
+@router.get("/reports/general", dependencies=[auth.AuthRequired])
 async def report_general(session: AsyncSession = Depends(get_session)):
     isletme = await report.isletme_adi(session)
     pdf = await report.rapor_genel(session, isletme)
     return _pdf_response(pdf, f"rapor_genel_{report.today_tr().isoformat()}.pdf")
 
 
-@router.get("/reports/person/{person_id}")
+@router.get("/reports/person/{person_id}", dependencies=[auth.AuthRequired])
 async def report_person(person_id: int, session: AsyncSession = Depends(get_session)):
     person = await session.get(Person, person_id)
     if person is None or not person.is_active:
@@ -420,9 +447,10 @@ async def report_person(person_id: int, session: AsyncSession = Depends(get_sess
 
 # --------------------------------------------------------------- yedekleme
 
-@router.get("/backups", response_model=list[BackupSnapshotOut])
+@router.get(
+    "/backups", response_model=list[BackupSnapshotOut], dependencies=[auth.AuthRequired]
+)
 async def list_backups():
-    """Şimdilik kimliği doğrulanmış herkes görebilir; Faz 3'te yetki eklenecek."""
     try:
         snapshots = await backup.list_snapshots()
     except backup.BackupUnavailable as e:
@@ -437,7 +465,9 @@ async def list_backups():
     ]
 
 
-@router.post("/backups/run", response_model=BackupRunOut)
+@router.post(
+    "/backups/run", response_model=BackupRunOut, dependencies=[auth.AuthRequired]
+)
 async def run_backup_now():
     """Kullanıcıdan gelen hiçbir parametre kabul etmez, sabit script çalıştırır."""
     try:
@@ -452,20 +482,6 @@ async def run_backup_now():
 # --------------------------------------------------------------- admin (LLM yönetimi)
 
 
-def _check_admin_password(password: str | None) -> None:
-    """settings.admin_password boşsa panel tamamen kapalıdır (503) —
-    yanlışlıkla açık admin uç noktası kalmasın diye. Karşılaştırma sabit
-    zamanlıdır (timing attack'e karşı)."""
-    if not settings.admin_password:
-        raise HTTPException(503, "Admin paneli yapılandırılmamış")
-    if not password or not secrets.compare_digest(password, settings.admin_password):
-        raise HTTPException(401, "Yetkisiz")
-
-
-async def require_admin(x_admin_password: str | None = Header(default=None)) -> None:
-    _check_admin_password(x_admin_password)
-
-
 def _llm_status_out(status: llm_provider.LLMStatus) -> AdminLLMStatusOut:
     return AdminLLMStatusOut(
         primary=status.primary,
@@ -476,12 +492,12 @@ def _llm_status_out(status: llm_provider.LLMStatus) -> AdminLLMStatusOut:
     )
 
 
-@router.get("/admin/llm", response_model=AdminLLMStatusOut, dependencies=[Depends(require_admin)])
+@router.get("/admin/llm", response_model=AdminLLMStatusOut, dependencies=[auth.AuthRequired])
 async def admin_llm_status(session: AsyncSession = Depends(get_session)):
     return _llm_status_out(await llm_provider.get_status(session))
 
 
-@router.post("/admin/llm", response_model=AdminLLMStatusOut, dependencies=[Depends(require_admin)])
+@router.post("/admin/llm", response_model=AdminLLMStatusOut, dependencies=[auth.AuthRequired])
 async def admin_llm_update(body: AdminLLMPreferenceIn, session: AsyncSession = Depends(get_session)):
     if body.llm_primary not in llm_provider.LLM_PRIMARY_VALUES:
         raise HTTPException(422, "Geçersiz tercih")
@@ -506,14 +522,14 @@ async def _vllm_control_out(desired: str) -> AdminVllmControlOut:
 
 
 @router.get(
-    "/admin/vllm-control", response_model=AdminVllmControlOut, dependencies=[Depends(require_admin)]
+    "/admin/vllm-control", response_model=AdminVllmControlOut, dependencies=[auth.AuthRequired]
 )
 async def admin_vllm_control_status(session: AsyncSession = Depends(get_session)):
     return await _vllm_control_out(await vllm_control.get_vllm_desired(session))
 
 
 @router.post(
-    "/admin/vllm-control", response_model=AdminVllmControlOut, dependencies=[Depends(require_admin)]
+    "/admin/vllm-control", response_model=AdminVllmControlOut, dependencies=[auth.AuthRequired]
 )
 async def admin_vllm_control_update(
     body: AdminVllmControlIn, request: Request, session: AsyncSession = Depends(get_session)
