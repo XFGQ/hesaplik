@@ -22,25 +22,34 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from app.api.admin import _failures, router
+from app.api.admin import _failures as _restore_failures
+from app.api.admin import router
+from app.api.auth import router as auth_router
 from app.config import settings
 from app.db import get_session
 from app.models import AuditLog, RestoreRequest
 from app.services import backup, restore
+from conftest import AUTH_PASSWORD, AUTH_USERNAME
 
-SIFRE = "cok-gizli-parola"
+SIFRE = AUTH_PASSWORD
 
 
 @pytest.fixture
-def admin_password(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", SIFRE)
-    _failures.clear()
-    return SIFRE
+def admin_password(auth_account):
+    """Adı geçmişten kalma (eskiden ADMIN_PASSWORD): artık tek hesabın
+    ortak girişini (auth_account) kurar — geri yükleme onayındaki şifre
+    tekrarı da (auth.verify_password) aynı hesaba karşı doğrular.
+
+    Geri yüklemenin KENDİ kilitleme sayacı (admin.py::_failures, giriş
+    kilidinden AYRI) da testler arasında sızmasın diye temizlenir."""
+    _restore_failures.clear()
+    return auth_account
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def client(session):
     app = FastAPI()
+    app.include_router(auth_router)
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
 
@@ -82,8 +91,11 @@ def yedekler(monkeypatch):
 
 
 async def _login(client) -> None:
-    r = await client.post("/api/admin/login", json={"password": SIFRE})
+    r = await client.post(
+        "/api/auth/login", json={"username": AUTH_USERNAME, "password": SIFRE}
+    )
     assert r.status_code == 200, r.text
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
 
 
 # ---------------------------------------------------------------- koruma

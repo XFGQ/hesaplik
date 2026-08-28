@@ -1,9 +1,11 @@
 """Admin paneli uçları (/api/admin/*).
 
-En kritik davranış: **şifresiz hiçbir veri dışarı çıkmaz.** İşlem akışı ham
+En kritik davranış: **tokensız hiçbir veri dışarı çıkmaz.** İşlem akışı ham
 müşteri mesajlarını, kişi adlarını ve tutarları içerir; bu uç korumasız
-kalırsa tüm defter sızar. Buradaki testler korumayı, giriş akışını ve
-filtre/sayfalamayı kilitler.
+kalırsa tüm defter sızar. Giriş akışının kendisi (kullanıcı adı/şifre,
+bcrypt, kilitleme) tests/test_auth.py'de test edilir — burada yalnızca
+"geçerli JWT'siz hiçbir admin ucu çalışmaz" ve panel-özel davranışlar
+(flow/filtre/sayfalama, LLM izleme, kuyruk, arşiv, log) test edilir.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -14,34 +16,29 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.api.admin import _failures, router
-from app.config import settings
+from app.api.admin import router
+from app.api.auth import router as auth_router
 from app.db import get_session
 from app.models import Person, RawMessage, Transaction, TxKind, TxSource
 from app.services import message_trace
-
-SIFRE = "cok-gizli-parola"
-
-
-@pytest.fixture
-def admin_password(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", SIFRE)
-    _failures.clear()
-    return SIFRE
+from conftest import AUTH_PASSWORD, AUTH_USERNAME
 
 
 @pytest.fixture
-def admin_disabled(monkeypatch):
-    """ADMIN_PASSWORD tanımsız kurulum: panel tamamen kapalı olmalı."""
-    monkeypatch.setattr(settings, "admin_password", "")
-    _failures.clear()
+def admin_password(auth_account):
+    """Adı geçmişten kalma (eskiden ADMIN_PASSWORD): artık tek hesabın
+    ortak girişini (auth_account) kurar. Aşağıdaki onlarca testin imzasını
+    değiştirmemek için bu isimle bırakıldı."""
+    return auth_account
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def client(session):
-    """Yalnızca admin router'ı içeren küçük bir uygulama. get_session testin
-    kendi session'ına bağlanır ki gerçek veritabanına gidilmesin."""
+    """Admin router'ı + giriş router'ını içeren küçük bir uygulama.
+    get_session testin kendi session'ına bağlanır ki gerçek veritabanına
+    gidilmesin."""
     app = FastAPI()
+    app.include_router(auth_router)
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
 
@@ -51,74 +48,43 @@ async def client(session):
 
 
 async def _login(client) -> str:
-    r = await client.post("/api/admin/login", json={"password": SIFRE})
+    r = await client.post(
+        "/api/auth/login", json={"username": AUTH_USERNAME, "password": AUTH_PASSWORD}
+    )
     assert r.status_code == 200, r.text
-    return r.json()["token"]
+    token = r.json()["access_token"]
+    # Cookie'nin eski işlevini görür: sonraki her istek otomatik yetkili
+    # olsun diye header istemcide kalıcı olarak ayarlanır.
+    client.headers["Authorization"] = f"Bearer {token}"
+    return token
 
 
 # ---------------------------------------------------------------- koruma
 
-async def test_flow_sifresiz_erisilemez(client, admin_password):
+async def test_flow_tokensiz_erisilemez(client, admin_password):
     r = await client.get("/api/admin/flow")
     assert r.status_code == 401
     assert "text" not in r.text  # akış satırı sızmadı
 
 
-async def test_me_sifresiz_401(client, admin_password):
-    assert (await client.get("/api/admin/me")).status_code == 401
-
-
-async def test_yanlis_sifre_giremez(client, admin_password):
-    r = await client.post("/api/admin/login", json={"password": "yanlis"})
-    assert r.status_code == 401
-    assert (await client.get("/api/admin/flow")).status_code == 401
-
-
 async def test_uydurma_token_gecmez(client, admin_password):
-    for sahte in ("", "abc", "9999999999.deadbeef", "abc.def"):
+    for sahte in ("", "abc", "abc.def.ghi", "9999999999.deadbeef"):
         r = await client.get("/api/admin/flow", headers={"Authorization": f"Bearer {sahte}"})
         assert r.status_code == 401, sahte
 
 
-async def test_dogru_sifre_ile_calisir(client, admin_password):
+async def test_dogru_bilgilerle_calisir(client, admin_password):
     token = await _login(client)
 
-    # Giriş çerezi bırakır: sonraki istek başlıksız da geçer.
-    assert (await client.get("/api/admin/me")).status_code == 200
-
-    client.cookies.clear()
     r = await client.get("/api/admin/flow", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 200
     assert r.json()["items"] == []
 
 
-async def test_cerez_httponly(client, admin_password):
-    r = await client.post("/api/admin/login", json={"password": SIFRE})
-    assert "httponly" in r.headers["set-cookie"].lower()
-
-
-async def test_cikis_oturumu_kapatir(client, admin_password):
+async def test_baska_bir_admin_ucu_da_ayni_tokenla_calisir(client, admin_password):
+    """Tek hesap: giriş yapan HER ŞEYE erişir, ayrı ayrı yetki gerekmez."""
     await _login(client)
-    assert (await client.get("/api/admin/me")).status_code == 200
-
-    await client.post("/api/admin/logout")
-    assert (await client.get("/api/admin/me")).status_code == 401
-
-
-async def test_sifre_tanimsizsa_panel_kapali(client, admin_disabled):
-    """ADMIN_PASSWORD boşken boş şifreyle içeri girilemez."""
-    r = await client.post("/api/admin/login", json={"password": ""})
-    assert r.status_code == 503
-    assert (await client.get("/api/admin/flow")).status_code == 401
-
-
-async def test_cok_fazla_yanlis_deneme_kilitler(client, admin_password):
-    for _ in range(10):
-        assert (await client.post("/api/admin/login", json={"password": "yanlis"})).status_code == 401
-
-    # Kilitlendikten sonra DOĞRU şifre bile beklemeli.
-    r = await client.post("/api/admin/login", json={"password": SIFRE})
-    assert r.status_code == 429
+    assert (await client.get("/api/admin/queue")).status_code == 200
 
 
 # ---------------------------------------------------------------- işlem akışı

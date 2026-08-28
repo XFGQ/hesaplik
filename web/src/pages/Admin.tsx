@@ -5,18 +5,16 @@
  * bölüm (LLM İzleme, İstek Kuyruğu, Loglar, Kişiler & İşlemler) salt
  * okunur — bkz. admin.md.
  *
- * Oturum: şifre doğruysa sunucu httpOnly çerez bırakır. Sayfa açılışında
- * /me sorulur; 401 ise şifre ekranı gösterilir. Token JS'te tutulmaz.
- *
- * LLM Yönetimi ayrı bir uca gider (/api/admin/llm, X-Admin-Password
- * header) — cookie oturumundan bağımsız bir mekanizma, bu yüzden bölüme
- * girince kendi şifresini ayrıca ister.
+ * Oturum: tek hesabın ortak JWT'si (bkz. App.tsx > ProtectedRoute). Bu
+ * sayfaya token'sız hiç girilmez; token süresi mid-session dolarsa ilk
+ * admin API isteği 401 döner ve onUnauthorized() (lib/auth) girişe atar —
+ * panelin kendi ayrı şifre ekranı YOK, LLM Yönetimi de dahil aynı token'la
+ * çalışır.
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, type FormEvent } from "react";
+import { useState } from "react";
 
-import { adminApi, Unauthorized } from "../api/admin";
 import { api, ApiError } from "../api/client";
 import type { AdminLLMStatus, AdminVllmControl } from "../api/types";
 import AdminBackups from "../components/admin/AdminBackups";
@@ -26,6 +24,7 @@ import AdminHealth from "../components/admin/AdminHealth";
 import AdminLlmMonitor from "../components/admin/AdminLlmMonitor";
 import AdminLogs from "../components/admin/AdminLogs";
 import AdminQueue from "../components/admin/AdminQueue";
+import { onUnauthorized } from "../lib/auth";
 import { useToast } from "../lib/toast";
 
 type SectionId =
@@ -89,36 +88,9 @@ const SECTIONS: Section[] = [
 ];
 
 export default function Admin() {
-  const [authed, setAuthed] = useState<boolean | null>(null);
   const [section, setSection] = useState<SectionId>("flow");
 
-  useEffect(() => {
-    let iptal = false;
-    adminApi
-      .me()
-      .then(() => !iptal && setAuthed(true))
-      .catch(() => !iptal && setAuthed(false));
-    return () => {
-      iptal = true;
-    };
-  }, []);
-
-  if (authed === null) {
-    return (
-      <div className="admin-gate">
-        <p className="muted">Yükleniyor…</p>
-      </div>
-    );
-  }
-
-  if (!authed) return <AdminLogin onSuccess={() => setAuthed(true)} />;
-
   const active = SECTIONS.find((s) => s.id === section)!;
-
-  async function cikis() {
-    await adminApi.logout().catch(() => undefined);
-    setAuthed(false);
-  }
 
   return (
     <div className="admin">
@@ -145,7 +117,7 @@ export default function Admin() {
           <a className="admin-side-link" href="/">
             ← Deftere dön
           </a>
-          <button className="admin-side-link" onClick={cikis}>
+          <button className="admin-side-link" onClick={onUnauthorized}>
             Çıkış yap
           </button>
         </div>
@@ -157,14 +129,14 @@ export default function Admin() {
           <p>{active.hint}</p>
         </header>
 
-        {section === "flow" && <AdminFlow onUnauthorized={() => setAuthed(false)} />}
-        {section === "health" && <AdminHealth onUnauthorized={() => setAuthed(false)} />}
-        {section === "backups" && <AdminBackups onUnauthorized={() => setAuthed(false)} />}
-        {section === "llm" && <LlmSection />}
-        {section === "llm-monitor" && <AdminLlmMonitor onUnauthorized={() => setAuthed(false)} />}
-        {section === "queue" && <AdminQueue onUnauthorized={() => setAuthed(false)} />}
-        {section === "logs" && <AdminLogs onUnauthorized={() => setAuthed(false)} />}
-        {section === "data" && <AdminData onUnauthorized={() => setAuthed(false)} />}
+        {section === "flow" && <AdminFlow onUnauthorized={onUnauthorized} />}
+        {section === "health" && <AdminHealth onUnauthorized={onUnauthorized} />}
+        {section === "backups" && <AdminBackups onUnauthorized={onUnauthorized} />}
+        {section === "llm" && <LlmPanel />}
+        {section === "llm-monitor" && <AdminLlmMonitor onUnauthorized={onUnauthorized} />}
+        {section === "queue" && <AdminQueue onUnauthorized={onUnauthorized} />}
+        {section === "logs" && <AdminLogs onUnauthorized={onUnauthorized} />}
+        {section === "data" && <AdminData onUnauthorized={onUnauthorized} />}
         {!active.ready && <Soon />}
       </main>
     </div>
@@ -178,109 +150,6 @@ function Soon() {
       <p>Bu bölüm henüz doldurulmadı. İlk gerçek içerik "İşlem Akışı" bölümünde.</p>
     </div>
   );
-}
-
-function AdminLogin({ onSuccess }: { onSuccess: () => void }) {
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await adminApi.login(password);
-      onSuccess();
-    } catch (err) {
-      setError(
-        err instanceof Unauthorized
-          ? "Şifre hatalı."
-          : err instanceof Error
-            ? err.message
-            : "Giriş yapılamadı.",
-      );
-      setPassword("");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="admin-gate">
-      <form className="admin-gate-box" onSubmit={submit}>
-        <h1>Yönetim paneli</h1>
-        <p className="muted">Devam etmek için yönetim şifresini girin.</p>
-
-        <label className="field">
-          <span>Şifre</span>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            autoFocus
-            autoComplete="current-password"
-          />
-        </label>
-
-        {error && <p className="error">{error}</p>}
-
-        <button className="primary" type="submit" disabled={busy || !password}>
-          {busy ? "Kontrol ediliyor…" : "Giriş"}
-        </button>
-
-        <a className="admin-side-link" href="/">
-          ← Deftere dön
-        </a>
-      </form>
-    </div>
-  );
-}
-
-/* LLM Yönetimi /api/admin/llm ucunu kullanır: cookie oturumundan bağımsız,
- * her istekte X-Admin-Password header'ı ister. Bu yüzden bölüme girince
- * kendi mini şifre formunu gösterir (aynı şifre, ayrı doğrulama). */
-function LlmSection() {
-  const [password, setPassword] = useState<string | null>(null);
-  const [input, setInput] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [checking, setChecking] = useState(false);
-
-  async function handleLogin(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setChecking(true);
-    try {
-      await api.adminLlmStatus(input);
-      setPassword(input);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Giriş başarısız");
-    } finally {
-      setChecking(false);
-    }
-  }
-
-  if (password === null) {
-    return (
-      <form className="panel" onSubmit={handleLogin}>
-        <label className="field">
-          <span>Admin şifresi</span>
-          <input
-            type="password"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            autoFocus
-          />
-        </label>
-        {error && <div className="error">{error}</div>}
-        <button className="primary" type="submit" disabled={checking || !input}>
-          Giriş
-        </button>
-      </form>
-    );
-  }
-
-  return <LlmPanel password={password} />;
 }
 
 const PREFERENCES: { value: string; label: string }[] = [
@@ -302,20 +171,20 @@ function StatusDot({ ok }: { ok: boolean }) {
   return <span className={`status-dot ${ok ? "status-dot-ok" : "status-dot-down"}`} />;
 }
 
-function LlmPanel({ password }: { password: string }) {
+function LlmPanel() {
   const qc = useQueryClient();
   const toast = useToast();
 
   const status = useQuery({
-    queryKey: ["admin-llm", password],
-    queryFn: () => api.adminLlmStatus(password),
+    queryKey: ["admin-llm"],
+    queryFn: () => api.adminLlmStatus(),
     refetchInterval: 10_000,
   });
 
   const setPrimary = useMutation({
-    mutationFn: (llmPrimary: string) => api.adminSetLlmPrimary(password, llmPrimary),
+    mutationFn: (llmPrimary: string) => api.adminSetLlmPrimary(llmPrimary),
     onSuccess: (data) => {
-      qc.setQueryData(["admin-llm", password], data);
+      qc.setQueryData(["admin-llm"], data);
       toast("LLM tercihi güncellendi", "success");
     },
     onError: (e) => toast(e instanceof ApiError ? e.message : "Güncelleme başarısız", "info"),
@@ -392,7 +261,7 @@ function LlmPanel({ password }: { password: string }) {
         )}
       </div>
 
-      <VllmControlPanel password={password} />
+      <VllmControlPanel />
     </>
   );
 }
@@ -407,20 +276,20 @@ function gercekDurumMetni(data: AdminVllmControl): string {
   return data.desired === "on" ? "Erişilebilir" : "Kapalı";
 }
 
-function VllmControlPanel({ password }: { password: string }) {
+function VllmControlPanel() {
   const qc = useQueryClient();
   const toast = useToast();
 
   const control = useQuery({
-    queryKey: ["admin-vllm-control", password],
-    queryFn: () => api.adminVllmControl(password),
+    queryKey: ["admin-vllm-control"],
+    queryFn: () => api.adminVllmControl(),
     refetchInterval: 5_000,
   });
 
   const setDesired = useMutation({
-    mutationFn: (desired: "on" | "off") => api.adminSetVllmDesired(password, desired),
+    mutationFn: (desired: "on" | "off") => api.adminSetVllmDesired(desired),
     onSuccess: (data) => {
-      qc.setQueryData(["admin-vllm-control", password], data);
+      qc.setQueryData(["admin-vllm-control"], data);
       toast(
         data.desired === "on"
           ? "vLLM açılıyor — ~30 saniyede uygulanır"

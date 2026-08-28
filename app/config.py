@@ -14,12 +14,21 @@ class Settings(BaseSettings):
     # cozulur. Dizin yoksa (gelistirmede build alinmamissa) yalnizca API calisir.
     web_dist: str = "web/dist"
 
-    # Admin paneli (/admin) tek şifreyle korunur. BOŞ ise panel tamamen
-    # kapalıdır: giriş denemesi de /api/admin/* uçları da reddedilir —
-    # yapılandırılmamış bir kurulumda panel kazara açık kalmaz.
-    admin_password: str = ""
-    # Admin oturumunun ömrü (saat). Süre dolunca yeniden şifre istenir.
-    admin_session_hours: int = 12
+    # Tek hesap, JWT tabanlı giriş. Giriş yapan HER ŞEYE erişir (defter +
+    # admin) — ayrı roller yok. Üçü de BOŞSA sistem tamamen kapalıdır:
+    # /api/auth/login her zaman 503 döner, require_auth her zaman 401 —
+    # yapılandırılmamış bir kurulum kazara açık kalmaz. Şifre düz metin
+    # DEĞİL, bcrypt hash olarak saklanır (AUTH_PASSWORD_HASH). Hash üretmek
+    # için: .venv/bin/python -c "import bcrypt;
+    # print(bcrypt.hashpw(b'sifreniz', bcrypt.gensalt()).decode())"
+    auth_username: str = ""
+    auth_password_hash: str = ""
+    # JWT imza anahtarı. Üretimde uzun/rastgele olsun: .venv/bin/python -c
+    # "import secrets; print(secrets.token_urlsafe(48))". Değiştirilince
+    # tüm açık oturumlar kendiliğinden geçersiz olur.
+    jwt_secret: str = ""
+    # Token ömrü (saat). Süre dolunca yeniden giriş istenir.
+    jwt_expire_hours: int = 24
 
     restic_repository: str = "./data/backups"
     restic_password: str | None = None
@@ -89,10 +98,6 @@ class Settings(BaseSettings):
     # (yalnızca bu tek uca erişir). BOŞ ise uç HER ZAMAN 401 döner (fail
     # closed) — yapılandırılmamış bir kurulumda kazara açık kalmaz.
     vllm_control_token: str | None = None
-
-    # Admin panel (/admin) şifresi. Boşsa panel tamamen kapalıdır (503) —
-    # yanlışlıkla açık admin uç noktası kalmasın diye varsayılan boş.
-    admin_password: str | None = None
 
     @property
     def cors_origins_list(self) -> list[str]:

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
+import { clearToken } from "../lib/auth";
 import { hhmm, money } from "../lib/format";
 import { applyTheme, getStoredTheme, type Theme } from "../lib/theme";
 import { useToast } from "../lib/toast";
@@ -21,6 +22,11 @@ export default function Layout() {
   function chooseTheme(next: Theme) {
     setTheme(next);
     applyTheme(next);
+  }
+
+  function logout() {
+    clearToken();
+    nav("/login", { replace: true });
   }
 
   const people = useQuery({ queryKey: ["persons"], queryFn: () => api.persons() });
@@ -74,10 +80,16 @@ export default function Layout() {
         </div>
 
         <div className="side-reports">
-          <button className="side-back" onClick={() => window.open(api.dailyReportUrl(), "_blank")}>
+          <button
+            className="side-back"
+            onClick={() => api.openDailyReport().catch(() => toast("Rapor alınamadı", "info"))}
+          >
             <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Günlük rapor
           </button>
-          <button className="side-back" onClick={() => window.open(api.generalReportUrl(), "_blank")}>
+          <button
+            className="side-back"
+            onClick={() => api.openGeneralReport().catch(() => toast("Rapor alınamadı", "info"))}
+          >
             <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Genel rapor
           </button>
         </div>
@@ -110,6 +122,10 @@ export default function Layout() {
           </button>
           <span className="side-updated">Güncellendi · {hhmm(updatedAt)}</span>
         </div>
+
+        <button className="side-back" onClick={logout}>
+          Çıkış yap
+        </button>
       </aside>
 
       <div className="side-main">

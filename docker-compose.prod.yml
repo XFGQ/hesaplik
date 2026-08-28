@@ -48,7 +48,15 @@ services:
 
       RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/data/backups}
       RESTIC_PASSWORD: ${RESTIC_PASSWORD:-}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+
+      # Giriş (tek hesap, JWT) — bkz. .env.example için hash/secret üretme
+      # komutları. Üçü de zorunlu: eksikse deploy başlamadan durur, sistemin
+      # farkında olmadan kilitli (ya da yapılandırma hatasıyla açık) kalması
+      # yerine.
+      AUTH_USERNAME: ${AUTH_USERNAME:?giriş kullanıcı adı gerekli}
+      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH:?bcrypt şifre hash'i gerekli}
+      JWT_SECRET: ${JWT_SECRET:?jwt secret gerekli}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
 
     volumes:
       - ${RESTIC_REPOSITORY:-./data/backups}:${RESTIC_REPOSITORY:-/data/backups}:ro

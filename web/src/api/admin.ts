@@ -1,27 +1,32 @@
 /* Admin paneli API istemcisi.
  *
- * Oturum httpOnly çerezle taşınır: token JS'te hiç tutulmaz (localStorage
- * yok — XSS ile çalınacak bir şey de yok). Bu yüzden her istek
- * `credentials: "include"` ile gider; sunucu çerezi kendisi okur.
+ * Oturum, deftereyle aynı ortak JWT'dir (bkz. ../lib/auth, client.ts) —
+ * tek hesap, tek token, her isteğe Authorization: Bearer header'ı olarak
+ * eklenir.
  *
  * 401 ayrı bir hata tipiyle işaretlenir (Unauthorized): panel bunu görünce
- * şifre ekranına düşer, "istek başarısız" diye anlamsız bir hata göstermez.
+ * girişe döner, "istek başarısız" diye anlamsız bir hata göstermez.
  */
+
+import { authHeader } from "../lib/auth";
 
 const BASE = import.meta.env.VITE_API_URL ?? "";
 
 export class AdminError extends Error {}
 export class Unauthorized extends AdminError {}
 /** 403: oturum geçerli ama bu işleme izin yok (ör. geri yüklemede yanlış
- * şifre). Unauthorized'dan ayrı tutulur — panel bunu görünce şifre ekranına
+ * şifre). Unauthorized'dan ayrı tutulur — panel bunu görünce girişe
  * DÜŞMEZ, hatayı olduğu yerde gösterir. */
 export class Forbidden extends AdminError {}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}/api/admin${path}`, {
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeader(),
+      ...(init?.headers as Record<string, string> | undefined),
+    },
   });
 
   if (res.status === 401) throw new Unauthorized("Oturum geçersiz");
@@ -344,13 +349,6 @@ export type AuditLogFilters = {
 };
 
 export const adminApi = {
-  login: (password: string) =>
-    req<{ ok: boolean; expires_in: number }>("/login", {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    }),
-  logout: () => req<{ ok: boolean }>("/logout", { method: "POST" }),
-  me: () => req<{ ok: boolean }>("/me"),
   health: () => req<Health>("/health"),
 
   backups: () => req<BackupList>("/backups"),
