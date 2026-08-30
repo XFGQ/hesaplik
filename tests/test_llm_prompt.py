@@ -108,3 +108,48 @@ def test_prompt_ornekleri_kodun_kabul_ettigi_cikti(cumle):
     beklenen_isim = data["person_name"] or data["kisi"]
     if beklenen_isim:
         assert intent.person_name == beklenen_isim
+
+
+# --------------------------------------------------------------- create_person
+# Kural parser çözemezse (serbest cümle) kişi ekleme LLM'e düşer; LLM'in
+# TEMİZ isim döndürmesi gerekir — "furkan duman adlı kişiyi sisteme" gibi
+# komut kelimeleriyle dolu bir isimle kişi eşleştirmesi asla tutmaz.
+
+CREATE_PERSON_ORNEKLERI = [
+    ("furkan duman adlı kişiyi sisteme kayıt et", "furkan duman"),
+    ("ercüment çözer kişisini ekle", "ercüment çözer"),
+]
+
+
+@pytest.mark.parametrize("cumle,beklenen_isim", CREATE_PERSON_ORNEKLERI)
+def test_prompt_create_person_ornegi_temiz_isim_ogretiyor(cumle, beklenen_isim):
+    assert cumle in ORNEKLER, f"prompt'ta create_person örneği eksik: {cumle!r}"
+    ornek = ORNEKLER[cumle]
+    assert ornek["kind"] == "create_person"
+    assert ornek["person_name"] == beklenen_isim
+    assert ornek["amount"] is None  # kişi ekleme bir para kaydı DEĞİL
+
+
+def test_prompt_kurallarinda_create_person_komut_kelimeleri_yaziyor():
+    # Küçük model örneği kaçırabilir; kural metninde de "bu kelimeler isme
+    # dahil değil" açıkça yazmalı.
+    kurallar = SYSTEM_PROMPT.split("Örnekler:")[0]
+    assert "create_person" in kurallar
+    for kelime in ("adlı", "kişisini", "sisteme"):
+        assert kelime in kurallar
+
+
+@pytest.mark.parametrize("cumle,beklenen_isim", CREATE_PERSON_ORNEKLERI)
+def test_create_person_json_kod_tarafindan_kabul_edilir(cumle, beklenen_isim):
+    # VALID_KINDS'a eklendi mi + isim doğrulaması (hallucination koruması)
+    # çok kelimeli ismi elemiyor mu?
+    intent = parsed_intent_from_json(ORNEKLER[cumle], cumle)
+    assert intent is not None
+    assert intent.kind == "create_person"
+    assert intent.person_name == beklenen_isim
+
+
+def test_create_person_isimsiz_json_reddedilir():
+    # Kişisiz bir "kişi ekle" niyeti anlamsızdır — kod uydurmaz, reddeder.
+    data = {"kind": "create_person", "person_name": None}
+    assert parsed_intent_from_json(data, "birini ekle") is None

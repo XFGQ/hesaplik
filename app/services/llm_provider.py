@@ -61,6 +61,7 @@ VALID_KINDS = {
     "debt",
     "payment",
     "balance_query",
+    "create_person",
     "list_all",
     "list_debtors",
     "list_creditors",
@@ -219,7 +220,7 @@ def parsed_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIn
         return None
 
     person_name = _verified_person_name(_clean_str(data.get("person_name")), raw_text)
-    if kind in ("debt", "payment", "balance_query") and person_name is None:
+    if kind in ("debt", "payment", "balance_query", "create_person") and person_name is None:
         # Kayıt niyeti kişisiz anlamsızdır — intent_resolver zaten kişisiz
         # ParsedIntent'i reddeder ama burada erken çıkmak niyeti açıkça
         # "çözülemedi" sayar (LLM belirsiz kaldıysa ya da isim ham metinle

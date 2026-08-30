@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import pytest
+
 from app.services.parser import parse
 
 
@@ -1110,6 +1112,114 @@ def test_create_person_borc_ile_karismaz():
     # Normal bir borç cümlesi create_person'a yanlışlıkla düşmemeli.
     p = parse("ahmet 20 balya saman aldı 15000 tl borç")
     assert p.kind == "debt"
+
+
+# --- İsim TEMİZLEME: komut kelimeleri isme karışmamalı (2026-08-30 bug).
+# Parser create_person'ı yakalıyordu ama "furkan duman adlı kişiyi sisteme"
+# gibi komut kelimeleriyle dolu bir "isim" üretiyordu — o isimle kişi
+# eşleştirmesi hiçbir zaman tutmaz.
+
+
+@pytest.mark.parametrize(
+    "cumle,beklenen",
+    [
+        ("furkan duman adlı kişiyi sisteme kayıt et", "furkan duman"),
+        ("furkan duman adında kişiyi deftere kaydet", "furkan duman"),
+        ("furkan duman isimli kişiyi listeye ekle", "furkan duman"),
+        ("furkan duman isminde bir kişi oluştur", "furkan duman"),
+        ("serpil çiçek kişisini kayıt et", "serpil çiçek"),
+        ("serpil çiçek kişiyi ekle", "serpil çiçek"),
+        ("serpil çiçek sistemine kaydet", "serpil çiçek"),
+        ("serpil çiçek kayıtlara ekle", "serpil çiçek"),
+        ("yeni kişi yıldız tilbe", "yıldız tilbe"),
+        ("yeni isim yıldız tilbe", "yıldız tilbe"),
+        ("yıldız tilbe defterime ekle", "yıldız tilbe"),
+        ("yıldız tilbe sisteme gir", "yıldız tilbe"),
+        ("yıldız tilbe aç", "yıldız tilbe"),
+    ],
+)
+def test_create_person_isim_komut_kelimelerinden_temizlenir(cumle, beklenen):
+    p = parse(cumle)
+    assert p is not None, f"{cumle!r} yakalanmadı"
+    assert p.kind == "create_person"
+    assert p.person_name == beklenen
+
+
+# --- Yeni TETİKLEYİCİLER: eskiden None dönüp LLM'e giden kalıplar.
+
+
+@pytest.mark.parametrize(
+    "cumle,beklenen",
+    [
+        ("ercüment çözer kişisini ekle", "ercüment çözer"),
+        ("faruk caner sisteme ekle", "faruk caner"),
+        ("faruk caner deftere ekle", "faruk caner"),
+        ("ali veli ekle", "ali veli"),
+        ("ahmet duman kaydet", "ahmet duman"),
+        ("ahmet duman sisteme kaydet", "ahmet duman"),
+    ],
+)
+def test_create_person_yeni_tetikleyiciler(cumle, beklenen):
+    p = parse(cumle)
+    assert p is not None, f"{cumle!r} hâlâ yakalanmıyor (LLM'e düşüyor)"
+    assert p.kind == "create_person"
+    assert p.person_name == beklenen
+    assert p.amount is None
+
+
+# --- GERÇEK İSİM KORUMASI: aşırı temizleme yapılmamalı, para cümleleri
+# create_person'a düşmemeli.
+
+
+@pytest.mark.parametrize("cumle", ["ahmet yılmaz", "mehmet kaya"])
+def test_create_person_duz_isim_tetiklemez(cumle):
+    # Komut kelimesi olmayan düz bir isim create_person DEĞİLDİR (tek
+    # kelime olmadığı için arama da değil) — parser çözemez, LLM'e kalır.
+    assert parse(cumle) is None
+
+
+def test_create_person_ortadaki_kelime_korunur():
+    # Aşırı temizleme koruması: dolgu kelimeleri yalnızca isim öbeğinin
+    # BAŞINDAN ve SONUNDAN ayıklanır; ortadaki (gerçek ad-soyad olabilecek)
+    # kelimeye dokunulmaz.
+    p = parse("ali kişi duman ekle")
+    assert p.kind == "create_person"
+    assert p.person_name == "ali kişi duman"
+
+
+def test_create_person_tek_basina_komut_kelimesi_isim_degil():
+    # "ekle" tek başına bir isim değildir — isim boş kalırsa niyet üretilmez.
+    assert parse("ekle") is None
+    assert parse("sisteme ekle") is None
+
+
+@pytest.mark.parametrize(
+    "cumle",
+    [
+        "ahmete 20 balya saman ekle 5000 tl",
+        "ahmet 20 balya saman aldı 15000 tl borç",
+        "mehmet 2000 lira ödedi",
+        "ahmete 3000 verdim",
+    ],
+)
+def test_create_person_para_mal_cumlesini_calmaz(cumle):
+    # Para/mal bağlamı olan bir cümle "ekle" gibi bir eylem kelimesi taşısa
+    # bile ASLA create_person olmaz — kayıt niyeti korunur.
+    p = parse(cumle)
+    assert p is None or p.kind != "create_person"
+
+
+def test_create_person_bakiye_ve_liste_komutlarini_bozmaz():
+    assert parse("furkan bakiye").kind == "balance_query"
+    assert parse("bergamalıları listele").kind == "list_district"
+    assert parse("kişileri listele").kind == "list_all"
+
+
+def test_create_person_silme_komutunu_calmaz():
+    # "oluştur"/"aç" artık create_person tetikleyicisi ama silme kontrolü
+    # önce çalışır: "furkanı sil yeniden oluştur" hâlâ archive_and_recreate.
+    assert parse("furkanı sil yeniden oluştur").kind == "archive_and_recreate"
+    assert parse("furkanı sıfırla yeniden aç").kind == "archive_and_recreate"
 
 
 # --------------------------------------------------------------- Grup 3: kişi
