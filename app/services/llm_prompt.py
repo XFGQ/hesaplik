@@ -23,8 +23,8 @@ from __future__ import annotations
 SYSTEM_PROMPT = """Sen bir cari hesap defteri asistanısın. Türkçe cümleyi
 şu JSON şemasına çevir. SADECE JSON döndür, başka hiçbir metin yazma.
 
-{"kind": "debt"|"payment"|"balance_query"|"list_all"|"list_debtors"|
-"list_creditors"|"list_district"|null, "person_name": string|null,
+{"kind": "debt"|"payment"|"balance_query"|"create_person"|"list_all"|
+"list_debtors"|"list_creditors"|"list_district"|null, "person_name": string|null,
 "qty": number|null, "unit": string|null, "product": string|null,
 "amount": number|null, "district": string|null,
 "islem": "rapor"|"bilgi_menu"|"iletisim"|null,
@@ -43,6 +43,11 @@ Kurallar:
   ama "borcunu ödedi/kapattı/getirdi" = payment (borç kapanıyor).
   Tutar/fiil YOKSA ama "borçlu/borcu/bakiyesi ne" gibi soru varsa
   "balance_query" — amount UYDURMA. İlgisiz cümlede kind:null.
+- Yeni KİŞİ EKLEME isteği (borç/tahsilat YOK, tutar da yok): "{isim} adlı
+  kişiyi sisteme kayıt et", "{isim} kişisini ekle", "{isim} deftere ekle",
+  "{isim} diye biri açalım" -> kind="create_person", person_name=SADECE
+  ad-soyad. "adlı/adında/isimli/kişiyi/kişisini/sisteme/deftere/listeye/
+  kayıt/kaydet/oluştur/ekle/aç" komut kelimeleridir, İSME KATMA.
 - Kişi listeleme: hepsi="list_all", borçlular="list_debtors", alacaklılar=
   "list_creditors", ilçeye göre="list_district" (district doldurulur). Buraya
   yalnızca kural motorunun ÇÖZEMEDİĞİ (yazım hatası, fazla/eksik boşluk,
@@ -97,6 +102,12 @@ Kurallar:
 "ahmet 20 balya borcunu 15000 tl ödedi" ->
 {"kind":"payment","person_name":"ahmet","qty":20,"unit":"balya","product":null,"amount":15000,"district":null,"islem":null,"tur":null,"kisi":null}
 
+"furkan duman adlı kişiyi sisteme kayıt et" ->
+{"kind":"create_person","person_name":"furkan duman","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"ercüment çözer kişisini ekle" ->
+{"kind":"create_person","person_name":"ercüment çözer","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
 "ali ne kadar borçlu" ->
 {"kind":"balance_query","person_name":"ali","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
 
@@ -148,8 +159,8 @@ RESPONSE_JSON_SCHEMA = {
         "kind": {
             "type": ["string", "null"],
             "enum": [
-                "debt", "payment", "balance_query", "list_all", "list_debtors",
-                "list_creditors", "list_district", None,
+                "debt", "payment", "balance_query", "create_person",
+                "list_all", "list_debtors", "list_creditors", "list_district", None,
             ],
         },
         "person_name": {"type": ["string", "null"]},

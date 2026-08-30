@@ -67,6 +67,15 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
             "{isim} ekstresi/raporu/dökümü" / "{isim} hesap dökümü" ->
               report_person
             "rapor ver" / "rapor" (tek başına, tür belirsiz) -> report_menu
+  Kişi oluşturma (CLAUDE.md > "Bot kayıt akışı — Grup 2"):
+            "{isim} adlı/adında/isimli kişiyi sisteme kayıt et",
+            "{isim} kişisini ekle", "{isim} sisteme/deftere ekle",
+            "{isim} kayıt et/kaydet/oluştur/ekle", "yeni kişi {isim}" ->
+              create_person. İsimden komut kelimeleri (adlı/kişiyi/sisteme/
+              kayıt/et/ekle...) ayıklanır (bkz. _create_person_name); para
+              ya da mal bağlamı olan cümleler bu niyete hiç düşmez (bkz.
+              _CREATE_PERSON_BLOCKERS) — "ahmete 20 balya saman ekle" borç
+              kaydıdır, kişi oluşturma değil.
   Kişi silme/arşivleme (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3"):
             "{isim} sil/kaldır/arşivle/sıfırla" -> archive_person (kişi
               GERÇEKTEN silinmez, arşive taşınır + pasifleştirilir).
@@ -260,22 +269,44 @@ STOPWORDS = DEBT_WORDS | PAYMENT_WORDS | {
 }
 
 # Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup 2"):
-# "ahmet adında yeni kişi oluştur", "ahmet duman kayıt et", "ahmet yıldırım
-# oluştur", "ahmet yıldırım yeni kişi/isim" — borç YOK, sadece kişi
-# eklensin isteniyor. Tetikleyici iki türlü olabilir:
-#   1. Açık bir eylem kelimesi ("oluştur" ya da "kayıt", "kayıt et"teki gibi).
-#   2. "adında" (isimlendirme kalıbı, tek başına yeterli).
+# "ahmet adında yeni kişi oluştur", "ahmet duman kayıt et", "furkan duman
+# adlı kişiyi sisteme kayıt et", "faruk caner sisteme ekle", "ercüment
+# çözer kişisini ekle" — borç YOK, sadece kişi eklensin isteniyor.
+# Tetikleyici üç türlü olabilir:
+#   1. Açık bir eylem kelimesi (oluştur/kayıt/kaydet/ekle/aç/gir).
+#   2. Bir isimlendirme kelimesi ("adlı"/"adında"/"isimli"/"isminde").
 #   3. "yeni" + ("kişi"/"isim") ikilisi birlikte ("yeni kişi"/"yeni isim").
 # Tek başına "yeni" ya da "kişi" (madde 3'ün yarısı) tetiklemez — aksi halde
 # alakasız cümlelerde de yanlışlıkla eşleşirdi.
-CREATE_PERSON_ACTIONS = {"oluştur", "olustur", "kayıt", "kayit"}
-CREATE_PERSON_NAMING_WORD = "adında"
-CREATE_PERSON_NOUN_WORDS = {"kişi", "kisi", "isim"}
-# İsim öbeğinden ayıklanan dolgu/komut kelimeleri (isme KARIŞMAMALI).
-CREATE_PERSON_FILLERS = {
-    "adında", "adinda", "yeni", "kişi", "kisi", "isim", "et", "oluştur",
-    "olustur", "kayıt", "kayit",
+CREATE_PERSON_ACTIONS = {
+    "oluştur", "olustur", "oluşturun", "olusturun",
+    "kayıt", "kayit", "kaydet", "kaydedin",
+    "ekle", "ekleyin", "aç", "ac", "gir",
 }
+CREATE_PERSON_NAMING_WORDS = {"adlı", "adli", "adında", "adinda", "isimli", "isminde"}
+# "{isim} kişiyi/kişisini ..." — isimden sonra gelen "kişi/isim" türevleri.
+CREATE_PERSON_PERSON_WORDS = {
+    "kişi", "kisi", "kişiyi", "kisiyi", "kişisini", "kisisini",
+    "kişiyi", "isim", "ismi", "isimle",
+}
+# Hedef ("nereye eklensin") kelimeleri — isme dahil değil.
+CREATE_PERSON_TARGET_WORDS = {
+    "sisteme", "sistemine", "sistem", "deftere", "defterime", "defterine",
+    "defter", "listeye", "listeme", "listesine", "liste",
+    "kayıtlara", "kayitlara", "kayıtlarıma", "kayitlarima",
+    "kayıtlarına", "kayitlarina",
+}
+# İsim öbeğinden ayıklanan dolgu/komut kelimeleri (isme KARIŞMAMALI). Bunlar
+# yalnızca isim öbeğinin BAŞINDAKİ ve SONUNDAKİ dizilerden ayıklanır (bkz.
+# _create_person_name) — ortadaki gerçek ad-soyad korunur, yani soyadı
+# "Kişi"/"Ekle" gibi bir komut kelimesine benzeyen biri silinmez.
+CREATE_PERSON_FILLERS = (
+    CREATE_PERSON_ACTIONS | CREATE_PERSON_NAMING_WORDS
+    | CREATE_PERSON_PERSON_WORDS | CREATE_PERSON_TARGET_WORDS
+    | {"yeni", "et", "edin", "bir", "adına", "adina"}
+)
+# "yeni" ile birlikte tetikleyici sayılan isim/kişi kelimeleri (madde 3).
+CREATE_PERSON_NOUN_WORDS = {"kişi", "kisi", "isim"}
 
 # Kişi SİLME/ARŞİVLEME türevleri (CLAUDE.md > "Bot kişi silme = arşivleme —
 # Grup 3"): "furkanı sil", "furkan sil", "furkanı kaldır", "furkanı
@@ -954,28 +985,77 @@ def _try_report_menu(tokens: list[str]) -> ParsedIntent | None:
     return None
 
 
+# Para/mal bağlamı olan bir cümle ASLA create_person DEĞİLDİR: "ahmete 20
+# balya saman ekle 5000 tl" ya da "ahmete borç ekle" gibi cümleler bir eylem
+# kelimesi ("ekle") içerdiği için tetikleyiciyi karşılar, ama bunlar kayıt
+# (borç/tahsilat) cümleleridir — create_person'a düşerlerse para kaydı
+# kaybolur. Sayı, para birimi, ölçü birimi, borç/tahsilat fiili ya da bakiye
+# kelimesi geçen her cümle bu niyetin dışında bırakılır; normal akış
+# (borç/tahsilat/bakiye) aynen devam eder.
+_CREATE_PERSON_BLOCKERS = (
+    DEBT_WORDS | PAYMENT_WORDS | CURRENCY_UNITS | UNITS
+    | BALANCE_KEYWORDS | BALANCE_KEYWORDS_BARE
+    # "bir" bir sayı kelimesi olsa da burada neredeyse her zaman belirteçtir
+    # ("bir kişi ekle", "{isim} isminde bir kişi oluştur"), o yüzden engel
+    # sayılmaz — gerçek bir tutar cümlesinde ("bir milyon verdim") zaten
+    # fiil ya da para birimi de bulunur ve cümle onlardan dolayı elenir.
+    | (_NUMBER_WORDS - {"bir"})
+    | {"borç", "borc", "tahsilat", "parası", "parasını"}
+)
+
+
+def _create_person_name(tokens: list[str]) -> str:
+    """Kişi oluşturma cümlesinden SADECE ad-soyadı çıkarır.
+
+    Üç adım, hepsi kasten ihtiyatlı (yanlış temizleme ismi bozar):
+      1. Bir isimlendirme kelimesi ("adlı"/"adında"/"isimli"/"isminde")
+         varsa isim ondan ÖNCEsidir; sonrası tamamen komut metnidir
+         ("furkan duman adlı kişiyi sisteme kayıt et" -> "furkan duman").
+      2. Baştaki dolgu/komut kelimeleri soyulur ("yeni kişi yıldız tilbe"
+         -> "yıldız tilbe").
+      3. Sondaki dolgu/komut kelimeleri soyulur ("serpil çiçek kişisini
+         kayıt et" -> "serpil çiçek").
+    ORTADAKİ kelimelere DOKUNULMAZ: soyadı bir komut kelimesine benzeyen
+    biri ("ali kişi duman ekle") sessizce bozulmasın diye — yalnızca uçtaki
+    belirgin komut dizileri ayıklanır."""
+    idx = next((i for i, tok in enumerate(tokens) if tok in CREATE_PERSON_NAMING_WORDS), None)
+    name_tokens = list(tokens[:idx] if idx is not None else tokens)
+
+    while name_tokens and name_tokens[0] in CREATE_PERSON_FILLERS:
+        name_tokens.pop(0)
+    while name_tokens and name_tokens[-1] in CREATE_PERSON_FILLERS:
+        name_tokens.pop()
+
+    return " ".join(name_tokens).strip()
+
+
 def _try_create_person_query(tokens: list[str]) -> ParsedIntent | None:
     """Yeni kişi OLUŞTURMA türevleri (CLAUDE.md > "Bot kayıt akışı — Grup
     2"): "ahmet adında yeni kişi oluştur", "ahmet adında kişi kayıt et",
     "ahmet duman kayıt et", "ahmet yıldırım oluştur", "ahmet yıldırım yeni
-    kişi/isim" -> SADECE kişi ekleme niyeti, borç/tahsilat YOK.
+    kişi/isim", "furkan duman adlı kişiyi sisteme kayıt et", "faruk caner
+    sisteme ekle", "ercüment çözer kişisini ekle" -> SADECE kişi ekleme
+    niyeti, borç/tahsilat YOK.
 
     Tetikleyici (bkz. modül üstü CREATE_PERSON_* yorumu): açık bir eylem
-    kelimesi (oluştur/kayıt), ya da "adında", ya da "yeni"+"kişi/isim"
-    ikilisi. İsim, tetikleyici/dolgu kelimeleri (CREATE_PERSON_FILLERS)
-    ayıklandıktan sonra geri kalan kelimelerdir — "ahmet duman kayıt et"
-    içindeki "duman" bir dolgu DEĞİL, soyad olduğu için korunur."""
+    kelimesi (oluştur/kayıt/kaydet/ekle/aç/gir), ya da bir isimlendirme
+    kelimesi (adlı/adında/isimli/isminde), ya da "yeni"+"kişi/isim" ikilisi.
+    Cümlede para/mal bağlamı varsa (_CREATE_PERSON_BLOCKERS) hiç tetiklenmez.
+    İsim, komut kelimeleri ayıklandıktan sonra geri kalandır (bkz.
+    _create_person_name) — "ahmet duman kayıt et" içindeki "duman" bir dolgu
+    DEĞİL, soyad olduğu için korunur."""
     token_set = set(tokens)
     triggered = bool(
         token_set & CREATE_PERSON_ACTIONS
-        or CREATE_PERSON_NAMING_WORD in token_set
+        or token_set & CREATE_PERSON_NAMING_WORDS
         or ("yeni" in token_set and token_set & CREATE_PERSON_NOUN_WORDS)
     )
     if not triggered:
         return None
+    if token_set & _CREATE_PERSON_BLOCKERS or any(_NUMBER_TOKEN.fullmatch(t) for t in tokens):
+        return None
 
-    person_tokens = [t for t in tokens if t not in CREATE_PERSON_FILLERS]
-    person = " ".join(person_tokens).strip()
+    person = _create_person_name(tokens)
     if not person:
         return None
     return ParsedIntent(kind="create_person", person_name=person)
@@ -997,11 +1077,12 @@ _SINGLE_WORD_RESERVED = (
     | REPORT_MENU_FILLERS | REPORT_GENERAL_QUALIFIERS | REPORT_GENERAL_NOUNS
     | REPORT_DAILY_QUALIFIERS | REPORT_DAILY_NOUNS
     | REPORT_PERSON_KEYWORDS | REPORT_PERSON_PRE_FILLERS
-    | CREATE_PERSON_ACTIONS | CREATE_PERSON_NOUN_WORDS
+    | CREATE_PERSON_ACTIONS | CREATE_PERSON_NOUN_WORDS | CREATE_PERSON_NAMING_WORDS
     | ARCHIVE_ACTION_WORDS | ARCHIVE_RECREATE_MARKERS
     | set(FIELD_WORDS) | EDIT_ASSIGN_VERBS | set(EDIT_TRIGGER_CANONICALS) | EDIT_MENU_FILLERS
     | _NUMBER_WORDS
-    | {"rapor", "sistemdeki", "kimler", CREATE_PERSON_NAMING_WORD, "yeniden"}
+    | CREATE_PERSON_FILLERS
+    | {"rapor", "sistemdeki", "kimler", "yeniden"}
 )
 
 
