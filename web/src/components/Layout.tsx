@@ -7,6 +7,7 @@ import { clearToken } from "../lib/auth";
 import { hhmm, money } from "../lib/format";
 import { applyTheme, getStoredTheme, type Theme } from "../lib/theme";
 import { useToast } from "../lib/toast";
+import ChatWidget from "./ChatWidget";
 import SettingsModal from "./SettingsModal";
 
 export default function Layout() {
@@ -133,6 +134,7 @@ export default function Layout() {
       </div>
 
       {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      <ChatWidget />
     </div>
   );
 }

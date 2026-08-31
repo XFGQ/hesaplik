@@ -5,6 +5,7 @@ import type {
   Balance,
   BackupRunResult,
   BackupSnapshot,
+  ChatResponse,
   EntryInput,
   EntryResult,
   Person,
@@ -139,6 +140,13 @@ export const api = {
     openReport(`/reports/daily${date ? `?date=${encodeURIComponent(date)}` : ""}`),
   openGeneralReport: () => openReport("/reports/general"),
   openPersonReport: (id: number) => openReport(`/reports/person/${id}`),
+  /* Sohbetten gelen report_path zaten "/reports/..." biçiminde — hangi rapor
+   * olduğuna bakmadan doğrudan indirir (bkz. ChatWidget). */
+  openReportPath: (path: string) => openReport(path),
+
+  chat: (text: string) => req<ChatResponse>("/chat", { method: "POST", body: JSON.stringify({ text }) }),
+  chatConfirm: (action: string) =>
+    req<ChatResponse>("/chat/confirm", { method: "POST", body: JSON.stringify({ action }) }),
 
   adminLlmStatus: () => req<AdminLLMStatus>("/admin/llm"),
   adminSetLlmPrimary: (llmPrimary: string) =>

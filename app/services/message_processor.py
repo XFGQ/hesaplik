@@ -378,6 +378,24 @@ async def _dispatch(
     )
 
 
+def _actor_for(raw: RawMessage) -> str:
+    """Kaydı kim yaptı: web sohbetinde JWT kullanıcı adı (save_web_message
+    raw.chat_id'ye yazar — bkz. app/services/web_intake.py), Telegram'da
+    her zaman sabit bot aktörü. Yeni parametre eklemek yerine (dosyanın
+    geri kalanındaki gibi) raw'dan türetilir."""
+    if raw.channel == "web" and raw.chat_id:
+        return raw.chat_id
+    return TELEGRAM_ACTOR
+
+
+def _tx_source_for(raw: RawMessage) -> TxSource:
+    if raw.voice_transcript:
+        return TxSource.TELEGRAM_VOICE
+    if raw.channel == "web":
+        return TxSource.WEB
+    return TxSource.TELEGRAM_TEXT
+
+
 async def record_resolved(
     session: AsyncSession, raw: RawMessage, resolved: ResolvedIntent, text: str
 ) -> Transaction:
@@ -396,13 +414,12 @@ async def record_resolved(
         ]
 
     meta = TxMeta(
-        created_by=TELEGRAM_ACTOR,
-        # raw.voice_transcript yalnızca sesli mesajlardan gelen raw_messages
-        # satırlarında dolu (bkz. app/bot/main.py > on_voice) — bu satırdan
-        # doğan HER kayıt (ilk parça, kuyruktaki sonraki parça, onay sonrası
-        # tamamlanan kayıt fark etmez) aynı raw'ı taşıdığı için ayrıca bir
-        # tx_source parametresi taşımaya gerek yok.
-        source=TxSource.TELEGRAM_VOICE if raw.voice_transcript else TxSource.TELEGRAM_TEXT,
+        created_by=_actor_for(raw),
+        # raw.voice_transcript/raw.channel yalnızca bu satırdan doğan HER
+        # kayıt (ilk parça, kuyruktaki sonraki parça, onay sonrası tamamlanan
+        # kayıt fark etmez) için aynı olduğundan ayrıca bir parametre
+        # taşımaya gerek yok — hepsi raw'dan türetilir.
+        source=_tx_source_for(raw),
         raw_text=text,
         trace_id=str(raw.id) if raw.id is not None else None,
     )

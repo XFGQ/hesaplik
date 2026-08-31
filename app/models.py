@@ -315,6 +315,10 @@ class PendingRequest(Base):
     durum: Mapped[str] = mapped_column(Text, nullable=False, default="beklemede")
     sonuc: Mapped[str | None] = mapped_column(Text)
     hata: Mapped[str | None] = mapped_column(Text)
+    # Web sohbeti: bu batch'i doğuran tek raw_messages satırı (bkz.
+    # app/services/web_chat.py) — Telegram botu bu kolonu hiç kullanmaz
+    # (bot kuyruğu hâlâ bellekte, chat_data'da), bu yüzden nullable.
+    raw_message_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("raw_messages.id"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -368,5 +372,26 @@ class AuditLog(Base):
     after: Mapped[dict | None] = mapped_column(JSONB)
     trace_id: Mapped[str | None] = mapped_column(String(64))
     at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class WebChatPending(Base):
+    """Web sohbetinin "bir soruya cevap bekliyorum" durumu.
+
+    Telegram botu bunu bellekte (`context.chat_data`) tutar — süreç ömrü
+    boyunca chat başına kalıcı. Web HTTP istekleri arası durumsuz olduğundan
+    aynı durum burada saklanır (bkz. app/services/web_chat_state.py). `kind`
+    aynı anda YALNIZCA biri aktif olur (candidates/product_confirm/
+    llm_confirm/new_person_flow/archive_confirm/edit_confirm/edit_field_flow/
+    info_menu/report_menu); `undo` bundan bağımsız ayrı bir penceredir."""
+
+    __tablename__ = "web_chat_pending"
+
+    chat_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    kind: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict | None] = mapped_column(JSONB)
+    undo: Mapped[dict | None] = mapped_column(JSONB)
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

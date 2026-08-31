@@ -241,21 +241,39 @@ INSERT INTO settings (key, value) VALUES ('business_name', 'Hesaplık');
 -- Ayni mesajdan gelenler ayni batch_id'yi paylasir, sira_no ile sirali islenir.
 
 CREATE TABLE pending_requests (
-    id         BIGSERIAL   PRIMARY KEY,
-    chat_id    TEXT        NOT NULL,
-    batch_id   TEXT        NOT NULL,
-    raw_text   TEXT        NOT NULL,
-    sira_no    INTEGER     NOT NULL,
-    durum      TEXT        NOT NULL DEFAULT 'beklemede'
+    id             BIGSERIAL   PRIMARY KEY,
+    chat_id        TEXT        NOT NULL,
+    batch_id       TEXT        NOT NULL,
+    raw_text       TEXT        NOT NULL,
+    sira_no        INTEGER     NOT NULL,
+    durum          TEXT        NOT NULL DEFAULT 'beklemede'
         CHECK (durum IN ('beklemede', 'isleniyor', 'tamamlandi', 'basarisiz', 'iptal')),
-    sonuc      TEXT,
-    hata       TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    sonuc          TEXT,
+    hata           TEXT,
+    -- Web sohbeti: bu batch'i doguran tek raw_messages satiri (Telegram
+    -- botu kullanmaz, kuyrugu hala bellekte).
+    raw_message_id BIGINT      REFERENCES raw_messages(id),
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE INDEX idx_pending_chat_durum ON pending_requests (chat_id, durum);
 CREATE UNIQUE INDEX uq_pending_batch_sira ON pending_requests (batch_id, sira_no);
+
+-- ------------------------------------------------------------ web sohbet durumu
+-- Telegram botu "bir soruya cevap bekliyorum" durumunu bellekte
+-- (context.chat_data) tutar. Web HTTP istekleri arasi durumsuz oldugundan
+-- ayni durum burada saklanir (bkz. app/services/web_chat_state.py). `kind`
+-- ayni anda YALNIZCA biri aktif olur; `undo` bundan bagimsiz ayri bir
+-- penceredir.
+
+CREATE TABLE web_chat_pending (
+    chat_id    TEXT        PRIMARY KEY,
+    kind       TEXT,
+    payload    JSONB,
+    undo       JSONB,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
 -- --------------------------------------------------------- geri yukleme istegi
 -- "Yol A": panel ISTER, host UYGULAR. API container'i DB'yi geri yukleyemez
