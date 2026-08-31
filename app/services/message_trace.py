@@ -139,6 +139,14 @@ def payload_text(payload: dict | None) -> str | None:
     return None
 
 
+def display_text(raw: RawMessage) -> str | None:
+    """Panelde gösterilecek "ham metin". Sesli mesajsa Groq'un çevirdiği
+    metni (raw.voice_transcript) döner — bu, payload_text'in ses için
+    döndürdüğü "(ses kaydı)" yer tutucusundan daha bilgilendiricidir.
+    Metin mesajlarda (voice_transcript boş) davranış değişmez."""
+    return raw.voice_transcript or payload_text(raw.payload)
+
+
 def _clip(value: str | None) -> str | None:
     if value is None:
         return None

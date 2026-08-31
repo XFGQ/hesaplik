@@ -19,25 +19,28 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.exc import OperationalError
 
-from app.api.admin import _failures, router
+from app.api.admin import router
+from app.api.auth import router as auth_router
 from app.config import settings
 from app.db import get_session
 from app.models import Person, RawMessage, Transaction, TxKind, TxSource
 from app.services import backup, health
+from conftest import AUTH_PASSWORD, AUTH_USERNAME
 
-SIFRE = "cok-gizli-parola"
+SIFRE = AUTH_PASSWORD
 
 
 @pytest.fixture
-def admin_password(monkeypatch):
-    monkeypatch.setattr(settings, "admin_password", SIFRE)
-    _failures.clear()
-    return SIFRE
+def admin_password(auth_account):
+    """Adı geçmişten kalma (eskiden ADMIN_PASSWORD): artık tek hesabın
+    ortak girişini (auth_account) kurar."""
+    return auth_account
 
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def client(session):
     app = FastAPI()
+    app.include_router(auth_router)
     app.include_router(router)
     app.dependency_overrides[get_session] = lambda: session
 
@@ -70,8 +73,11 @@ def tags_yaniti(*models: str):
 
 
 async def _login(client) -> None:
-    r = await client.post("/api/admin/login", json={"password": SIFRE})
+    r = await client.post(
+        "/api/auth/login", json={"username": AUTH_USERNAME, "password": SIFRE}
+    )
     assert r.status_code == 200, r.text
+    client.headers["Authorization"] = f"Bearer {r.json()['access_token']}"
 
 
 # ---------------------------------------------------------------- koruma

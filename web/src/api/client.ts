@@ -1,9 +1,11 @@
+import { authHeader, onUnauthorized } from "../lib/auth";
 import type {
   AdminLLMStatus,
   AdminVllmControl,
   Balance,
   BackupRunResult,
   BackupSnapshot,
+  ChatResponse,
   EntryInput,
   EntryResult,
   Person,
@@ -23,9 +25,14 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: {
       "Content-Type": "application/json",
+      ...authHeader(),
       ...(init?.headers as Record<string, string> | undefined),
     },
   });
+  if (res.status === 401) {
+    onUnauthorized();
+    throw new ApiError("Oturum geçersiz");
+  }
   if (!res.ok) {
     let detail = `İstek başarısız (${res.status})`;
     try {
@@ -38,6 +45,56 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(detail);
   }
   return res.status === 204 ? (undefined as T) : res.json();
+}
+
+/* PDF raporlar: doğrudan API URL'sine <a>/window.open ile gidilemez —
+ * tarayıcı navigasyonu Authorization header'ı taşıyamaz. Bunun yerine
+ * fetch ile (header'lı) blob olarak indirilir, sonra `download` attribute'lu
+ * gizli bir <a> tıklanır — tarayıcı dosyayı indirir (bkz. CLAUDE.md > Faz
+ * 4b "tıkla → PDF indir"). Dosya adı sunucunun Content-Disposition
+ * başlığından okunur (tek doğru kaynak backend'de kalır). */
+async function openReport(path: string): Promise<void> {
+  const res = await fetch(`${BASE}/api${path}`, { headers: authHeader() });
+  if (res.status === 401) {
+    onUnauthorized();
+    throw new ApiError("Oturum geçersiz");
+  }
+  if (!res.ok) throw new ApiError(`Rapor alınamadı (${res.status})`);
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const filename = /filename="?([^"]+)"?/.exec(res.headers.get("Content-Disposition") ?? "")?.[1];
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename ?? "rapor.pdf";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export type LoginResult = { access_token: string; token_type: string; expires_in: number };
+
+/* Girişin kendi fetch'i: `req()`'ün 401'i "oturum düştü, girişe dön" diye
+ * yorumlayan ortak mantığından KASTEN ayrı — burada 401 zaten girişteyken
+ * "kullanıcı adı/şifre hatalı" demektir, backend'in asıl mesajı olduğu
+ * gibi kullanıcıya gösterilmeli. */
+export async function login(username: string, password: string): Promise<LoginResult> {
+  const res = await fetch(`${BASE}/api/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!res.ok) {
+    let detail = res.status === 401 ? "Kullanıcı adı veya şifre hatalı" : `Giriş başarısız (${res.status})`;
+    try {
+      const body = await res.json();
+      if (typeof body.detail === "string") detail = body.detail;
+    } catch {
+      /* gövde JSON değilse varsayılan mesaj kalır */
+    }
+    throw new ApiError(detail);
+  }
+  return res.json();
 }
 
 export const api = {
@@ -79,26 +136,29 @@ export const api = {
   getBackups: () => req<BackupSnapshot[]>("/backups"),
   runBackup: () => req<BackupRunResult>("/backups/run", { method: "POST" }),
 
-  dailyReportUrl: (date?: string) =>
-    `${BASE}/api/reports/daily${date ? `?date=${encodeURIComponent(date)}` : ""}`,
-  generalReportUrl: () => `${BASE}/api/reports/general`,
-  personReportUrl: (id: number) => `${BASE}/api/reports/person/${id}`,
+  openDailyReport: (date?: string) =>
+    openReport(`/reports/daily${date ? `?date=${encodeURIComponent(date)}` : ""}`),
+  openGeneralReport: () => openReport("/reports/general"),
+  openPersonReport: (id: number) => openReport(`/reports/person/${id}`),
+  /* Sohbetten gelen report_path zaten "/reports/..." biçiminde — hangi rapor
+   * olduğuna bakmadan doğrudan indirir (bkz. ChatWidget). */
+  openReportPath: (path: string) => openReport(path),
 
-  adminLlmStatus: (password: string) =>
-    req<AdminLLMStatus>("/admin/llm", { headers: { "X-Admin-Password": password } }),
-  adminSetLlmPrimary: (password: string, llmPrimary: string) =>
+  chat: (text: string) => req<ChatResponse>("/chat", { method: "POST", body: JSON.stringify({ text }) }),
+  chatConfirm: (action: string) =>
+    req<ChatResponse>("/chat/confirm", { method: "POST", body: JSON.stringify({ action }) }),
+
+  adminLlmStatus: () => req<AdminLLMStatus>("/admin/llm"),
+  adminSetLlmPrimary: (llmPrimary: string) =>
     req<AdminLLMStatus>("/admin/llm", {
       method: "POST",
-      headers: { "X-Admin-Password": password },
       body: JSON.stringify({ llm_primary: llmPrimary }),
     }),
 
-  adminVllmControl: (password: string) =>
-    req<AdminVllmControl>("/admin/vllm-control", { headers: { "X-Admin-Password": password } }),
-  adminSetVllmDesired: (password: string, desired: "on" | "off") =>
+  adminVllmControl: () => req<AdminVllmControl>("/admin/vllm-control"),
+  adminSetVllmDesired: (desired: "on" | "off") =>
     req<AdminVllmControl>("/admin/vllm-control", {
       method: "POST",
-      headers: { "X-Admin-Password": password },
       body: JSON.stringify({ desired }),
     }),
 };

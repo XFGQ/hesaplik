@@ -75,6 +75,57 @@ async def test_borc_urun_ve_tutarla_kaydedilir(session, ahmet):
     assert raw.transaction_id == tx.id
 
 
+async def test_raw_voice_transcript_doluysa_kaynak_sesli_yazilir(session, ahmet):
+    """CLAUDE.md > "Telegram sesli mesajları için speech-to-text ekle":
+    raw.voice_transcript doluysa (bot on_voice tarafından Groq çevirisi
+    yazıldıktan sonra) bu satırdan doğan kayıt TELEGRAM_VOICE kaynaklı
+    sayılmalı — record_resolved raw'dan türetir, ayrı bir parametre
+    taşımaya gerek yoktur."""
+    text = "ahmet yılmaz 500 tl borç yazdım"
+    raw = await _make_raw(session, text, 99)
+    raw.voice_transcript = text
+    await session.flush()
+
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    tx = await session.get(Transaction, result.transaction_id)
+    assert tx.source == TxSource.TELEGRAM_VOICE
+
+
+async def test_web_kanalinda_kaynak_ve_aktor_dogru_secilir(session, ahmet):
+    """CLAUDE.md > "Web'e chat asistanı ekle": web sohbetinden gelen bir
+    raw_messages satırı (channel="web", chat_id=JWT kullanıcı adı) kayda
+    TxSource.WEB ve created_by=kullanıcı adı olarak yansımalı — Telegram
+    yolunun (sabit TELEGRAM_ACTOR) aksine."""
+    text = "ahmet yılmaz 500 tl borç yazdım"
+    raw = RawMessage(channel="web", chat_id="furkan", payload={"text": text})
+    session.add(raw)
+    await session.flush()
+
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    tx = await session.get(Transaction, result.transaction_id)
+    assert tx.source == TxSource.WEB
+    assert tx.created_by == "furkan"
+
+
+async def test_web_kanalinda_chat_id_yoksa_telegram_aktorune_duser(session, ahmet):
+    """Uç durum: channel="web" ama chat_id boş (olmamalı ama savunmacı) —
+    created_by TELEGRAM_ACTOR'a düşer, boş string yazılmaz."""
+    text = "ahmet yılmaz 500 tl borç yazdım"
+    raw = RawMessage(channel="web", chat_id=None, payload={"text": text})
+    session.add(raw)
+    await session.flush()
+
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    tx = await session.get(Transaction, result.transaction_id)
+    assert tx.source == TxSource.WEB
+    assert tx.created_by == message_processor.TELEGRAM_ACTOR
+
+
 async def test_nakit_borc_kalemsiz_kaydedilir(session, ahmet):
     text = "ahmet yılmaz 500 tl borç yazdım"
     raw = await _make_raw(session, text, 2)

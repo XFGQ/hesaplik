@@ -1,27 +1,32 @@
 /* Admin paneli API istemcisi.
  *
- * Oturum httpOnly çerezle taşınır: token JS'te hiç tutulmaz (localStorage
- * yok — XSS ile çalınacak bir şey de yok). Bu yüzden her istek
- * `credentials: "include"` ile gider; sunucu çerezi kendisi okur.
+ * Oturum, deftereyle aynı ortak JWT'dir (bkz. ../lib/auth, client.ts) —
+ * tek hesap, tek token, her isteğe Authorization: Bearer header'ı olarak
+ * eklenir.
  *
  * 401 ayrı bir hata tipiyle işaretlenir (Unauthorized): panel bunu görünce
- * şifre ekranına düşer, "istek başarısız" diye anlamsız bir hata göstermez.
+ * girişe döner, "istek başarısız" diye anlamsız bir hata göstermez.
  */
+
+import { authHeader } from "../lib/auth";
 
 const BASE = import.meta.env.VITE_API_URL ?? "";
 
 export class AdminError extends Error {}
 export class Unauthorized extends AdminError {}
 /** 403: oturum geçerli ama bu işleme izin yok (ör. geri yüklemede yanlış
- * şifre). Unauthorized'dan ayrı tutulur — panel bunu görünce şifre ekranına
+ * şifre). Unauthorized'dan ayrı tutulur — panel bunu görünce girişe
  * DÜŞMEZ, hatayı olduğu yerde gösterir. */
 export class Forbidden extends AdminError {}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}/api/admin${path}`, {
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
     ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...authHeader(),
+      ...(init?.headers as Record<string, string> | undefined),
+    },
   });
 
   if (res.status === 401) throw new Unauthorized("Oturum geçersiz");
@@ -162,14 +167,188 @@ export type FlowFilters = {
   offset?: number;
 };
 
+/* LLM izleme: yalnızca parse_source='llm' düşen satırlar + özet istatistik.
+ * İstatistik filtrelenmiş kümenin TAMAMI üzerinden gelir, yalnız görünen
+ * sayfa üzerinden değil (bkz. app/api/admin.py::llm_monitor). */
+export type LlmMonitorRow = {
+  id: number;
+  received_at: string;
+  text: string | null;
+  detected_kind: string | null;
+  detected_person: string | null;
+  parse_ms: number | null;
+  outcome: string | null;
+  outcome_detail: string | null;
+};
+
+export type LlmMonitorStats = {
+  total_calls: number;
+  avg_parse_ms: number | null;
+  success_count: number;
+  failure_count: number;
+  success_rate: number | null;
+};
+
+export type LlmMonitorPage = {
+  stats: LlmMonitorStats;
+  total: number;
+  limit: number;
+  offset: number;
+  items: LlmMonitorRow[];
+};
+
+export type LlmMonitorFilters = {
+  outcome?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
+/* İstek kuyruğu: pending_requests. counts filtreden bağımsız, kuyruğun
+ * tamamını yansıtır (üstteki özet şerit için). */
+export type QueueRow = {
+  id: number;
+  chat_id: string;
+  batch_id: string;
+  raw_text: string;
+  sira_no: number;
+  durum: "beklemede" | "isleniyor" | "tamamlandi" | "basarisiz" | "iptal";
+  sonuc: string | null;
+  hata: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type QueueCounts = {
+  beklemede: number;
+  isleniyor: number;
+  tamamlandi: number;
+  basarisiz: number;
+  iptal: number;
+};
+
+export type QueuePage = {
+  counts: QueueCounts;
+  total: number;
+  limit: number;
+  offset: number;
+  items: QueueRow[];
+};
+
+/* Kişiler & işlemler — salt okunur veri gezgini. */
+export type AdminItem = { product_name: string; qty: string; unit: string };
+
+export type AdminPersonRow = {
+  id: number;
+  full_name: string;
+  phone: string | null;
+  city: string | null;
+  district: string | null;
+  balance_try: string;
+  items: AdminItem[];
+  last_activity: string | null;
+};
+
+export type AdminPersonList = { total: number; items: AdminPersonRow[] };
+
+export type AdminTxLine = {
+  product_name: string;
+  qty: string;
+  unit: string;
+  unit_price: string;
+  line_total: string;
+};
+
+export type AdminTxRow = {
+  id: number;
+  kind: "DEBIT" | "CREDIT";
+  status: string;
+  amount_try: string;
+  occurred_at: string;
+  source: string;
+  note: string | null;
+  reverses_id: number | null;
+  lines: AdminTxLine[];
+};
+
+export type AdminPersonTransactions = {
+  person_id: number;
+  person_name: string;
+  total: number;
+  items: AdminTxRow[];
+};
+
+export type ArchivedPersonRow = {
+  id: number;
+  original_person_id: number;
+  full_name: string;
+  phone: string | null;
+  city: string | null;
+  district: string | null;
+  balance_try: string;
+  archived_by: string;
+  archived_at: string;
+  archive_reason: string | null;
+};
+
+export type ArchivedPersonPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ArchivedPersonRow[];
+};
+
+export type ArchivedTransactionRow = {
+  id: number;
+  person_id: number;
+  kind: "DEBIT" | "CREDIT";
+  amount_try: string;
+  occurred_at: string;
+  note: string | null;
+  archived_by: string;
+  archived_at: string;
+  archive_reason: string | null;
+};
+
+export type ArchivedTransactionPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ArchivedTransactionRow[];
+};
+
+/* Loglar: audit_log — DB denetim kaydı, container stdout logu DEĞİL. */
+export type AuditLogRow = {
+  id: number;
+  actor: string;
+  action: string;
+  entity: string;
+  entity_id: string | null;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  trace_id: string | null;
+  at: string;
+};
+
+export type AuditLogPage = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: AuditLogRow[];
+};
+
+export type AuditLogFilters = {
+  actor?: string;
+  action?: string;
+  entity?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+};
+
 export const adminApi = {
-  login: (password: string) =>
-    req<{ ok: boolean; expires_in: number }>("/login", {
-      method: "POST",
-      body: JSON.stringify({ password }),
-    }),
-  logout: () => req<{ ok: boolean }>("/logout", { method: "POST" }),
-  me: () => req<{ ok: boolean }>("/me"),
   health: () => req<Health>("/health"),
 
   backups: () => req<BackupList>("/backups"),
@@ -191,5 +370,62 @@ export const adminApi = {
     q.set("limit", String(f.limit ?? 50));
     q.set("offset", String(f.offset ?? 0));
     return req<FlowPage>(`/flow?${q.toString()}`);
+  },
+
+  llmMonitor: (f: LlmMonitorFilters) => {
+    const q = new URLSearchParams();
+    if (f.outcome) q.set("outcome", f.outcome);
+    if (f.from) q.set("from", f.from);
+    if (f.to) q.set("to", f.to);
+    q.set("limit", String(f.limit ?? 50));
+    q.set("offset", String(f.offset ?? 0));
+    return req<LlmMonitorPage>(`/llm-monitor?${q.toString()}`);
+  },
+
+  queue: (durum: string | undefined, limit = 50, offset = 0) => {
+    const q = new URLSearchParams();
+    if (durum) q.set("durum", durum);
+    q.set("limit", String(limit));
+    q.set("offset", String(offset));
+    return req<QueuePage>(`/queue?${q.toString()}`);
+  },
+
+  persons: (params: { q?: string; filter?: string; district?: string }) => {
+    const q = new URLSearchParams();
+    if (params.q) q.set("q", params.q);
+    if (params.filter) q.set("filter", params.filter);
+    if (params.district) q.set("district", params.district);
+    return req<AdminPersonList>(`/persons?${q.toString()}`);
+  },
+
+  personTransactions: (personId: number) =>
+    req<AdminPersonTransactions>(`/persons/${personId}/transactions`),
+
+  archivedPersons: (q: string | undefined, limit = 50, offset = 0) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    return req<ArchivedPersonPage>(`/archived-persons?${params.toString()}`);
+  },
+
+  archivedTransactions: (personId: number | undefined, limit = 50, offset = 0) => {
+    const params = new URLSearchParams();
+    if (personId != null) params.set("person_id", String(personId));
+    params.set("limit", String(limit));
+    params.set("offset", String(offset));
+    return req<ArchivedTransactionPage>(`/archived-transactions?${params.toString()}`);
+  },
+
+  auditLog: (f: AuditLogFilters) => {
+    const q = new URLSearchParams();
+    if (f.actor) q.set("actor", f.actor);
+    if (f.action) q.set("action", f.action);
+    if (f.entity) q.set("entity", f.entity);
+    if (f.from) q.set("from", f.from);
+    if (f.to) q.set("to", f.to);
+    q.set("limit", String(f.limit ?? 50));
+    q.set("offset", String(f.offset ?? 0));
+    return req<AuditLogPage>(`/audit-log?${q.toString()}`);
   },
 };

@@ -1,8 +1,11 @@
 """Admin paneli uçları (/api/admin/*) — Faz 7.
 
-Tümü `admin_auth.require_admin` arkasında: token yoksa/geçersizse 401, hiçbir
-veri dönmez. Tek istisna `POST /login` (token'ı o üretir) ve `GET /me`
-(oturumun geçerli olup olmadığını söyler, veri sızdırmaz).
+Tümü `auth.require_auth` (JWT, bkz. app/services/auth.py) arkasında: token
+yoksa/geçersizse 401, hiçbir veri dönmez. Giriş ve "oturum geçerli mi"
+sorgusu artık burada değil, tek hesabın ortak girişinde — `/api/auth/login`
+ve `/api/auth/me` (bkz. app/api/auth.py). Bu dosyadaki tek şifre sorgusu,
+en yıkıcı işlem olan geri yükleme onayında ikinci bir tur olarak kalır
+(`POST /backups/restore`, aşağıda).
 
 Dolu bölümler:
 
@@ -15,8 +18,17 @@ Dolu bölümler:
   yap" akışı. Geri yüklemenin SON adımı (pg_restore) henüz bağlı değil,
   bkz. app/services/restore.py.
 
-Kalan bölümler (LLM izleme, kuyruk, loglar...) arayüzde yer tutuyor, uçları
-sonraki adımda eklenecek.
+- "LLM İzleme" (`/llm-monitor`): raw_messages'tan yalnızca `parse_source='llm'`
+  düşen satırlar + özet istatistik (bkz. app/services/message_trace.py).
+  "LLM Yönetimi"nden (yukarıda) farklı: o bir switch (hangi motor aktif),
+  bu bir analitik (motor devreye ne sıklıkla, ne sürede, ne sonuçla giriyor).
+- "İstek Kuyruğu" (`/queue`): pending_requests tablosu (bkz.
+  app/services/request_queue.py) — bekleyen/yarım/başarısız çoklu istekler.
+- "Kişiler & İşlemler" (`/persons`, `/persons/{id}/transactions`,
+  `/archived-persons`, `/archived-transactions`): salt okunur veri gezgini,
+  canlı defter + arşiv.
+- "Loglar" (`/audit-log`): audit_log tablosu — DB denetim kaydı (kim ne
+  zaman neyi değiştirdi), container stdout logları DEĞİL.
 """
 
 from __future__ import annotations
@@ -26,16 +38,25 @@ from collections import defaultdict
 from datetime import date, datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, selectinload
 
 from app.config import settings
 from app.db import get_session
-from app.models import Person, RawMessage, Transaction
-from app.services import admin_auth, backup, health, message_trace, restore
+from app.models import (
+    ArchivedPerson,
+    ArchivedTransaction,
+    AuditLog,
+    PendingRequest,
+    Person,
+    RawMessage,
+    Transaction,
+    TransactionLine,
+)
+from app.services import auth, backup, health, message_trace, queries, request_queue, restore
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -58,20 +79,6 @@ def _locked_out(key: str, now: float) -> bool:
 
 
 # ---------------------------------------------------------------- şemalar
-
-class LoginIn(BaseModel):
-    password: str
-
-
-class LoginOut(BaseModel):
-    ok: bool
-    token: str
-    expires_in: int
-
-
-class MeOut(BaseModel):
-    ok: bool
-
 
 class FlowTxOut(BaseModel):
     """İzlenen mesajdan doğan defter kaydı (varsa)."""
@@ -109,6 +116,177 @@ class FlowPageOut(BaseModel):
     limit: int
     offset: int
     items: list[FlowRowOut]
+
+
+# ---------------------------------------------------------------- LLM izleme
+
+class LlmMonitorRowOut(BaseModel):
+    id: int
+    received_at: datetime
+    text: str | None
+    detected_kind: str | None
+    detected_person: str | None
+    parse_ms: int | None
+    outcome: str | None
+    outcome_detail: str | None
+
+
+class LlmMonitorStatsOut(BaseModel):
+    total_calls: int             # filtreyle eşleşen toplam LLM çağrısı
+    avg_parse_ms: float | None
+    success_count: int
+    failure_count: int
+    success_rate: float | None   # 0..1, total_calls=0 ise None
+
+
+class LlmMonitorPageOut(BaseModel):
+    stats: LlmMonitorStatsOut
+    total: int
+    limit: int
+    offset: int
+    items: list[LlmMonitorRowOut]
+
+
+# ---------------------------------------------------------------- istek kuyruğu
+
+class QueueRowOut(BaseModel):
+    id: int
+    chat_id: str
+    batch_id: str
+    raw_text: str
+    sira_no: int
+    durum: str
+    sonuc: str | None
+    hata: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class QueueCountsOut(BaseModel):
+    beklemede: int
+    isleniyor: int
+    tamamlandi: int
+    basarisiz: int
+    iptal: int
+
+
+class QueuePageOut(BaseModel):
+    counts: QueueCountsOut
+    total: int
+    limit: int
+    offset: int
+    items: list[QueueRowOut]
+
+
+# ---------------------------------------------------------------- kişiler & işlemler
+
+class AdminItemOut(BaseModel):
+    product_name: str
+    qty: Decimal
+    unit: str
+
+
+class AdminPersonRowOut(BaseModel):
+    id: int
+    full_name: str
+    phone: str | None
+    city: str | None
+    district: str | None
+    balance_try: Decimal
+    items: list[AdminItemOut]
+    last_activity: datetime | None
+
+
+class AdminPersonListOut(BaseModel):
+    total: int
+    items: list[AdminPersonRowOut]
+
+
+class AdminTxLineOut(BaseModel):
+    product_name: str
+    qty: Decimal
+    unit: str
+    unit_price: Decimal
+    line_total: Decimal
+
+
+class AdminTxRowOut(BaseModel):
+    id: int
+    kind: str
+    status: str
+    amount_try: Decimal
+    occurred_at: datetime
+    source: str
+    note: str | None
+    reverses_id: int | None
+    lines: list[AdminTxLineOut]
+
+
+class AdminPersonTransactionsOut(BaseModel):
+    person_id: int
+    person_name: str
+    total: int
+    items: list[AdminTxRowOut]
+
+
+class ArchivedPersonRowOut(BaseModel):
+    id: int
+    original_person_id: int
+    full_name: str
+    phone: str | None
+    city: str | None
+    district: str | None
+    balance_try: Decimal
+    archived_by: str
+    archived_at: datetime
+    archive_reason: str | None
+
+
+class ArchivedPersonPageOut(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ArchivedPersonRowOut]
+
+
+class ArchivedTransactionRowOut(BaseModel):
+    id: int
+    person_id: int
+    kind: str
+    amount_try: Decimal
+    occurred_at: datetime
+    note: str | None
+    archived_by: str
+    archived_at: datetime
+    archive_reason: str | None
+
+
+class ArchivedTransactionPageOut(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[ArchivedTransactionRowOut]
+
+
+# ---------------------------------------------------------------- loglar
+
+class AuditLogRowOut(BaseModel):
+    id: int
+    actor: str
+    action: str
+    entity: str
+    entity_id: str | None
+    before: dict | None
+    after: dict | None
+    trace_id: str | None
+    at: datetime
+
+
+class AuditLogPageOut(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    items: list[AuditLogRowOut]
 
 
 class HealthDetailOut(BaseModel):
@@ -184,53 +362,9 @@ class RestoreStatusOut(BaseModel):
     request: RestoreRequestOut | None     # aktif yoksa EN SON istek
 
 
-# ---------------------------------------------------------------- oturum
-
-@router.post("/login", response_model=LoginOut)
-async def login(body: LoginIn, request: Request, response: Response):
-    """Doğru şifre → httpOnly çerez + token. Yanlış şifre → 401, hiçbir
-    ipucu yok. ADMIN_PASSWORD tanımsızsa panel kapalıdır (503)."""
-    if not admin_auth.is_enabled():
-        raise HTTPException(503, "Admin paneli yapılandırılmamış")
-
-    key = _client_key(request)
-    now = time.time()
-    if _locked_out(key, now):
-        raise HTTPException(429, "Çok fazla deneme, biraz sonra tekrar deneyin")
-
-    if not admin_auth.check_password(body.password):
-        _failures[key].append(now)
-        raise HTTPException(401, "Şifre hatalı")
-
-    _failures.pop(key, None)
-    token = admin_auth.create_token()
-    max_age = admin_auth.token_max_age()
-    response.set_cookie(
-        admin_auth.COOKIE_NAME,
-        token,
-        max_age=max_age,
-        httponly=True,     # JS okuyamaz
-        samesite="lax",
-        path="/",
-    )
-    return LoginOut(ok=True, token=token, expires_in=max_age)
-
-
-@router.post("/logout")
-async def logout(response: Response):
-    response.delete_cookie(admin_auth.COOKIE_NAME, path="/")
-    return {"ok": True}
-
-
-@router.get("/me", response_model=MeOut, dependencies=[admin_auth.AdminRequired])
-async def me():
-    """Panel açılışında "oturumum geçerli mi?" sorusu. Geçersizse 401."""
-    return MeOut(ok=True)
-
-
 # ---------------------------------------------------------------- sistem sağlığı
 
-@router.get("/health", response_model=HealthOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/health", response_model=HealthOut, dependencies=[auth.AuthRequired])
 async def system_health(session: AsyncSession = Depends(get_session)):
     """Bileşen bileşen "ne ayakta, ne değil". Veritabanı çökmüş olsa bile bu
     uç 200 döner: her kontrol kendi hatasını yakalayıp durum olarak bildirir,
@@ -261,7 +395,7 @@ async def system_health(session: AsyncSession = Depends(get_session)):
 
 # ---------------------------------------------------------------- yedekleme
 
-@router.get("/backups", response_model=BackupListOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/backups", response_model=BackupListOut, dependencies=[auth.AuthRequired])
 async def backups():
     """Yedek listesi, en yeni üstte. Depoya erişilemezse 503 + sebep: panel
     "yedek yok" ile "depo okunamıyor"u karıştırmasın, ikisi çok farklı."""
@@ -309,7 +443,7 @@ def _restore_out(req) -> RestoreRequestOut:
 
 
 @router.post(
-    "/backups/restore", response_model=RestoreStartOut, dependencies=[admin_auth.AdminRequired]
+    "/backups/restore", response_model=RestoreStartOut, dependencies=[auth.AuthRequired]
 )
 async def restore_backup(
     body: RestoreIn,
@@ -318,13 +452,14 @@ async def restore_backup(
 ):
     """"Ana veri yap": seçilen yedeği canlı veritabanı yapma İSTEĞİ.
 
-    İki kat koruma: oturum çerezi (AdminRequired) YETMEZ, şifre ISTEK
-    GÖVDESİNDE tekrar sorulur. Açık kalmış bir panel sekmesi tek tıkla
-    defterin üstüne yazamasın diye — bu, sistemdeki en yıkıcı işlem.
-    Yanlış şifre giriş ekranıyla aynı kilide takılır.
+    İki kat koruma: geçerli JWT (AuthRequired) YETMEZ, şifre ISTEK
+    GÖVDESİNDE tekrar sorulur (tek hesabın kendi şifresi, bcrypt ile
+    doğrulanır). Açık kalmış bir panel sekmesi tek tıkla defterin üstüne
+    yazamasın diye — bu, sistemdeki en yıkıcı işlem. Yanlış şifre giriş
+    ekranıyla aynı kilide takılır.
 
     Yanlış şifre 401 DEĞİL 403 döner: 401 istemcide "oturum düştü" demektir
-    ve paneli şifre ekranına atardı. Burada oturum geçerli, izin verilmeyen
+    ve paneli giriş ekranına atardı. Burada oturum geçerli, izin verilmeyen
     şey bu tek işlem — kullanıcı modalda "şifre hatalı" görüp tekrar dener.
 
     Geri yüklemeyi API YAPMAZ ("Yol A"): istek `restore_requests`e yazılır,
@@ -335,7 +470,7 @@ async def restore_backup(
     if _locked_out(key, now):
         raise HTTPException(429, "Çok fazla deneme, biraz sonra tekrar deneyin")
 
-    if not admin_auth.check_password(body.password):
+    if not auth.verify_password(body.password):
         _failures[key].append(now)
         raise HTTPException(403, "Şifre hatalı")
     _failures.pop(key, None)
@@ -359,7 +494,7 @@ async def restore_backup(
 @router.get(
     "/backups/restore/status",
     response_model=RestoreStatusOut,
-    dependencies=[admin_auth.AdminRequired],
+    dependencies=[auth.AuthRequired],
 )
 async def restore_status(session: AsyncSession = Depends(get_session)):
     """Süren geri yüklemenin durumu; yoksa EN SON isteğin sonucu. Panel bunu
@@ -375,7 +510,7 @@ async def restore_status(session: AsyncSession = Depends(get_session)):
 
 # ---------------------------------------------------------------- işlem akışı
 
-@router.get("/flow", response_model=FlowPageOut, dependencies=[admin_auth.AdminRequired])
+@router.get("/flow", response_model=FlowPageOut, dependencies=[auth.AuthRequired])
 async def flow(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -433,7 +568,7 @@ def _row_out(raw: RawMessage, tx_row: Transaction | None, person_name: str | Non
         processed_at=raw.processed_at,
         channel=raw.channel,
         chat_id=raw.chat_id,
-        text=message_trace.payload_text(raw.payload),
+        text=message_trace.display_text(raw),
         detected_kind=raw.detected_kind,
         detected_person=raw.detected_person,
         detected_amount=raw.detected_amount,
@@ -456,4 +591,409 @@ def _row_out(raw: RawMessage, tx_row: Transaction | None, person_name: str | Non
             if tx_row is not None
             else None
         ),
+    )
+
+
+# ---------------------------------------------------------------- LLM izleme
+
+# "Başarı": LLM kullanılabilir bir sonuç üretti (kaydetti, cevapladı ya da
+# belirsizlik için soru sordu — üçü de LLM'in işini yaptığı anlamına gelir).
+# "Başarısızlık": hata verdi ya da hiçbir şey anlaşılamadı.
+_LLM_SUCCESS_OUTCOMES = (
+    message_trace.OUTCOME_RECORDED,
+    message_trace.OUTCOME_ANSWERED,
+    message_trace.OUTCOME_ASKED,
+)
+_LLM_FAILURE_OUTCOMES = (message_trace.OUTCOME_ERROR, message_trace.OUTCOME_IGNORED)
+
+
+@router.get(
+    "/llm-monitor", response_model=LlmMonitorPageOut, dependencies=[auth.AuthRequired]
+)
+async def llm_monitor(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    outcome: str | None = Query(None),
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Yalnızca LLM'e düşen (`parse_source='llm'`) mesajlar: süre, sonuç,
+    cümle. İstatistik FİLTRELENMİŞ kümenin tamamı üzerinden hesaplanır,
+    yalnız görünen sayfa üzerinden değil — aksi halde "başarı oranı" sayfa
+    değiştikçe anlamsız zıplardı."""
+    if outcome is not None and outcome not in (*_LLM_SUCCESS_OUTCOMES, *_LLM_FAILURE_OUTCOMES):
+        raise HTTPException(422, f"Geçersiz sonuç: {outcome}")
+
+    filters = [RawMessage.parse_source == message_trace.SOURCE_LLM]
+    if outcome is not None:
+        filters.append(RawMessage.outcome == outcome)
+    if date_from is not None:
+        filters.append(func.date(RawMessage.received_at) >= date_from)
+    if date_to is not None:
+        filters.append(func.date(RawMessage.received_at) <= date_to)
+
+    total_calls, avg_ms, success_count, failure_count = (
+        await session.execute(
+            select(
+                func.count(),
+                func.avg(RawMessage.parse_ms),
+                func.count().filter(RawMessage.outcome.in_(_LLM_SUCCESS_OUTCOMES)),
+                func.count().filter(RawMessage.outcome.in_(_LLM_FAILURE_OUTCOMES)),
+            ).where(*filters)
+        )
+    ).one()
+
+    stmt = (
+        select(RawMessage)
+        .where(*filters)
+        .order_by(RawMessage.received_at.desc(), RawMessage.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return LlmMonitorPageOut(
+        stats=LlmMonitorStatsOut(
+            total_calls=total_calls,
+            avg_parse_ms=float(avg_ms) if avg_ms is not None else None,
+            success_count=success_count,
+            failure_count=failure_count,
+            success_rate=(success_count / total_calls) if total_calls else None,
+        ),
+        total=total_calls,
+        limit=limit,
+        offset=offset,
+        items=[
+            LlmMonitorRowOut(
+                id=r.id,
+                received_at=r.received_at,
+                text=message_trace.display_text(r),
+                detected_kind=r.detected_kind,
+                detected_person=r.detected_person,
+                parse_ms=r.parse_ms,
+                outcome=r.outcome,
+                outcome_detail=r.outcome_detail,
+            )
+            for r in rows
+        ],
+    )
+
+
+# ---------------------------------------------------------------- istek kuyruğu
+
+@router.get("/queue", response_model=QueuePageOut, dependencies=[auth.AuthRequired])
+async def queue(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    durum: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Kalıcı çoklu-istek kuyruğu (bkz. app/services/request_queue.py):
+    bekleyen, yarım kalmış ve başarısız olmuş istekler. Durum sayıları
+    filtreden BAĞIMSIZ, kuyruğun tamamı üzerinden (üstte özet şerit)."""
+    if durum is not None and durum not in request_queue.DURUMLAR:
+        raise HTTPException(422, f"Geçersiz durum: {durum}")
+
+    count_rows = (
+        await session.execute(select(PendingRequest.durum, func.count()).group_by(PendingRequest.durum))
+    ).all()
+    counts = {d: 0 for d in request_queue.DURUMLAR}
+    for d, c in count_rows:
+        counts[d] = c
+
+    filters = [PendingRequest.durum == durum] if durum is not None else []
+    total = (
+        await session.execute(select(func.count()).select_from(PendingRequest).where(*filters))
+    ).scalar_one()
+
+    stmt = (
+        select(PendingRequest)
+        .where(*filters)
+        .order_by(PendingRequest.created_at.desc(), PendingRequest.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return QueuePageOut(
+        counts=QueueCountsOut(
+            beklemede=counts[request_queue.BEKLEMEDE],
+            isleniyor=counts[request_queue.ISLENIYOR],
+            tamamlandi=counts[request_queue.TAMAMLANDI],
+            basarisiz=counts[request_queue.BASARISIZ],
+            iptal=counts[request_queue.IPTAL],
+        ),
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[
+            QueueRowOut(
+                id=r.id,
+                chat_id=r.chat_id,
+                batch_id=r.batch_id,
+                raw_text=r.raw_text,
+                sira_no=r.sira_no,
+                durum=r.durum,
+                sonuc=r.sonuc,
+                hata=r.hata,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+            )
+            for r in rows
+        ],
+    )
+
+
+# ---------------------------------------------------------------- kişiler & işlemler
+
+@router.get("/persons", response_model=AdminPersonListOut, dependencies=[auth.AuthRequired])
+async def admin_persons(
+    q: str | None = None,
+    filter: str = "all",
+    district: str | None = None,
+    session: AsyncSession = Depends(get_session),
+):
+    """Canlı kişi listesi + bakiye + açık kalemler. Salt okunur — public
+    `/api/persons` ile aynı sorgu fonksiyonunu kullanır, farkı admin şifresi
+    arkasında olması."""
+    try:
+        rows = await queries.list_persons_with_balance(
+            session, scope=filter, district=district, q=q, order="name"
+        )
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+
+    items = [
+        AdminPersonRowOut(
+            id=row.person.id,
+            full_name=row.person.full_name,
+            phone=row.person.phone,
+            city=row.person.city,
+            district=row.person.district,
+            balance_try=row.balance_try,
+            items=[AdminItemOut(product_name=n, qty=qv, unit=u) for n, qv, u in row.items],
+            last_activity=row.last_activity,
+        )
+        for row in rows
+    ]
+    return AdminPersonListOut(total=len(items), items=items)
+
+
+@router.get(
+    "/persons/{person_id}/transactions",
+    response_model=AdminPersonTransactionsOut,
+    dependencies=[auth.AuthRequired],
+)
+async def admin_person_transactions(
+    person_id: int,
+    limit: int = Query(500, ge=1, le=2000),
+    session: AsyncSession = Depends(get_session),
+):
+    """Bir kişinin TÜM hareketleri (durumu ne olursa olsun — reddedilenler
+    dahil, panel denetim amaçlı her şeyi görür). Salt okunur."""
+    person = await session.get(Person, person_id)
+    if person is None:
+        raise HTTPException(404, "Kişi bulunamadı")
+
+    total = (
+        await session.execute(
+            select(func.count()).select_from(Transaction).where(Transaction.person_id == person_id)
+        )
+    ).scalar_one()
+
+    stmt = (
+        select(Transaction)
+        .options(selectinload(Transaction.lines).selectinload(TransactionLine.product))
+        .where(Transaction.person_id == person_id)
+        .order_by(Transaction.occurred_at.desc(), Transaction.id.desc())
+        .limit(limit)
+    )
+    txs = list((await session.execute(stmt)).scalars())
+
+    return AdminPersonTransactionsOut(
+        person_id=person.id,
+        person_name=person.full_name,
+        total=total,
+        items=[
+            AdminTxRowOut(
+                id=t.id,
+                kind=t.kind.value,
+                status=t.status.value,
+                amount_try=t.amount_try,
+                occurred_at=t.occurred_at,
+                source=t.source.value,
+                note=t.note,
+                reverses_id=t.reverses_id,
+                lines=[
+                    AdminTxLineOut(
+                        product_name=li.product.name,
+                        qty=li.qty,
+                        unit=li.unit,
+                        unit_price=li.unit_price,
+                        line_total=li.line_total,
+                    )
+                    for li in t.lines
+                ],
+            )
+            for t in txs
+        ],
+    )
+
+
+@router.get(
+    "/archived-persons", response_model=ArchivedPersonPageOut, dependencies=[auth.AuthRequired]
+)
+async def archived_persons(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Silinen (arşivlenen) kişiler. "Yazarak onay her silmede" kararınca
+    hiçbir şey gerçekten yok olmaz — burası o kayıtların denetim görünümü."""
+    filters = [ArchivedPerson.full_name.ilike(f"%{q}%")] if q else []
+
+    total = (
+        await session.execute(select(func.count()).select_from(ArchivedPerson).where(*filters))
+    ).scalar_one()
+
+    stmt = (
+        select(ArchivedPerson)
+        .where(*filters)
+        .order_by(ArchivedPerson.archived_at.desc(), ArchivedPerson.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return ArchivedPersonPageOut(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[
+            ArchivedPersonRowOut(
+                id=r.id,
+                original_person_id=r.original_person_id,
+                full_name=r.full_name,
+                phone=r.phone,
+                city=r.city,
+                district=r.district,
+                balance_try=r.balance_try,
+                archived_by=r.archived_by,
+                archived_at=r.archived_at,
+                archive_reason=r.archive_reason,
+            )
+            for r in rows
+        ],
+    )
+
+
+@router.get(
+    "/archived-transactions",
+    response_model=ArchivedTransactionPageOut,
+    dependencies=[auth.AuthRequired],
+)
+async def archived_transactions(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    person_id: int | None = Query(None),
+    session: AsyncSession = Depends(get_session),
+):
+    """Silinen (arşivlenen) hareketler, istenirse tek kişiye daraltılır."""
+    filters = [ArchivedTransaction.person_id == person_id] if person_id is not None else []
+
+    total = (
+        await session.execute(select(func.count()).select_from(ArchivedTransaction).where(*filters))
+    ).scalar_one()
+
+    stmt = (
+        select(ArchivedTransaction)
+        .where(*filters)
+        .order_by(ArchivedTransaction.archived_at.desc(), ArchivedTransaction.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return ArchivedTransactionPageOut(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[
+            ArchivedTransactionRowOut(
+                id=r.id,
+                person_id=r.person_id,
+                kind=r.kind.value,
+                amount_try=r.amount_try,
+                occurred_at=r.occurred_at,
+                note=r.note,
+                archived_by=r.archived_by,
+                archived_at=r.archived_at,
+                archive_reason=r.archive_reason,
+            )
+            for r in rows
+        ],
+    )
+
+
+# ---------------------------------------------------------------- loglar
+
+@router.get("/audit-log", response_model=AuditLogPageOut, dependencies=[auth.AuthRequired])
+async def audit_log(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    actor: str | None = Query(None),
+    action: str | None = Query(None),
+    entity: str | None = Query(None),
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    session: AsyncSession = Depends(get_session),
+):
+    """Sistem denetim kayıtları: kim, ne zaman, neyi değiştirdi (bkz.
+    AuditLog — restore, kişi düzenleme/arşivleme, ters kayıt vb. hepsi
+    buraya yazar). Container stdout logları DEĞİL, yalnızca DB denetimi."""
+    filters = []
+    if actor:
+        filters.append(AuditLog.actor == actor)
+    if action:
+        filters.append(AuditLog.action == action)
+    if entity:
+        filters.append(AuditLog.entity == entity)
+    if date_from is not None:
+        filters.append(func.date(AuditLog.at) >= date_from)
+    if date_to is not None:
+        filters.append(func.date(AuditLog.at) <= date_to)
+
+    total = (
+        await session.execute(select(func.count()).select_from(AuditLog).where(*filters))
+    ).scalar_one()
+
+    stmt = (
+        select(AuditLog)
+        .where(*filters)
+        .order_by(AuditLog.at.desc(), AuditLog.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+
+    return AuditLogPageOut(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[
+            AuditLogRowOut(
+                id=r.id,
+                actor=r.actor,
+                action=r.action,
+                entity=r.entity,
+                entity_id=r.entity_id,
+                before=r.before,
+                after=r.after,
+                trace_id=r.trace_id,
+                at=r.at,
+            )
+            for r in rows
+        ],
     )

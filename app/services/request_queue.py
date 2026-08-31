@@ -43,12 +43,15 @@ class BatchSummary:
 
 
 async def create_batch(
-    session: AsyncSession, chat_id: str, texts: list[str]
+    session: AsyncSession, chat_id: str, texts: list[str], raw_message_id: int | None = None
 ) -> tuple[str, list[PendingRequest]]:
     """Bir mesajdan çıkan işlem metinlerini tek batch olarak kuyruğa yazar.
 
     Her metin 'beklemede' durumunda, verilen sırayla (sira_no 1'den başlar)
-    kaydedilir. Döner: (batch_id, kayıtlar).
+    kaydedilir. `raw_message_id` verilirse (web sohbeti — CLAUDE.md > "Web'e
+    chat asistanı ekle") batch'teki TÜM parçalar aynı tek raw_messages
+    satırını paylaşır (Telegram gibi: bir gelen mesaj, birden çok işlem).
+    Döner: (batch_id, kayıtlar).
     """
     temiz = [t.strip() for t in texts if t and t.strip()]
     if not temiz:
@@ -62,6 +65,7 @@ async def create_batch(
             raw_text=metin,
             sira_no=i,
             durum=BEKLEMEDE,
+            raw_message_id=raw_message_id,
         )
         for i, metin in enumerate(temiz, start=1)
     ]

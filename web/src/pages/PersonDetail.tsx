@@ -92,7 +92,10 @@ export default function PersonDetail() {
         <button className="link" onClick={() => setModal("edit")}>
           Düzenle
         </button>
-        <button className="link" onClick={() => window.open(api.personReportUrl(personId), "_blank")}>
+        <button
+          className="link"
+          onClick={() => api.openPersonReport(personId).catch(() => toast("Rapor alınamadı", "info"))}
+        >
           <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Ekstre (PDF)
         </button>
       </div>

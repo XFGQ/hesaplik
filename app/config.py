@@ -14,12 +14,21 @@ class Settings(BaseSettings):
     # cozulur. Dizin yoksa (gelistirmede build alinmamissa) yalnizca API calisir.
     web_dist: str = "web/dist"
 
-    # Admin paneli (/admin) tek şifreyle korunur. BOŞ ise panel tamamen
-    # kapalıdır: giriş denemesi de /api/admin/* uçları da reddedilir —
-    # yapılandırılmamış bir kurulumda panel kazara açık kalmaz.
-    admin_password: str = ""
-    # Admin oturumunun ömrü (saat). Süre dolunca yeniden şifre istenir.
-    admin_session_hours: int = 12
+    # Tek hesap, JWT tabanlı giriş. Giriş yapan HER ŞEYE erişir (defter +
+    # admin) — ayrı roller yok. Üçü de BOŞSA sistem tamamen kapalıdır:
+    # /api/auth/login her zaman 503 döner, require_auth her zaman 401 —
+    # yapılandırılmamış bir kurulum kazara açık kalmaz. Şifre düz metin
+    # DEĞİL, bcrypt hash olarak saklanır (AUTH_PASSWORD_HASH). Hash üretmek
+    # için: .venv/bin/python -c "import bcrypt;
+    # print(bcrypt.hashpw(b'sifreniz', bcrypt.gensalt()).decode())"
+    auth_username: str = ""
+    auth_password_hash: str = ""
+    # JWT imza anahtarı. Üretimde uzun/rastgele olsun: .venv/bin/python -c
+    # "import secrets; print(secrets.token_urlsafe(48))". Değiştirilince
+    # tüm açık oturumlar kendiliğinden geçersiz olur.
+    jwt_secret: str = ""
+    # Token ömrü (saat). Süre dolunca yeniden giriş istenir.
+    jwt_expire_hours: int = 24
 
     restic_repository: str = "./data/backups"
     restic_password: str | None = None
@@ -56,16 +65,39 @@ class Settings(BaseSettings):
     # önbelleklenir (bkz. llm_provider._cached_health).
     llm_health_timeout: float = 3.0
 
+    # NVIDIA NIM (bulut, Faz 4c) — DÖRDÜNCÜ ve EN ÖNCELİKLİ katman. OpenAI
+    # uyumlu API: {nvidia_url}/chat/completions, Authorization: Bearer
+    # {nvidia_api_key}. api_key BOŞSA (varsayılan) NVIDIA hiç denenmez,
+    # sistem vLLM/Ollama/none'a düşer (bkz. app/services/llm_provider.py >
+    # select_source). api_key GİZLİDİR, hiçbir yerde loglanmaz.
+    #
+    # Model: Qwen2.5, Llama'nın aksine Türkçe'yi resmi olarak desteklenen
+    # diller arasında listeliyor (29 dil) — bu yüzden qwen/qwen2.5-72b-
+    # instruct varsayılan seçildi (mevcut vLLM/Ollama katmanlarıyla da aynı
+    # aile, tutarlı davranış). NVIDIA rate limit'i (40 istek/dk) 429 ile
+    # kendini gösterir; NVIDIAProvider bunu None döner ve auto modda bir
+    # sonraki health check'te vLLM'e düşülür (bkz. nvidia_healthy).
+    nvidia_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_api_key: str = ""
+    nvidia_model: str = "openai/gpt-oss-20b"
+    nvidia_timeout: float = 15.0
+
+    # Groq STT (Faz 5 — sesli komut). OpenAI-uyumlu /audio/transcriptions
+    # ucu: {groq_stt_url}/audio/transcriptions, Authorization: Bearer
+    # {groq_api_key}. api_key BOŞSA (varsayılan) sesli mesaj desteği
+    # tamamen kapalıdır — bot kullanıcıya yazmasını ister, ÇÖKMEZ (bkz.
+    # app/services/stt.py). api_key GİZLİDİR, hiçbir yerde loglanmaz.
+    groq_api_key: str = ""
+    groq_stt_url: str = "https://api.groq.com/openai/v1"
+    groq_stt_model: str = "whisper-large-v3"
+    groq_stt_timeout: float = 30.0
+
     # vLLM uzaktan aç/kapat ("Yol B", bkz. app/services/vllm_control.py).
     # Bosna'daki host script'i (scripts/vllm-control.sh) GET /api/vllm-desired
     # ucunu bu tokenla çeker — admin şifresinden AYRI ve daha dar yetkili
     # (yalnızca bu tek uca erişir). BOŞ ise uç HER ZAMAN 401 döner (fail
     # closed) — yapılandırılmamış bir kurulumda kazara açık kalmaz.
     vllm_control_token: str | None = None
-
-    # Admin panel (/admin) şifresi. Boşsa panel tamamen kapalıdır (503) —
-    # yanlışlıkla açık admin uç noktası kalmasın diye varsayılan boş.
-    admin_password: str | None = None
 
     @property
     def cors_origins_list(self) -> list[str]:
