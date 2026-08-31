@@ -236,7 +236,7 @@ async def _apply_result(
 
     if outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
-        onay = await _archive_onay_kelimesi()
+        onay = await _archive_onay_kelimesi(session)
         await web_chat_state.set_pending(
             session, chat_id, "archive_confirm",
             {"person_id": resolved.person.id, "kind": resolved.kind, "onay_kelimesi": onay},
