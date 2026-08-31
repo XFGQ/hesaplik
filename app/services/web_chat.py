@@ -34,6 +34,7 @@ from app.bot.main import (
     _format_archive_confirm,
     _format_balance,
     _format_daily_report_caption,
+    _format_delete_ambiguous,
     _format_edit_confirm,
     _format_edit_field_prompt,
     _format_edit_result,
@@ -45,6 +46,7 @@ from app.bot.main import (
     _format_product_suggestion,
     _format_record_confirmation,
     _format_search_messages,
+    _format_total_balance,
     _llm_pending_from_resolved,
     _new_person_prompt,
     _new_person_set_field_and_next,
@@ -55,7 +57,7 @@ from app.bot.main import (
 )
 from app.models import Person, PendingRequest, Product, RawMessage
 from app.schemas import ChatButton, ChatMessage, ChatResponse
-from app.services import catalog, message_splitter, person_archive, person_edit, report, request_queue, web_chat_state, web_intake
+from app.services import catalog, message_splitter, parser, person_archive, person_edit, report, request_queue, web_chat_state, web_intake
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
@@ -127,6 +129,14 @@ def _edit_confirm_buttons() -> list[ChatButton]:
 
 def _edit_field_buttons() -> list[ChatButton]:
     return [ChatButton(label=_FIELD_TITLE_NAMES[f], action=f"editfield:{f}") for f in _EDIT_FIELD_ORDER]
+
+
+def _delete_ambiguous_buttons() -> list[ChatButton]:
+    return [
+        ChatButton(label="Tahsilat gir", action="delete:payment"),
+        ChatButton(label="Kişiyi sil", action="delete:person"),
+        ChatButton(label="İptal", action="delete:cancel"),
+    ]
 
 
 def _product_confirm_buttons() -> list[ChatButton]:
@@ -244,6 +254,28 @@ async def _apply_result(
         txt = _format_archive_confirm(resolved.person.full_name, result.balance, onay)
         return ChatMessage(reply=txt, outcome=outcome.value, awaits_text=True), True
 
+    if outcome == ProcessOutcome.DELETE_AMBIGUOUS:
+        # "sil" + para/mal bağlamı: niyet belirsiz, HİÇBİR ŞEY yapılmadan
+        # sorulur (CLAUDE.md > "'sil' bağlam ayrımı"). Silme fiili ayıklanmış
+        # metin şimdi saklanır — "Tahsilat gir" seçilirse normal akıştan
+        # yeniden geçirilir.
+        await web_chat_state.set_pending(
+            session, chat_id, "delete_ambiguous",
+            {
+                "person_id": resolved.person.id,
+                "raw_message_id": raw_message_id,
+                "text": parser.strip_delete_words(raw_text),
+            },
+        )
+        return (
+            ChatMessage(
+                reply=_format_delete_ambiguous(resolved.person.full_name),
+                outcome=outcome.value,
+                buttons=_delete_ambiguous_buttons(),
+            ),
+            True,
+        )
+
     if outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
         value = _edit_display_value(resolved.field_name, resolved.new_value)
         await web_chat_state.set_pending(
@@ -331,6 +363,10 @@ async def _build_fresh_reply(
     if outcome == ProcessOutcome.SEARCH:
         reply = "\n\n".join(_format_search_messages(resolved.query, result.persons or []))
         return ChatMessage(reply=reply, outcome=outcome.value), False
+
+    if outcome == ProcessOutcome.TOTAL_BALANCE:
+        assert result.total is not None
+        return ChatMessage(reply=_format_total_balance(result.total), outcome=outcome.value), False
 
     if outcome == ProcessOutcome.REPORT_MENU:
         await web_chat_state.set_pending(session, chat_id, "report_menu", {})
@@ -679,6 +715,47 @@ async def _archive_confirm_text(session: AsyncSession, chat_id: str, pending, te
     return await _conclude(session, chat_id, msg, False)
 
 
+# --------------------------------------------------------------- "sil" belirsizliği
+
+async def _handle_delete_ambiguous_person(session: AsyncSession, chat_id: str, pending) -> list[ChatMessage]:
+    """"Kişiyi sil" seçildi: normal silme akışına (yazarak onay) girilir —
+    kısayol YOK (CLAUDE.md > "Yazarak onay her silmede")."""
+    if pending.kind != "delete_ambiguous" or not pending.payload:
+        return [ChatMessage(reply="Bu istek artık geçerli değil.", outcome=OUTCOME_EXPIRED)]
+    payload = dict(pending.payload)
+    await web_chat_state.clear_pending(session, chat_id)
+
+    person = await session.get(Person, payload["person_id"])
+    if person is None or not person.is_active:
+        msg = ChatMessage(reply="Kişi bulunamadı.", outcome=OUTCOME_EXPIRED)
+        return await _conclude(session, chat_id, msg, False)
+
+    bal = await balance_of(session, person.id)
+    resolved = ResolvedIntent(status=ResolutionStatus.READY, kind="archive_person", person=person)
+    result = ProcessResult(outcome=ProcessOutcome.ARCHIVE_CONFIRM, resolved=resolved, balance=bal)
+    msg, needs_followup = await _apply_result(
+        session, chat_id, result,
+        raw_message_id=payload["raw_message_id"], raw_text=payload["text"],
+    )
+    return await _conclude(session, chat_id, msg, needs_followup)
+
+
+async def _handle_delete_ambiguous_payment(session: AsyncSession, chat_id: str, pending) -> list[ChatMessage]:
+    """"Tahsilat gir" seçildi: silme fiili ayıklanmış metin NORMAL akıştan
+    (kural parser -> gerekirse LLM) yeniden geçirilir — ikinci bir mantık
+    yazılmaz."""
+    if pending.kind != "delete_ambiguous" or not pending.payload:
+        return [ChatMessage(reply="Bu istek artık geçerli değil.", outcome=OUTCOME_EXPIRED)]
+    payload = dict(pending.payload)
+    await web_chat_state.clear_pending(session, chat_id)
+
+    raw = await session.get(RawMessage, payload["raw_message_id"])
+    text = payload["text"]
+    result = await process_raw_message(session, raw, text)
+    msg, needs_followup = await _build_fresh_reply(session, chat_id, result, raw, text, is_multi=False)
+    return await _conclude(session, chat_id, msg, needs_followup)
+
+
 # --------------------------------------------------------------- geri al / rapor / bilgi menüsü
 
 async def _handle_undo(session: AsyncSession, chat_id: str, tx_id: int) -> ChatMessage:
@@ -841,6 +918,15 @@ async def handle_action(session: AsyncSession, chat_id: str, action: str, text: 
     if action.startswith("editfield:"):
         field = action.split(":", 1)[1]
         return ChatResponse(messages=[await _handle_edit_field_pick(session, chat_id, pending, field)])
+
+    if action == "delete:person":
+        return ChatResponse(messages=await _handle_delete_ambiguous_person(session, chat_id, pending))
+    if action == "delete:payment":
+        return ChatResponse(messages=await _handle_delete_ambiguous_payment(session, chat_id, pending))
+    if action == "delete:cancel":
+        await web_chat_state.clear_pending(session, chat_id)
+        msg = ChatMessage(reply="Tamam, iptal ettim.", outcome=OUTCOME_CANCELLED)
+        return ChatResponse(messages=await _conclude(session, chat_id, msg, False, durum=request_queue.IPTAL))
 
     if action == "product:yes":
         return ChatResponse(messages=await _handle_product_confirm(session, chat_id, pending, use_suggestion=True))

@@ -4,15 +4,17 @@ from decimal import Decimal
 from app.bot.main import (
     _fmt_try,
     _format_balance,
+    _format_delete_ambiguous,
     _format_list_messages,
     _format_person_card,
     _format_record_confirmation,
     _format_search_messages,
+    _format_total_balance,
 )
 from app.models import Person, Product, TxKind
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import Balance
-from app.services.queries import PersonBalanceRow, PersonTransactionRow
+from app.services.queries import PersonBalanceRow, PersonTransactionRow, TotalBalance
 
 
 def _row(name: str, balance: str, items=None, district=None) -> PersonBalanceRow:
@@ -269,3 +271,43 @@ def test_format_record_confirmation_sifir_durum():
     text = _format_record_confirmation(resolved, before, after)
 
     assert "Güncel bakiye: 0,00 TL sıfır" in text
+
+
+# --------------------------------------------------------------- toplam bakiye
+# ve "sil" belirsizliği (2026-08-31).
+
+
+def _total(alacak: str, borc: str, kisi: int = 3, borclu: int = 1, alacakli: int = 1) -> TotalBalance:
+    return TotalBalance(
+        kisi_sayisi=kisi,
+        borclu_sayisi=borclu,
+        alacakli_sayisi=alacakli,
+        toplam_alacak=Decimal(alacak),
+        toplam_borc=Decimal(borc),
+    )
+
+
+def test_format_total_balance_net_alacak():
+    msg = _format_total_balance(_total("12500.00", "3000.00"))
+
+    assert "3 kişi" in msg
+    assert "Toplam alacak: 12.500,00 TL" in msg
+    assert "Toplam borç: 3.000,00 TL" in msg
+    assert "Net: 9.500,00 TL alacaklısın" in msg
+
+
+def test_format_total_balance_net_borc():
+    msg = _format_total_balance(_total("1000.00", "4000.00"))
+    assert "Net: 3.000,00 TL borçlusun" in msg
+
+
+def test_format_total_balance_sifir():
+    msg = _format_total_balance(_total("0.00", "0.00", kisi=0, borclu=0, alacakli=0))
+    assert "Net: hesap sıfır" in msg
+
+
+def test_format_delete_ambiguous_iki_secenegi_de_anlatir():
+    msg = _format_delete_ambiguous("Furkan Duman")
+    assert "Furkan Duman" in msg
+    assert "tahsilat" in msg.lower()
+    assert "sil" in msg.lower()

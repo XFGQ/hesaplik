@@ -571,3 +571,79 @@ async def test_urun_belirsizken_kisi_de_coklu_ise_once_kisi_sorulur(session, two
 
     assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
     assert resolved.product_suggestion is None
+
+
+# --------------------------------------------------------------- create_person'da
+# LLM'e HİÇ danışılmaz (2026-08-31 hız düzeltmesi): yeni kişi eklerken
+# pg_trgm'in "böyle biri yok" demesi yeterlidir; buluta "en yakın kişi kim?"
+# diye sormak (~5 sn) hem gereksiz hem yanıltıcıydı.
+
+
+async def test_create_person_llme_hic_gitmez(session, furkan_duman, fake_llm):
+    fake_llm.name_match = "Furkan Duman"
+    intent = ParsedIntent(kind="create_person", person_name="hayrettin uçar")
+    resolved = await resolve(session, intent)
+    assert fake_llm.chat_json_calls == []
+    assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
+
+
+async def test_create_person_llm_onerisi_aday_olarak_sunulmaz(session, furkan_duman, fake_llm):
+    # LLM açıkken bile: "doman" pg_trgm'de aday bulamıyor ve create_person
+    # yolunda LLM'e sorulmadığı için doğrudan "yok" denir (bkz. borç/tahsilat
+    # yolundaki test_llm_onerisi_tek_aday_olarak_sunulur ile karşılaştır).
+    fake_llm.name_match = "Furkan Duman"
+    resolved = await resolve(session, ParsedIntent(kind="create_person", person_name="doman"))
+    assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
+    assert resolved.person_candidates == []
+
+
+async def test_create_person_zaten_kayitliysa_yine_net_eslesir(session, furkan_duman, fake_llm):
+    resolved = await resolve(session, ParsedIntent(kind="create_person", person_name="furkan duman"))
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person.id == furkan_duman.id
+    assert fake_llm.chat_json_calls == []
+
+
+async def test_create_person_coklu_aday_hala_hangisi_sorar(session, two_furkans, fake_llm):
+    resolved = await resolve(session, ParsedIntent(kind="create_person", person_name="furkan"))
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert len(resolved.person_candidates) == 2
+    assert fake_llm.chat_json_calls == []
+
+
+async def test_borc_yolunda_llm_onerisi_hala_calisir(session, furkan_duman, fake_llm):
+    # Hız düzeltmesi YALNIZCA create_person'ı etkiler: mevcut bir kişiyle
+    # işlem yapılırken LLM son çare olarak aynen devrede kalır.
+    fake_llm.name_match = "Furkan Duman"
+    resolved = await resolve(session, ParsedIntent(kind="debt", person_name="doman", amount=Decimal("100")))
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert fake_llm.chat_json_calls != []
+
+
+# --------------------------------------------------------------- "sil" belirsizliği
+
+
+async def test_delete_ambiguous_tutar_gerekmez(session, furkan_duman):
+    intent = ParsedIntent(kind="delete_ambiguous", person_name="furkan duman")
+    resolved = await resolve(session, intent)
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.kind == "delete_ambiguous"
+    assert resolved.person.id == furkan_duman.id
+
+
+async def test_delete_ambiguous_coklu_aday_hangisi_sorar(session, two_furkans):
+    resolved = await resolve(session, ParsedIntent(kind="delete_ambiguous", person_name="furkan"))
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert len(resolved.person_candidates) == 2
+
+
+async def test_delete_ambiguous_bulunamayan_kisi(session):
+    resolved = await resolve(session, ParsedIntent(kind="delete_ambiguous", person_name="hic yok boyle biri"))
+    assert resolved.status == ResolutionStatus.PERSON_NOT_FOUND
+
+
+async def test_total_balance_kisi_gerektirmez(session):
+    resolved = await resolve(session, ParsedIntent(kind="total_balance"))
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.kind == "total_balance"
+    assert resolved.person is None

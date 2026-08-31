@@ -204,3 +204,47 @@ async def test_list_person_transactions_hareketsiz_kisi(session):
 
     assert rows == []
     assert total == 0
+
+
+# --------------------------------------------------------------- toplam bakiye
+# (CLAUDE.md > "Toplam bakiye niyeti"): defterin TAMAMININ özeti.
+
+
+async def test_toplam_bakiye_bos_defterde_sifir(session):
+    total = await queries.total_balance(session)
+    assert total.kisi_sayisi == 0
+    assert total.toplam_alacak == Decimal("0.00")
+    assert total.toplam_borc == Decimal("0.00")
+    assert total.net == Decimal("0.00")
+
+
+async def test_toplam_bakiye_borclu_ve_alacaklilari_ayri_toplar(session):
+    borclu = await _person(session, "Borçlu Kişi")
+    alacakli = await _person(session, "Alacaklı Kişi")
+    sifir = await _person(session, "Sıfır Kişi")
+
+    await add_debt(session, borclu.id, [], meta(), amount_override=Decimal("1000"))
+    await add_debt(session, alacakli.id, [], meta(), amount_override=Decimal("500"))
+    await add_payment(session, alacakli.id, Decimal("700"), meta())
+    await add_debt(session, sifir.id, [], meta(), amount_override=Decimal("300"))
+    await add_payment(session, sifir.id, Decimal("300"), meta())
+
+    total = await queries.total_balance(session)
+
+    assert total.kisi_sayisi == 3
+    assert total.borclu_sayisi == 1
+    assert total.alacakli_sayisi == 1
+    assert total.toplam_alacak == Decimal("1000.00")
+    assert total.toplam_borc == Decimal("200.00")
+    assert total.net == Decimal("800.00")
+
+
+async def test_toplam_bakiye_net_negatif_olabilir(session):
+    alacakli = await _person(session, "Peşin Ödeyen")
+    await add_payment(session, alacakli.id, Decimal("2500"), meta())
+
+    total = await queries.total_balance(session)
+
+    assert total.toplam_alacak == Decimal("0.00")
+    assert total.toplam_borc == Decimal("2500.00")
+    assert total.net == Decimal("-2500.00")
