@@ -71,6 +71,8 @@ class ProcessOutcome(str, enum.Enum):
     EDIT_PERSON_CONFIRM = "edit_person_confirm"
     EDIT_PERSON_MENU = "edit_person_menu"
     PRODUCT_NEEDS_CONFIRMATION = "product_needs_confirmation"
+    PRODUCT_QUERY_UNSUPPORTED = "product_query_unsupported"
+    CLOSE_DEBT_CONFIRM = "close_debt_confirm"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -300,6 +302,13 @@ async def _dispatch(
         rows = await search_persons(session, resolved.query or "")
         return ProcessResult(outcome=ProcessOutcome.SEARCH, resolved=resolved, persons=rows)
 
+    if resolved.kind == "product_query":
+        # Ürün/stok/fiyat sorgusu (Grup C): defter cari hesap tutar, stok ya
+        # da bağlayıcı fiyat listesi TUTMAZ (CLAUDE.md kural 4). Niyet
+        # tanınır ama karşılığı yok — bot bunu açıkça söyler; sessizce
+        # yanlış bir cevap üretmekten iyidir.
+        return ProcessResult(outcome=ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED, resolved=resolved)
+
     if resolved.kind == "total_balance":
         # Defterin TAMAMININ özeti (CLAUDE.md > "Toplam bakiye niyeti") —
         # kişi gerektirmez, salt okunur.
@@ -376,6 +385,30 @@ async def _dispatch(
         if resolved.field_name is not None and resolved.new_value is not None:
             return ProcessResult(outcome=ProcessOutcome.EDIT_PERSON_CONFIRM, resolved=resolved)
         return ProcessResult(outcome=ProcessOutcome.EDIT_PERSON_MENU, resolved=resolved)
+
+    if resolved.kind == "payment" and resolved.close_debt and resolved.amount is None:
+        # Borç KAPANIŞI, tutar söylenmemiş ("ali borcunu ödedi"). Tutar
+        # UYDURULMAZ: güncel bakiye teklif edilir ve kullanıcıya onaylatılır
+        # (CLAUDE.md > "Şüphe varsa sor"). Onay akışı LLM önizlemesiyle aynı
+        # makineyi kullanır (aynı chat_data anahtarı, aynı Evet/Düzelt/İptal).
+        bal = await balance_of(session, resolved.person.id)
+        if bal.balance_try <= 0:
+            # Kapanacak bir borç yok — sahte bir tahsilat yazmak yerine
+            # kişinin güncel durumu gösterilir.
+            txs, total = await list_person_transactions(
+                session, resolved.person.id, limit=BALANCE_TABLE_LIMIT
+            )
+            return ProcessResult(
+                outcome=ProcessOutcome.BALANCE,
+                resolved=resolved,
+                balance=bal,
+                transactions=txs,
+                transactions_total=total,
+            )
+        resolved.amount = bal.balance_try
+        return ProcessResult(
+            outcome=ProcessOutcome.CLOSE_DEBT_CONFIRM, resolved=resolved, balance=bal
+        )
 
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net

@@ -335,26 +335,56 @@ async def test_kural_parser_cozerse_llm_hic_cagrilmaz(session, monkeypatch, ahme
     assert fake.called is False
 
 
-async def test_borc_kelimesi_tahsilat_fiiliyle_karisan_cumle_llme_duser(session, monkeypatch, ahmet):
+async def test_borc_kapanisi_regexle_cozulur_llme_gitmez(session, monkeypatch, ahmet):
     # Bug (2026-07-26): "ahmet yılmaz 20 balya borcunu 15000 tl ödedi" kural
     # parser'ı yanıltıp sahte bir bakiye sorgusuna ("ahmet yılmaz 20 balya"
-    # diye anlamsız bir isimle) dönüştürüyordu; bu da rule parser "çözdüm"
-    # sandığı için LLM'e HİÇ düşmüyordu (process_raw_message'ın LLM dalı
-    # izole çalışsa da bot yolunda devreye girmiyordu). Kural parser artık
-    # bu karışık cümlede None dönüyor (bkz. test_parser.py), bu da LLM
-    # fallback'in gerçekten tetiklendiğini doğruluyor.
+    # diye anlamsız bir isimle) dönüştürüyordu; ilk çözüm cümleyi LLM'e
+    # devretmekti.
+    #
+    # 2026-08-31: "borcunu ödedi" DÜZENLİ bir kalıptır, regex'in kesin
+    # çözmesi gerekir (CLAUDE.md > "LLM son çare, regex birincil"). Artık
+    # LLM'e HİÇ gidilmiyor ve tahsilat doğrudan kaydediliyor.
     text = "ahmet yılmaz 20 balya borcunu 15000 tl ödedi"
-    intent = ParsedIntent(kind="payment", person_name="ahmet yılmaz", amount=Decimal("15000"))
-    fake = _FakeLLMProvider(intent)
+    fake = _FakeLLMProvider(ParsedIntent(kind="payment", person_name="ahmet yılmaz"))
     _mock_llm(monkeypatch, fake)
 
     raw = await _make_raw(session, text, 45)
     result = await message_processor.process_raw_message(session, raw, text)
 
-    assert fake.called is True
-    assert result.outcome == ProcessOutcome.LLM_CONFIRMATION
+    assert fake.called is False
+    assert result.outcome == ProcessOutcome.RECORDED
     assert result.resolved.kind == "payment"
     assert result.resolved.person.id == ahmet.id
+    assert result.balance.balance_try == Decimal("-15000.00")
+
+
+async def test_tutarsiz_borc_kapanisi_guncel_bakiyeyi_onaylatir(session, monkeypatch, ahmet):
+    # "ahmet borcunu ödedi": niyet net ama TUTAR söylenmemiş. Tutar
+    # UYDURULMAZ — güncel bakiye teklif edilip kullanıcıya onaylatılır,
+    # onaya kadar hiçbir kayıt yazılmaz.
+    borc_text = "ahmet yılmaz 10000 tl borç yazdım"
+    borc_raw = await _make_raw(session, borc_text, 46)
+    await message_processor.process_raw_message(session, borc_raw, borc_text)
+
+    text = "ahmet yılmaz borcunu ödedi"
+    raw = await _make_raw(session, text, 47)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.CLOSE_DEBT_CONFIRM
+    assert result.resolved.amount == Decimal("10000.00")
+    assert result.balance.balance_try == Decimal("10000.00")
+    # Onay beklendiği için henüz TEK bir kayıt var (yalnızca borç).
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 1
+
+
+async def test_borcu_olmayan_kisinin_borc_kapanisi_kayit_yazmaz(session, ahmet):
+    # Kapanacak bir borç yoksa sahte bir tahsilat yazılmaz; kişinin güncel
+    # durumu gösterilir.
+    text = "ahmet yılmaz borcunu ödedi"
+    raw = await _make_raw(session, text, 48)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.BALANCE
     assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
 
 
@@ -707,14 +737,16 @@ async def test_arama_ile_komutlu_bakiye_sorgusu_karismaz(session, ahmet):
 
 
 async def test_arama_sonuc_bulamayinca_llme_dusup_dogru_niyete_donusur(session, ahmet, monkeypatch):
-    # "kişileer" ("kişiler" yazım hatası): kural parser tek kelime olduğu
-    # için kind="search" döner (None DEĞİL), hiç kimseyle eşleşmez. LLM
-    # devreye girip list_all niyeti verince bot listeyi göstermeli.
+    # "ahmetbeylilier" (bir ilçe adının bozuk yazımı): kural parser tek
+    # kelime olduğu için kind="search" döner (None DEĞİL), hiç kimseyle
+    # eşleşmez. LLM devreye girip bir niyet verince bot onu göstermeli.
+    # ("kişileer" gibi liste kelimesi yazım hataları artık regex'te
+    # çözülüyor, bkz. test_parser.py > test_yazim_hatali_kisi_listesi_komutlari.)
     intent = ParsedIntent(kind="list_all")
     fake = _FakeLLMProvider(intent)
     _mock_llm(monkeypatch, fake)
 
-    text = "kişileer"
+    text = "ahmetbeylilier"
     raw = await _make_raw(session, text, 100)
     result = await message_processor.process_raw_message(session, raw, text)
 
@@ -755,27 +787,42 @@ async def test_arama_sonuc_varsa_llme_hic_gidilmez(session, ahmet, monkeypatch):
     assert [r.person.id for r in result.persons] == [ahmet.id]
 
 
-async def test_ilce_sorgusu_kimler_var_kalibiyla_llm_uzerinden_calisir(session, monkeypatch):
-    # "bergamadan kimler var": kural parser hiçbir kalıba uymadığı için
-    # None döner (regex'in kendisi zaten LLM'e düşer, retry mekanizması
-    # gerekmez) — LLM'in list_district(bergama) çıkarabildiğini doğrular.
+async def test_ilce_sorgusu_kimler_var_kalibi_regexle_cozulur(session, monkeypatch):
+    # "bergamadan kimler var" eskiden hiçbir kalıba uymuyor ve (yavaş) LLM'e
+    # düşüyordu. 2026-08-31: ayrılma/bulunma hâli eki + "kimler var" kuyruğu
+    # regex'te çözülüyor, LLM'e HİÇ gidilmiyor.
     bergama = Person(full_name="Bergamalı Ahmet", district="Bergama")
     izmir = Person(full_name="İzmirli Mehmet", district="İzmir")
     session.add_all([bergama, izmir])
     await session.flush()
 
-    intent = ParsedIntent(kind="list_district", district="bergama")
-    fake = _FakeLLMProvider(intent)
+    fake = _FakeLLMProvider(ParsedIntent(kind="list_all"))
     _mock_llm(monkeypatch, fake)
 
     text = "bergamadan kimler var"
     raw = await _make_raw(session, text, 103)
     result = await message_processor.process_raw_message(session, raw, text)
 
-    assert fake.called is True
+    assert fake.called is False
     assert result.outcome == ProcessOutcome.LIST
     assert result.resolved.district == "bergama"
     assert [r.person.id for r in result.persons] == [bergama.id]
+
+
+async def test_urun_sorgusu_desteklenmiyor_der_kayit_yapmaz(session, monkeypatch):
+    # Grup C: defter stok/fiyat tutmaz. Niyet TANINIR (LLM'e bile gitmez) ama
+    # karşılığı yok — bot açıkça söyler, sessizce yanlış bir şey yapmaz.
+    fake = _FakeLLMProvider(ParsedIntent(kind="list_all"))
+    _mock_llm(monkeypatch, fake)
+
+    text = "toplam kaç saman satıldı"
+    raw = await _make_raw(session, text, 104)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert fake.called is False
+    assert result.outcome == ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED
+    assert result.resolved.product_name_raw == "saman"
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
 
 
 # ------------------------------------------------------------------

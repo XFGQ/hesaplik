@@ -759,3 +759,85 @@ kaybolmaz, elle görülebilir). Onay bekleyen istek chat_data + DB'de izlenir.
 **Önemli:** her istek kişi eşleştirme ve para güvenlik kurallarından AYRI
 geçer. Bir istek yanlış giderse diğerlerini etkilemez. Kuyruk sıralı işler
 (paralel değil) ki onay akışları karışmasın.
+
+## Zeka + hız düzeltmeleri (2026-08-31)
+
+**1. Yeni kişi eklerken LLM'e sorulmaz (hız).** `create_person` niyetinde
+pg_trgm hiç aday bulamazsa artık LLM'e "en yakın kişi kim?" diye
+SORULMAZ (`intent_resolver.NO_LLM_SUGGESTION_KINDS`). Amaç zaten yeni bir
+kişi açmak; "böyle biri yok" cevabı kesin ve yeterli. Cevap ~5 sn yerine
+<1 sn geliyor. LLM'in isim önerisi yalnızca MEVCUT bir kişiyle işlem
+yapılırken (borç/tahsilat/bakiye/ekstre) devrede kalır.
+
+**2. "sil" her zaman kişi silme değildir.** Cümlede silme fiiliyle birlikte
+para/mal bağlamı da varsa ("furkan duman 20 saman borcunu ödedi sil") niyet
+BELİRSİZ sayılır: `kind="delete_ambiguous"`. Bot/web hiçbir şey yapmadan üç
+butonla sorar — [Tahsilat gir] [Kişiyi sil] [İptal].
+- "Kişiyi sil" → normal yazarak-onay akışı (kısayol YOK).
+- "Tahsilat gir" → silme fiili ayıklanmış metin (`parser.strip_delete_words`)
+  NORMAL akıştan (regex → gerekirse LLM) yeniden geçirilir; ikinci bir
+  mantık yazılmaz.
+- Para/mal bağlamı yoksa ("furkanı sil", "furkanın hesabını sil") davranış
+  aynen eskisi gibi: doğrudan `archive_person`.
+- İsim güvenle çıkarılamıyorsa uydurulmaz, cümle LLM'e devredilir.
+Eskiden bu cümlede TÜM cümle kişi adı sanılıyordu; para güvenliği açısından
+"sessizce kişi silme sanmak" kabul edilemez.
+
+**3. Toplam bakiye niyeti.** "tüm bakiye", "toplam borç", "toplam alacak",
+"genel bakiye", "sistemdeki toplam borç", "total borç", "güncel toplam" →
+`kind="total_balance"`: defterin TAMAMININ özeti (kişi sayısı, toplam
+alacak, toplam borç, net). Eskiden "tüm"/"total" kişi adı sanılıp "defterde
+yok" deniyordu. Sorgu `queries.total_balance` — bakiye yine kolonda
+tutulmaz, `list_persons_with_balance`ın SUM'ından türetilir.
+Kalıp kasten DAR: cümlenin tamamı nitelik/isim/dolgu kelimesi olmalı, araya
+kişi adı karışıyorsa ("furkan toplam borç") bu tek kişinin bakiyesidir.
+"genel durum" bilerek dışarıda — o hâlâ genel durum RAPORU (PDF).
+
+## Anlama kapasitesi genişletme (2026-08-31, 9 boşluk)
+
+Test haritası regex'in kaçırdığı 9 kalıp gösterdi. Hepsi REGEX'e eklendi
+(CLAUDE.md > "LLM son çare, regex birincil"); LLM prompt'una da few-shot
+örnek konuldu ki kullanıcı kalıbı regex eşiğinin dışında bozarsa aynı
+niyete varılsın.
+
+**Regex'e eklenenler (`parser.py`):**
+- **Yazım toleranslı liste komutları.** "kişler", "ksiler", "kişileer",
+  "kişilerr" → `list_all`. Sözlük değil, Damerau-Levenshtein fuzzy
+  (`_is_list_all_word`, düzenleme tetikleyicileriyle aynı yöntem). Kasten
+  DAR: ilk harf aynı, uzunluk farkı ≤2, mesafe 2 yalnızca ≥6 harfte —
+  "kiler"/"işler" gibi gerçek kelimeler liste komutu sanılmaz.
+- **"{X} listesi".** "kişi/kişiler/müşteri listesi" → `list_all`,
+  "borçlu listesi" → `list_debtors`, "alacaklı listesi" → `list_creditors`.
+  (Eskiden "borçlu listesi" → `balance_query(person="listesi")` oluyordu.)
+- **"borçlandı" = borç.** Fiilin kendisi yönü kodluyor, `DEBT_WORDS`'te.
+- **"borcunu ödedi/kapattı" = TAHSİLAT, bakiye sorgusu değil.**
+  `_strip_debt_closing` anahtar kelimeyi düşürür, kalan cümle normal
+  tahsilat akışından geçer. Eskiden "bakiye kelimesi + kayıt fiili"
+  çelişkisi sayılıp her seferinde (yavaş) LLM'e devrediliyordu.
+- **"{isim} kaç para" / "kaç lira"** → `balance_query` (`BARE_BALANCE_TAILS`,
+  "ne kadar" ile aynı kuyruk mantığı).
+- **"{ilçe}den kimler var" / "{ilçe}deki kimler"** → `list_district`.
+  Ayrılma/bulunma hâli eki (-dan/-den/-da/-de) YALNIZCA bu kalıpta soyulur,
+  `_district_from_word`'e eklenmez — tek başına "aydan"/"sudan" gibi bir
+  isim yanlış ilçeye dönerdi.
+
+**Tutar söylenmemiş borç kapanışı.** "ali borcunu ödedi" — niyet net, tutar
+yok. Tutar UYDURULMAZ: `ParsedIntent.close_debt` işaretlenir, kişi
+çözülünce `message_processor` güncel bakiyeyi TEKLİF eder ve kullanıcıya
+onaylatır (`ProcessOutcome.CLOSE_DEBT_CONFIRM`). Onay makinesi LLM
+önizlemesiyle aynıdır (aynı `llm_confirm` bekleyen kaydı, aynı
+Evet/Düzelt/İptal) — ikinci bir onay akışı yazılmaz. Borcu sıfır/negatifse
+sahte tahsilat yazılmaz, kişinin güncel durumu gösterilir. LLM tarafında da
+tutarsız her `payment` aynı şekilde `close_debt` sayılır.
+
+**Ürün/stok sorgusu: tanınır ama DESTEKLENMEZ.** "toplam kaç saman
+satıldı", "ne kadar arpa var", "saman fiyatı", "arpa stoğu" →
+`kind="product_query"` → `ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED`. Defter
+cari hesap tutar; stok tutmaz, fiyat listesi de bağlayıcı değildir
+(kural 4). Niyet yine de tanınır: tanınmasa cümle bir kişi adı ya da bir
+kayıt sanılırdı. Bot açıkça "ürün sorguları henüz yok" der — sessizce
+yanlış cevap vermez. Gerçek ürün/stok raporlaması sonraki iş.
+
+**Prompt bütçesi.** `llm_prompt.py` ~9,5 bin karakter; her yeni örnek
+soğuk model süresinden yenir. Yeni bir kalıp önce regex'e eklenmeye
+çalışılır — regex'in çözdüğü cümle LLM'e hiç gitmez.

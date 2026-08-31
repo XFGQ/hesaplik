@@ -239,15 +239,23 @@ def test_bakiye_sorgusu_ne_kadar_borcu_var():
     assert p.person_name == "furkan"
 
 
-def test_borc_kelimesi_tahsilat_fiiliyle_karisirsa_kural_parser_pes_eder():
+def test_borc_kapanisi_tahsilat_olarak_cozulur():
     # Bug (2026-07-26): "borcunu" bir bakiye anahtar kelimesi olduğu için
     # bu tahsilat cümlesi yanlışlıkla "ahmet yılmaz 20 balya" diye anlamsız
-    # bir isimle sahte bir bakiye sorgusuna dönüşüyordu — kural parser
-    # "çözdüm" sandığı için LLM fallback'e hiç düşmüyordu. Cümlede hem
-    # bakiye kelimesi hem tahsilat fiili varsa artık None dönmeli (LLM'e
-    # bırak), yanlış bir niyet UYDURULMAMALI.
+    # bir isimle sahte bir bakiye sorgusuna dönüşüyordu; ilk çözüm cümleyi
+    # (yavaş) LLM'e devretmekti.
+    #
+    # 2026-08-31 genişletmesi: "borcunu ödedi" düzenli bir kalıptır ve
+    # regex'in kesin çözmesi gerekir (CLAUDE.md > "LLM son çare, regex
+    # birincil"). Anahtar kelime düşürülür, kalan cümle normal tahsilat
+    # akışından geçer — kişi ve tutar doğru ayrılır.
     p = parse("ahmet yılmaz 20 balya borcunu 15000 tl ödedi")
-    assert p is None
+    assert p.kind == "payment"
+    assert p.person_name == "ahmet yılmaz"
+    assert p.qty == Decimal("20")
+    assert p.unit == "balya"
+    assert p.amount == Decimal("15000")
+    assert p.close_debt is False  # tutar SÖYLENMİŞ, bakiyeden türetilmeyecek
 
 
 def test_borc_kelimesi_borc_fiiliyle_karisirsa_kural_parser_pes_eder():
@@ -1547,3 +1555,217 @@ def test_tum_zamanlarin_raporu_hala_genel_rapor():
 
 def test_tum_kisileri_listele_hala_liste():
     assert parse("tüm kişileri listele").kind == "list_all"
+
+
+# --------------------------------------------------------------- 2026-08-31 anlama
+# genişletmesi: yazım toleranslı liste komutları, "borçlandı"/"borcunu ödedi",
+# "kaç para", "{ilçe}den kimler var", ürün/stok sorgusu.
+# CLAUDE.md > "LLM son çare, regex birincil": bu kalıpların hepsi DÜZENLİ,
+# regex'in kesin ve anında çözmesi gerekir — LLM'e hiç gitmemeli.
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "kişler",
+        "ksiler",
+        "kişileer",
+        "kişilerr",
+        "kişleri listele",
+        "kişiler listesi",
+        "kisiler listesi",
+        "kişi listesi",
+        "müşteri listesi",
+        "tüm kişler",
+    ],
+)
+def test_yazim_hatali_kisi_listesi_komutlari(metin):
+    p = parse(metin)
+    assert p.kind == "list_all"
+    assert p.person_name is None
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "ahmet",          # gerçek bir isim — liste komutu SANILMAMALI
+        "duman",
+        "bergama",
+        "kiler",          # kısa gerçek kelime, mesafe 2 ama 6 harften kısa
+        "işler",          # ilk harf farklı ("kişiler" ile karıştırılmamalı)
+    ],
+)
+def test_fuzzy_liste_yanlis_pozitif_yapmaz(metin):
+    p = parse(metin)
+    assert p.kind != "list_all"
+
+
+def test_borclu_listesi_bakiye_sorgusu_sanilmaz():
+    # Eskiden "borçlu" bir bare bakiye anahtar kelimesi olduğu için
+    # "borçlu listesi" -> balance_query(person="listesi") gibi anlamsız bir
+    # sonuç veriyordu.
+    p = parse("borçlu listesi")
+    assert p.kind == "list_debtors"
+
+
+def test_alacakli_listesi():
+    assert parse("alacaklı listesi").kind == "list_creditors"
+
+
+# --------------------------------------------------------------- "borçlandı" = borç
+
+
+def test_borclandi_tutarla_borc_kaydi():
+    p = parse("ali 1000 borçlandı")
+    assert p.kind == "debt"
+    assert p.person_name == "ali"
+    assert p.amount == Decimal("1000")
+
+
+def test_borclandi_urunlu():
+    p = parse("ahmet 20 balya saman borçlandı 5000 tl")
+    assert p.kind == "debt"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("20")
+    assert p.unit == "balya"
+    assert p.product == "saman"
+    assert p.amount == Decimal("5000")
+
+
+# --------------------------------------------------------------- borç kapanışı
+
+
+def test_borcunu_odedi_tahsilat():
+    p = parse("ali borcunu ödedi")
+    assert p.kind == "payment"
+    assert p.person_name == "ali"
+    assert p.amount is None
+    # Tutar söylenmemiş: uydurulmaz, güncel bakiye teklif edilip onaylatılır.
+    assert p.close_debt is True
+
+
+def test_borcunu_kapatti_tahsilat():
+    p = parse("mehmet borcunu kapattı")
+    assert p.kind == "payment"
+    assert p.person_name == "mehmet"
+    assert p.close_debt is True
+
+
+def test_urunlu_borcunu_odedi():
+    p = parse("ahmet 20 saman borcunu ödedi")
+    assert p.kind == "payment"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("20")
+    assert p.product == "saman"
+    assert p.close_debt is True
+
+
+def test_borcunu_odedi_tutar_soylenmisse_close_debt_kapali():
+    p = parse("ahmet borcunu 5000 tl ödedi")
+    assert p.kind == "payment"
+    assert p.amount == Decimal("5000")
+    assert p.close_debt is False
+
+
+def test_borc_kelimesi_borc_fiiliyle_hala_celisir():
+    # Borç kapanışı YALNIZCA tahsilat fiiliyle geçerlidir; borç fiiliyle
+    # birlikte yön çelişir, uydurulmaz (LLM'e bırakılır).
+    assert parse("ahmet borcunu aldı 500 tl") is None
+
+
+def test_silme_fiili_hala_belirsiz_kalir():
+    # "sil" + para/mal bağlamı: borç kapanışı bu ayrımı EZMEMELİ, soru
+    # sorulmalı (CLAUDE.md > "'sil' bağlam ayrımı").
+    p = parse("furkan duman 20 saman borcunu ödedi sil")
+    assert p.kind == "delete_ambiguous"
+    assert p.person_name == "furkan duman"
+
+
+# --------------------------------------------------------------- "kaç para"
+
+
+@pytest.mark.parametrize(
+    "metin,beklenen_isim",
+    [
+        ("mehmet kaç para", "mehmet"),
+        ("furkan duman kaç para", "furkan duman"),
+        ("ahmet kaç lira", "ahmet"),
+        ("ahmet ne kadar", "ahmet"),
+    ],
+)
+def test_kac_para_bakiye_sorgusu(metin, beklenen_isim):
+    p = parse(metin)
+    assert p.kind == "balance_query"
+    assert p.person_name == beklenen_isim
+
+
+def test_kac_para_kayit_cumlesini_bozmaz():
+    # Bir borç fiili varsa bakiye sorgusu SANILMAMALI.
+    p = parse("mehmete kaç para verdim")
+    assert p.kind != "balance_query"
+
+
+# --------------------------------------------------------------- ilçeden kimler var
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "bergamadan kimler var",
+        "bergamadaki kimler",
+        "bergamada kim var",
+        "bergamadan kimler",
+    ],
+)
+def test_ilceden_kimler_var(metin):
+    p = parse(metin)
+    assert p.kind == "list_district"
+    assert p.district == "bergama"
+
+
+def test_ilce_eki_ler_ile_biten_ilce_bozulmaz():
+    # "Ahmetbeyler" ilçe adının KENDİSİ "-ler" ile bitiyor, eki sökülmemeli.
+    p = parse("ahmetbeylerden kimler var")
+    assert p.kind == "list_district"
+    assert p.district == "ahmetbeyler"
+
+
+def test_kimler_var_tek_basina_hala_list_all():
+    # İlçe kelimesi olmadan "kimler var" herkesi listeler, ilçe sorgusu değil.
+    assert parse("kimler var").kind == "list_all"
+
+
+# --------------------------------------------------------------- ürün/stok sorgusu
+# Grup C: defter stok/fiyat TUTMAZ. Niyet yine de tanınır ki bot "bu özellik
+# henüz yok" desin — tanınmasa cümle bir kişi adı ya da bir kayıt sanılırdı.
+
+
+@pytest.mark.parametrize(
+    "metin,beklenen_urun",
+    [
+        ("toplam kaç saman satıldı", "saman"),
+        ("ne kadar arpa var", "arpa"),
+        ("saman fiyatı", "saman"),
+        ("arpa stoğu", "arpa"),
+        ("kaç balya saman satıldı", "saman"),
+    ],
+)
+def test_urun_sorgusu_taninir(metin, beklenen_urun):
+    p = parse(metin)
+    assert p.kind == "product_query"
+    assert p.product == beklenen_urun
+    assert p.person_name is None
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "ahmete toplam 5 balya saman sattım 1000 tl",  # gerçek borç kaydı
+        "ahmet 20 balya saman aldı 1500 tl",
+        "ne kadar borcu var",                          # bakiye sorusu
+        "furkan toplam borç",
+    ],
+)
+def test_urun_sorgusu_kayitlari_ve_bakiyeyi_bozmaz(metin):
+    p = parse(metin)
+    assert p is None or p.kind != "product_query"

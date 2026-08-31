@@ -42,7 +42,9 @@ from app.bot.main import (
     _format_list_messages,
     _format_llm_preview,
     _format_person_card,
+    _format_close_debt_preview,
     _format_person_report_caption,
+    _format_product_query_unsupported,
     _format_product_suggestion,
     _format_record_confirmation,
     _format_search_messages,
@@ -384,6 +386,25 @@ async def _build_fresh_reply(
         payload = _jsonable(_llm_pending_from_resolved(resolved, raw.id, text))
         await web_chat_state.set_pending(session, chat_id, "llm_confirm", payload)
         return ChatMessage(reply=_format_llm_preview(resolved), outcome=outcome.value, buttons=_llm_confirm_buttons()), True
+
+    if outcome == ProcessOutcome.CLOSE_DEBT_CONFIRM:
+        # "ali borcunu ödedi": tutar söylenmemiş, güncel bakiye teklif
+        # ediliyor. Bekleyen kayıt ve butonlar LLM önizlemesiyle AYNI
+        # ("llm_confirm"), yalnızca sorulan cümle farklı.
+        assert result.balance is not None
+        payload = _jsonable(_llm_pending_from_resolved(resolved, raw.id, text))
+        await web_chat_state.set_pending(session, chat_id, "llm_confirm", payload)
+        return (
+            ChatMessage(
+                reply=_format_close_debt_preview(resolved, result.balance),
+                outcome=outcome.value,
+                buttons=_llm_confirm_buttons(),
+            ),
+            True,
+        )
+
+    if outcome == ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED:
+        return ChatMessage(reply=_format_product_query_unsupported(resolved), outcome=outcome.value), False
 
     return await _apply_result(session, chat_id, result, raw_message_id=raw.id, raw_text=text)
 

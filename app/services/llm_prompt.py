@@ -6,11 +6,14 @@ doğrulaması asla LLM'e bırakılmaz — mevcut intent_resolver + ledger
 kuralları (pg_trgm kişi eşleştirme, catalog, Decimal) BİZİM KOD tarafında
 aynen uygulanır. Prompt kolay düzenlenebilsin diye tek bir sabit string.
 
-Prompt KISA tutulur (~5-6 bin karakter): işlemcide soğuk model 60sn+
-sürüyor, uzun prompt bunu daha da ağırlaştırıyor (CLAUDE.md ölçümü: 7829
-karakterlik eski prompt ile soğuk 60sn+, ısınınca 23sn). Ayrıca küçük model
-(qwen2.5:3b) uzun promptta şaşırıyor. Az ama kapsayıcı örnek tercih edilir,
-tekrarlayan açıklama/örnek eklenmez — bir kural iki kez anlatılmaz.
+Prompt olabildiğince KISA tutulur: işlemcide soğuk model 60sn+ sürüyor,
+uzun prompt bunu daha da ağırlaştırıyor (CLAUDE.md ölçümü: 7829 karakterlik
+prompt ile soğuk 60sn+, ısınınca 23sn). Ayrıca küçük model (qwen2.5:3b) uzun
+promptta şaşırıyor. Az ama kapsayıcı örnek tercih edilir, tekrarlayan
+açıklama/örnek eklenmez — bir kural iki kez anlatılmaz. Şu an ~9,5 bin
+karakter; her yeni örnek buranın bütçesinden yenir, önce kalıbın regex'e
+(parser.py) eklenip eklenemeyeceğine bakılır — regex'in çözdüğü cümle LLM'e
+hiç gitmez.
 
 Tek istisna YÖN kuralıdır (debt/payment): yanlış yön parayı ters yazar,
 bu yüzden hem fiil listesi hem karşıt örnek çifti ("sattım"->debt vs
@@ -24,7 +27,7 @@ SYSTEM_PROMPT = """Sen bir cari hesap defteri asistanısın. Türkçe cümleyi
 şu JSON şemasına çevir. SADECE JSON döndür, başka hiçbir metin yazma.
 
 {"kind": "debt"|"payment"|"balance_query"|"total_balance"|"create_person"|
-"list_all"|"list_debtors"|"list_creditors"|"list_district"|null, "person_name": string|null,
+"list_all"|"list_debtors"|"list_creditors"|"list_district"|"product_query"|null, "person_name": string|null,
 "qty": number|null, "unit": string|null, "product": string|null,
 "amount": number|null, "district": string|null,
 "islem": "rapor"|"bilgi_menu"|"iletisim"|null,
@@ -34,15 +37,19 @@ Kurallar:
 - kind: kayıt fiili + TUTAR varsa borç="debt", tahsilat="payment". YÖN
   KRİTİK, fiile bak:
   "debt" = mal/para KARŞIYA gitti, o SANA borçlandı: verdim, SATTIM,
-  borç yazdım, veresiye, çıktı, gönderdim, ve 3. şahıs "aldı" (O aldı).
+  borç yazdım, veresiye, çıktı, gönderdim, BORÇLANDI, ve 3. şahıs "aldı"
+  (O aldı).
   "payment" = para BANA geldi: aldım (BEN aldım), ödedi, tahsil ettim,
   geri verdi, borcunu kapattı.
   "sattım" HER ZAMAN "debt"tir — satıcı malı verdi, alıcı borçlandı;
   ASLA payment değil. "aldım" (ben) = payment ama "aldı" (o) = debt.
   Cümlede "borç/borcu var/borç yaz" geçmesi debt yönünü güçlendirir;
-  ama "borcunu ödedi/kapattı/getirdi" = payment (borç kapanıyor).
-  Tutar/fiil YOKSA ama "borçlu/borcu/bakiyesi ne" gibi soru varsa
-  "balance_query" — amount UYDURMA. İlgisiz cümlede kind:null.
+  ama "borcunu ödedi/kapattı/getirdi" = payment (borç kapanıyor). Tutar
+  SÖYLENMEMİŞSE ("ahmet borcunu ödedi") yine payment, amount=null — tutarı
+  UYDURMA, kod güncel bakiyeyi kullanıcıya onaylatır.
+  Tutar/fiil YOKSA ama "borçlu/borcu/bakiyesi/durumu ne", "kaç para",
+  "ne kadar" gibi soru varsa "balance_query" — amount UYDURMA.
+  İlgisiz cümlede kind:null.
 - Yeni KİŞİ EKLEME isteği (borç/tahsilat YOK, tutar da yok): "{isim} adlı
   kişiyi sisteme kayıt et", "{isim} kişisini ekle", "{isim} deftere ekle",
   "{isim} diye biri açalım" -> kind="create_person", person_name=SADECE
@@ -57,9 +64,14 @@ Kurallar:
   "list_creditors", ilçeye göre="list_district" (district doldurulur). Buraya
   yalnızca kural motorunun ÇÖZEMEDİĞİ (yazım hatası, fazla/eksik boşluk,
   farklı sıralama) cümleler gelir — SEN bunları tolere et: "kişileer",
-  "kişi ler", "kişilerr" gibi bozuk yazımlar da list_all'dır (kelimeyi TANI,
-  isim UYDURMA). "{yer}dan/{yer}den kimler var" -> list_district,
-  district="{yer}" (hal ekini sök: "bergamadan" -> "bergama").
+  "kişi ler", "kişilerr", "kişler", "ksiler", "kişi lsitesi" gibi bozuk
+  yazımlar da list_all'dır (kelimeyi TANI, isim UYDURMA). Bozuk yazılmış bir
+  liste kelimesini ASLA kişi adı sayma. "{yer}dan/{yer}den kimler var" ->
+  list_district, district="{yer}" (hal ekini sök: "bergamadan" -> "bergama").
+- ÜRÜN/STOK/FİYAT sorusu ("toplam kaç saman satıldı", "ne kadar arpa var",
+  "saman fiyatı", "arpa stoğu") -> kind="product_query", product=ürün adı,
+  person_name=null. Bu bir kişi sorgusu ya da kayıt DEĞİLDİR; ürün adını
+  kişi adı sanma. (Karşılığı henüz yok, kullanıcıya kod söyler.)
 - person_name / kisi: METİNDE GEÇTİĞİ HALİYLE, AYNEN yaz. Çekim ekini SÖKME,
   harf ekleme/çıkarma/isim DEĞİŞTİRME yasak — bunu kod yapar. Örnek:
   "mehmedin" -> "mehmedin" (aynen, "mehmet" değil).
@@ -152,6 +164,21 @@ Kurallar:
 "bergamadan kimler var" ->
 {"kind":"list_district","person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":"bergama","islem":null,"tur":null,"kisi":null}
 
+"ali 1000 borçlandı" ->
+{"kind":"debt","person_name":"ali","qty":null,"unit":null,"product":null,"amount":1000,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"ahmet borcunu ödedi" ->
+{"kind":"payment","person_name":"ahmet","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"mehmet kaç para" ->
+{"kind":"balance_query","person_name":"mehmet","qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"kişler" ->
+{"kind":"list_all","person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
+"toplam kaç saman satıldı" ->
+{"kind":"product_query","person_name":null,"qty":null,"unit":null,"product":"saman","amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
+
 "bugün hava çok güzel" ->
 {"kind":null,"person_name":null,"qty":null,"unit":null,"product":null,"amount":null,"district":null,"islem":null,"tur":null,"kisi":null}
 """
@@ -171,7 +198,8 @@ RESPONSE_JSON_SCHEMA = {
             "type": ["string", "null"],
             "enum": [
                 "debt", "payment", "balance_query", "total_balance", "create_person",
-                "list_all", "list_debtors", "list_creditors", "list_district", None,
+                "list_all", "list_debtors", "list_creditors", "list_district",
+                "product_query", None,
             ],
         },
         "person_name": {"type": ["string", "null"]},

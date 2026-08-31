@@ -4,9 +4,11 @@ from decimal import Decimal
 from app.bot.main import (
     _fmt_try,
     _format_balance,
+    _format_close_debt_preview,
     _format_delete_ambiguous,
     _format_list_messages,
     _format_person_card,
+    _format_product_query_unsupported,
     _format_record_confirmation,
     _format_search_messages,
     _format_total_balance,
@@ -311,3 +313,37 @@ def test_format_delete_ambiguous_iki_secenegi_de_anlatir():
     assert "Furkan Duman" in msg
     assert "tahsilat" in msg.lower()
     assert "sil" in msg.lower()
+
+
+# --------------------------------------------------------------- 2026-08-31 anlama
+# genişletmesi: tutarsız borç kapanışı ve desteklenmeyen ürün sorgusu mesajları.
+
+
+def test_format_close_debt_preview_tutari_ve_kisiyi_soyler():
+    # Tutar uydurulmuyor, TEKLİF ediliyor — kullanıcı rakamı görüp onaylasın.
+    resolved = ResolvedIntent(
+        status=ResolutionStatus.READY,
+        kind="payment",
+        person=Person(full_name="Ahmet Yılmaz"),
+        amount=Decimal("15000.00"),
+        close_debt=True,
+    )
+    msg = _format_close_debt_preview(resolved, Balance(person_id=1, balance_try=Decimal("15000.00")))
+    assert "Ahmet Yılmaz'ın" in msg
+    assert "15.000,00 TL" in msg
+    assert msg.endswith("?")  # soru, bildirim değil
+
+
+def test_format_product_query_unsupported_urunu_tekrarlar():
+    # Kullanıcı ne sorduğunun anlaşıldığını görsün, ama yanlış bir cevap almasın.
+    resolved = ResolvedIntent(
+        status=ResolutionStatus.READY, kind="product_query", product_name_raw="saman"
+    )
+    msg = _format_product_query_unsupported(resolved)
+    assert "Saman" in msg
+    assert "henüz yok" in msg
+
+
+def test_format_product_query_unsupported_urunsuz():
+    resolved = ResolvedIntent(status=ResolutionStatus.READY, kind="product_query")
+    assert "henüz yok" in _format_product_query_unsupported(resolved)

@@ -67,6 +67,9 @@ VALID_KINDS = {
     "list_debtors",
     "list_creditors",
     "list_district",
+    # Ürün/stok/fiyat sorgusu — karşılığı HENÜZ YOK, ama tanınması gerekir
+    # ki bot "bu özellik henüz yok" desin, sessizce yanlış bir şey yapmasın.
+    "product_query",
 }
 
 # LLM rapor isteklerini ayrı bir alan çiftiyle ("islem"/"tur") döner (bkz.
@@ -228,14 +231,21 @@ def parsed_intent_from_json(data: dict, raw_text: str | None = None) -> ParsedIn
         # örtüşmüyorsa None dönmesi doğrudur).
         return None
 
+    amount = _to_decimal(data.get("amount"))
     return ParsedIntent(
         kind=kind,
         person_name=person_name,
         qty=_to_decimal(data.get("qty")),
         unit=_clean_str(data.get("unit")),
         product=_clean_str(data.get("product")),
-        amount=_to_decimal(data.get("amount")),
+        amount=amount,
         district=_clean_str(data.get("district")),
+        # Tutarsız bir TAHSİLAT ("ahmet borcunu ödedi") = borç kapanışı:
+        # tutar burada da UYDURULMAZ, kişi çözülünce güncel bakiye teklif
+        # edilip kullanıcıya onaylatılır (bkz. message_processor >
+        # CLOSE_DEBT_CONFIRM). Eskiden bu niyet tutarsız olduğu için
+        # intent_resolver'da sessizce "anlaşılamadı" sayılıyordu.
+        close_debt=kind == "payment" and amount is None,
     )
 
 

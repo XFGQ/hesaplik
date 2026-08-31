@@ -68,8 +68,13 @@ LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
 # "total_balance" da kişisizdir (CLAUDE.md > "Toplam bakiye niyeti"):
 # "toplam borç" defterin TAMAMININ özetidir, belirli bir kişiye bağlanmaz —
 # eskiden "tüm"/"total" kişi adı sanılıp "defterde yok" deniyordu.
+# "product_query" (ürün/stok/fiyat sorgusu) da kişisizdir — üstelik defterin
+# tutmadığı bir bilgi soruluyor, bu yüzden bot "bu özellik henüz yok" der
+# (bkz. message_processor > PRODUCT_QUERY_UNSUPPORTED). Yine de NİYET olarak
+# tanınır: tanınmazsa cümle bir kişi adı ya da bir kayıt sanılabilirdi.
 NO_PERSON_KINDS = LIST_KINDS | {
     "report_menu", "report_general", "report_daily", "search", "total_balance",
+    "product_query",
 }
 # person_contact/info_menu (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
 # SOR") de kişi gerektirir ama tutar gerektirmez, balance_query/
@@ -124,6 +129,9 @@ class ResolvedIntent:
     field_name: str | None = None  # yalnızca kind == "edit_person"
     new_value: str | None = None  # yalnızca kind == "edit_person", NET komutta dolu
     product_suggestion: Product | None = None  # yalnızca status == PRODUCT_NEEDS_CONFIRMATION
+    # Tutarı söylenmemiş borç kapanışı ("ali borcunu ödedi"): tutar burada
+    # UYDURULMAZ, message_processor güncel bakiyeyi teklif edip onaylatır.
+    close_debt: bool = False
 
 
 async def find_person_match(
@@ -225,10 +233,18 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
 
     if intent.kind in NO_PERSON_KINDS:
         return ResolvedIntent(
-            status=ResolutionStatus.READY, kind=intent.kind, district=intent.district, query=intent.query
+            status=ResolutionStatus.READY,
+            kind=intent.kind,
+            district=intent.district,
+            query=intent.query,
+            product_name_raw=intent.product,
         )
 
-    if intent.kind not in NO_AMOUNT_KINDS and intent.amount is None:
+    # Tutarsız bir kayıt niyeti normalde çözülemez sayılır. Tek istisna borç
+    # KAPANIŞIDIR ("ali borcunu ödedi"): niyet net, yalnızca tutar
+    # söylenmemiş — kişi çözüldükten sonra güncel bakiye teklif edilip
+    # kullanıcıya onaylatılır (bkz. message_processor).
+    if intent.kind not in NO_AMOUNT_KINDS and intent.amount is None and not intent.close_debt:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)
 
     person, candidates = await find_person_match(
@@ -250,6 +266,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 amount=intent.amount,
                 field_name=intent.field,
                 new_value=intent.new_value,
+                close_debt=intent.close_debt,
             )
         return ResolvedIntent(
             status=ResolutionStatus.PERSON_NOT_FOUND,
@@ -261,6 +278,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
             amount=intent.amount,
             field_name=intent.field,
             new_value=intent.new_value,
+            close_debt=intent.close_debt,
         )
 
     product = None
@@ -280,6 +298,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 amount=intent.amount,
                 field_name=intent.field,
                 new_value=intent.new_value,
+                close_debt=intent.close_debt,
             )
 
     return ResolvedIntent(
@@ -293,4 +312,5 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         amount=intent.amount,
         field_name=intent.field,
         new_value=intent.new_value,
+        close_debt=intent.close_debt,
     )

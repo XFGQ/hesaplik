@@ -153,3 +153,72 @@ def test_create_person_isimsiz_json_reddedilir():
     # Kişisiz bir "kişi ekle" niyeti anlamsızdır — kod uydurmaz, reddeder.
     data = {"kind": "create_person", "person_name": None}
     assert parsed_intent_from_json(data, "birini ekle") is None
+
+
+# --------------------------------------------------------------- 2026-08-31 anlama
+# genişletmesi: regex'in kaçırdıklarını LLM de doğru anlamalı. Bu kalıpların
+# çoğu artık regex'te çözülüyor (bkz. tests/test_parser.py); prompt'taki
+# örnekler İKİNCİ katman — kullanıcı kalıbı daha da bozuk yazarsa (regex
+# eşiğinin dışında) LLM aynı niyete varmalı, uydurmamalı.
+
+GENISLETME_ORNEKLERI = [
+    ("ali 1000 borçlandı", "debt"),
+    ("ahmet borcunu ödedi", "payment"),
+    ("mehmet kaç para", "balance_query"),
+    ("kişler", "list_all"),
+    ("toplam kaç saman satıldı", "product_query"),
+]
+
+
+@pytest.mark.parametrize("cumle,beklenen_kind", GENISLETME_ORNEKLERI)
+def test_prompt_genisletme_orneklerini_ogretiyor(cumle, beklenen_kind):
+    assert cumle in ORNEKLER, f"prompt'ta örnek eksik: {cumle!r}"
+    assert ORNEKLER[cumle]["kind"] == beklenen_kind
+
+
+def test_prompt_borclandi_kuralda_da_yaziyor():
+    # "borçlandı" bir YÖN kelimesidir (kişi borçlandı = debt); tek örneğe
+    # bırakılmaz, kural metninde de geçmeli.
+    kurallar = SYSTEM_PROMPT.split("Örnekler:")[0]
+    assert "BORÇLANDI" in kurallar or "borçlandı" in kurallar
+
+
+def test_prompt_tutarsiz_borc_kapanisi_amount_uydurmuyor():
+    # "ahmet borcunu ödedi": tutar söylenmemiş. LLM amount UYDURMAMALI —
+    # güncel bakiyeyi kod teklif edip kullanıcıya onaylatır.
+    ornek = ORNEKLER["ahmet borcunu ödedi"]
+    assert ornek["amount"] is None
+
+
+def test_tutarsiz_tahsilat_borc_kapanisi_olarak_isaretlenir():
+    # parsed_intent_from_json, tutarsız bir tahsilatı borç kapanışı sayar
+    # (close_debt) — aksi halde intent_resolver bunu sessizce "anlaşılamadı"
+    # sayardı.
+    intent = parsed_intent_from_json(ORNEKLER["ahmet borcunu ödedi"], "ahmet borcunu ödedi")
+    assert intent is not None
+    assert intent.kind == "payment"
+    assert intent.amount is None
+    assert intent.close_debt is True
+
+
+def test_tutarli_tahsilat_borc_kapanisi_sayilmaz():
+    intent = parsed_intent_from_json(
+        ORNEKLER["mehmet bugün 2000 lira ödedi"], "mehmet bugün 2000 lira ödedi"
+    )
+    assert intent.close_debt is False
+
+
+def test_urun_sorgusu_json_kod_tarafindan_kabul_edilir():
+    # product_query VALID_KINDS'a eklendi mi + kişisiz kabul ediliyor mu?
+    cumle = "toplam kaç saman satıldı"
+    intent = parsed_intent_from_json(ORNEKLER[cumle], cumle)
+    assert intent is not None
+    assert intent.kind == "product_query"
+    assert intent.product == "saman"
+    assert intent.person_name is None
+
+
+def test_prompt_yazim_hatasi_toleransi_kuralda_yaziyor():
+    kurallar = SYSTEM_PROMPT.split("Örnekler:")[0]
+    for kelime in ("kişler", "ksiler"):
+        assert kelime in kurallar

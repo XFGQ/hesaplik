@@ -144,6 +144,7 @@ _COMPLETES_WITHOUT_INPUT = frozenset({
     ProcessOutcome.REPORT_GENERAL,
     ProcessOutcome.REPORT_PERSON,
     ProcessOutcome.PERSON_CONTACT,
+    ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED,
     ProcessOutcome.UNRECOGNIZED,
 })
 
@@ -973,6 +974,31 @@ def _llm_confirm_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+PRODUCT_QUERY_UNSUPPORTED_MESSAGE = (
+    "Ürün sorguları (stok, fiyat, toplam satış) henüz yok. "
+    "Şu an defter kişi bazlı borç, tahsilat ve raporlar tutuyor."
+)
+
+
+def _format_product_query_unsupported(resolved: ResolvedIntent) -> str:
+    """Ürün/stok/fiyat sorgusu (Grup C): niyet ANLAŞILDI ama karşılığı yok.
+    Sessizce yanlış bir cevap vermektense açıkça söylenir — kullanıcı ne
+    sorduğunun anlaşıldığını görsün diye ürün adı da tekrarlanır."""
+    urun = _title_tr(resolved.product_name_raw or "")
+    if urun:
+        return f"{urun}: {PRODUCT_QUERY_UNSUPPORTED_MESSAGE}"
+    return PRODUCT_QUERY_UNSUPPORTED_MESSAGE
+
+
+def _format_close_debt_preview(resolved: ResolvedIntent, balance: Balance) -> str:
+    """Tutarı söylenmemiş borç kapanışı ("ali borcunu ödedi"): tutar
+    uydurulmaz, güncel bakiye TEKLİF edilir ve onaylatılır."""
+    return (
+        f"{_genitive(resolved.person.full_name)} borcu {_fmt_try(balance.balance_try)} TL. "
+        "Tamamı tahsilat olarak yazılsın mı?"
+    )
+
+
 def _format_llm_preview(resolved: ResolvedIntent) -> str:
     kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
     return (
@@ -1365,6 +1391,23 @@ async def _reply_outcome(
         await message.reply_text(
             _format_llm_preview(resolved), reply_markup=_llm_confirm_keyboard()
         )
+        return
+
+    if result.outcome == ProcessOutcome.CLOSE_DEBT_CONFIRM:
+        # "ali borcunu ödedi": tutar söylenmemiş, güncel bakiye teklif
+        # ediliyor. Onay makinesi LLM önizlemesiyle AYNI (aynı chat_data
+        # anahtarı, aynı Evet/Düzelt/İptal callback'leri) — yalnızca sorulan
+        # cümle farklı.
+        assert result.balance is not None
+        context.chat_data["llm_confirm"] = _llm_pending_from_resolved(resolved, raw.id, text)
+        await message.reply_text(
+            _format_close_debt_preview(resolved, result.balance),
+            reply_markup=_llm_confirm_keyboard(),
+        )
+        return
+
+    if result.outcome == ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED:
+        await message.reply_text(_format_product_query_unsupported(resolved))
         return
 
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:

@@ -568,3 +568,43 @@ async def test_coklu_istekte_biri_belirsiz_aday_ile_durur_cevaplaninca_digeri_is
         r2 = await client.post("/api/chat/confirm", json={"action": f"person:pick:{duman.id}"})
         final_outcomes = [m["outcome"] for m in r2.json()["messages"]]
         assert "balance" in final_outcomes
+
+
+# ---------------------------------------------------------------- 2026-08-31 anlama
+# genişletmesi: tutarsız borç kapanışı ve desteklenmeyen ürün sorgusu.
+# Telegram ile aynı beyin, aynı davranış (bkz. tests/test_message_processor.py).
+
+
+async def test_tutarsiz_borc_kapanisi_onay_ister_sonra_kaydeder(
+    client, auth_account, session, ahmet
+):
+    from app.services.ledger import TxMeta, add_debt
+
+    await _login(client, auth_account)
+    await add_debt(
+        session, ahmet.id, [], TxMeta(created_by="test", source=TxSource.WEB),
+        amount_override=Decimal("10000"),
+    )
+
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz borcunu ödedi"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "close_debt_confirm"
+    assert "10.000,00 TL" in msg["reply"]
+    assert [b["action"] for b in msg["buttons"]] == ["llm:yes", "llm:fix", "llm:cancel"]
+    # Onay gelene kadar tahsilat YAZILMAZ.
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 1
+
+    r2 = await client.post("/api/chat/confirm", json={"action": "llm:yes"})
+    assert r2.status_code == 200, r2.text
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 2
+
+
+async def test_urun_sorgusu_desteklenmiyor_mesaji(client, auth_account, session):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ne kadar arpa var"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "product_query_unsupported"
+    assert "Arpa" in msg["reply"]
+    assert "henüz yok" in msg["reply"]

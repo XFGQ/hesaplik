@@ -112,9 +112,17 @@ UNITS = {
 # FİİL ÇEKİMİ zaten yönü kodluyor — "aldı" (3. şahıs, o aldı) = BORÇ ama
 # "aldım/aldık" (1. şahıs, ben aldım) = TAHSİLAT. Bu ayrım kelime bazında
 # net ve LLM'e bırakılamayacak kadar kritik (bkz. "mehmetten 5000 aldım").
-DEBT_WORDS = {"aldı", "verdim", "verdik", "çekti", "sattım", "çıktı", "gitti"}
+DEBT_WORDS = {
+    "aldı", "verdim", "verdik", "çekti", "sattım", "çıktı", "gitti",
+    # "borçlandı" fiilin KENDİSİ yönü kodluyor: kişi borçlandı, yani mal/para
+    # ona gitti ("ali 1000 borçlandı"). Türkçe karakter yazmayan kullanıcılar
+    # için ASCII yazımları da aynı kümede.
+    "borçlandı", "borclandi", "borçlandi", "borclandı",
+}
 PAYMENT_WORDS = {
     "ödedi", "yatırdı", "verdi", "aldım", "aldık", "geldi", "tahsil",
+    # Borç KAPANIŞI da bir tahsilattır ("borcunu kapattı").
+    "kapattı", "kapatti",
 }
 BALANCE_KEYWORDS = {
     "borcu", "borcunu", "hesabı", "hesabını", "bakiyesi", "bakiyesini",
@@ -126,6 +134,36 @@ BALANCE_KEYWORDS = {
 # bakiye" gibi nitelenmiş bare kalıplarda (bkz. BALANCE_KEYWORDS_BARE) isme
 # karışmaması gerekir.
 BALANCE_FILLERS = {"ne", "nedir", "kaç", "kadar", "söyle", "göster", "var", "toplam", "güncel"}
+
+# Borç KAPANIŞI (2026-08-31 anlama genişletmesi): "borcu/borcunu" tek başına
+# bir bakiye anahtar kelimesidir (BALANCE_KEYWORDS) ama yanında bir TAHSİLAT
+# fiili varsa cümle bir sorgu değil, bir KAYITTIR — borç kapanıyor:
+# "ali borcunu ödedi", "ahmet 20 saman borcunu ödedi", "mehmet borcunu
+# kapattı", "ahmet 20 balya borcunu 15000 tl ödedi". Eskiden bu cümleler
+# parse() içindeki "bakiye kelimesi + kayıt fiili" çelişki kontrolüne takılıp
+# None dönüyor, yani her seferinde (yavaş) LLM'e devrediliyordu.
+DEBT_CLOSING_KEYWORDS = {
+    "borcunu", "borcu", "borcunun",
+    "borçlarını", "borclarini", "borçları", "borclari",
+}
+
+
+def _strip_debt_closing(tokens: list[str]) -> list[str] | None:
+    """"{isim} ... borcunu ödedi/kapattı" ise bakiye anahtar kelimesini
+    cümleden düşürür ve kalan tokenları döndürür — böylece geri kalan normal
+    TAHSİLAT akışından ("ödedi" -> payment) olduğu gibi geçer. Kalıp
+    tutmuyorsa None döner ve hiçbir şey değişmez.
+
+    Kasten dar: cümlede bir tahsilat fiili OLMALI ve bir borç fiili (verdim/
+    sattım/aldı...) OLMAMALI. İkisi birden varsa yön çelişir, uydurulmaz —
+    mevcut çelişki kontrolü devreye girer ve cümle LLM'e bırakılır."""
+    token_set = set(tokens)
+    if not (token_set & DEBT_CLOSING_KEYWORDS):
+        return None
+    if not (token_set & PAYMENT_WORDS) or token_set & DEBT_WORDS:
+        return None
+    return [t for t in tokens if t not in DEBT_CLOSING_KEYWORDS]
+
 
 # Bare (çekimsiz) bakiye anahtar kelimeleri (CLAUDE.md > "Bot sorgu anlama —
 # kapsamlı genişletme", Grup 1, madde 1): "furkan bakiye", "furkan durum",
@@ -634,7 +672,9 @@ class ParsedIntent:
                # "total_balance" (defterin tamamının özeti — bkz. _try_total_balance_query) |
                # "archive_person" | "archive_and_recreate" |
                # "delete_ambiguous" (silme mi tahsilat mı belirsiz, sorulur) |
-               # "edit_person"
+               # "edit_person" |
+               # "product_query" (ürün/stok/fiyat sorgusu — HENÜZ DESTEKLENMİYOR,
+               #   tanınır ki bot sessizce yanlış bir şey yapmasın)
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
@@ -644,6 +684,10 @@ class ParsedIntent:
     query: str | None = None  # yalnızca kind == "search" için: aranan tek kelime
     field: str | None = None  # yalnızca kind == "edit_person": full_name/phone/city/district/address/note
     new_value: str | None = None  # yalnızca kind == "edit_person", NET komutta dolu (bkz. _try_edit_person_net)
+    # Borç kapanışı: "ali borcunu ödedi" — tahsilat niyeti NET ama tutar
+    # SÖYLENMEMİŞ. Tutar uydurulmaz; kişi çözülünce güncel bakiye teklif
+    # edilir ve kullanıcıya onaylatılır (bkz. intent_resolver + message_processor).
+    close_debt: bool = False
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -910,15 +954,28 @@ def _try_bare_balance_query(tokens: list[str]) -> ParsedIntent | None:
     return ParsedIntent(kind="balance_query", person_name=person)
 
 
+# Anahtar kelimesiz bakiye soruları: cümlenin SONUNDA duran soru kalıpları.
+# "{isim} ne kadar", "{isim} kaç para", "{isim} kaç lira" — hepsi aynı şeyi
+# sorar (o kişinin bakiyesi). "kaç para" 2026-08-31 genişletmesiyle eklendi.
+BARE_BALANCE_TAILS = (
+    ("ne", "kadar"),
+    ("kaç", "para"),
+    ("kac", "para"),
+    ("kaç", "lira"),
+    ("kaç", "tl"),
+)
+
+
 def _try_bare_ne_kadar_query(tokens: list[str]) -> ParsedIntent | None:
-    """"{isim} ne kadar" (hiçbir bakiye anahtar kelimesi olmadan, sondan "ne
-    kadar" ile biten cümle) -> balance_query. Yalnızca _try_balance_query VE
-    _try_bare_balance_query hiçbir anahtar kelime bulamadığında (ikisi de
-    None döndüğünde) çağrılır — bu yüzden burada ayrıca bir anahtar kelime
-    çelişkisi kontrolüne gerek yok, sadece borç/tahsilat fiili ve sayı
-    güvenlik frenleri (bkz. _try_bare_balance_query ile aynı gerekçe)
-    tekrarlanır."""
-    if len(tokens) < 3 or tokens[-2:] != ["ne", "kadar"]:
+    """"{isim} ne kadar" / "{isim} kaç para" (hiçbir bakiye anahtar kelimesi
+    olmadan, yukarıdaki kalıplardan biriyle biten cümle) -> balance_query.
+    Yalnızca _try_balance_query VE _try_bare_balance_query hiçbir anahtar
+    kelime bulamadığında (ikisi de None döndüğünde) çağrılır — bu yüzden
+    burada ayrıca bir anahtar kelime çelişkisi kontrolüne gerek yok, sadece
+    borç/tahsilat fiili ve sayı güvenlik frenleri (bkz.
+    _try_bare_balance_query ile aynı gerekçe) tekrarlanır."""
+    tail = next((t for t in BARE_BALANCE_TAILS if tuple(tokens[-len(t):]) == t), None)
+    if tail is None or len(tokens) <= len(tail):
         return None
 
     token_set = set(tokens)
@@ -927,7 +984,7 @@ def _try_bare_ne_kadar_query(tokens: list[str]) -> ParsedIntent | None:
     if any(_consume_number(tokens, i) is not None for i in range(len(tokens))):
         return None
 
-    person = " ".join(tokens[:-2]).strip()
+    person = " ".join(tokens[: -len(tail)]).strip()
     if not person:
         return None
     return ParsedIntent(kind="balance_query", person_name=person)
@@ -969,7 +1026,7 @@ def _try_list_query(tokens: list[str]) -> ParsedIntent | None:
         return None
     word = head[0]
 
-    if word in LIST_ALL_WORDS:
+    if _is_list_all_word(word):
         return ParsedIntent(kind="list_all")
     if word in LIST_DEBTORS_WORDS:
         return ParsedIntent(kind="list_debtors")
@@ -995,10 +1052,6 @@ _BARE_LIST_FIXED_PHRASES: dict[tuple[str, ...], str] = {
     ("kisileri", "say"): "list_all",
     ("kimler", "var"): "list_all",
     ("listele",): "list_all",
-    ("müşteri", "listesi"): "list_all",
-    ("musteri", "listesi"): "list_all",
-    ("kişi", "listesi"): "list_all",
-    ("kisi", "listesi"): "list_all",
     ("kim", "borçlu"): "list_debtors",
     ("kim", "borclu"): "list_debtors",
     ("kim", "borçlu", "var"): "list_debtors",
@@ -1012,19 +1065,85 @@ _BARE_LIST_FIXED_PHRASES: dict[tuple[str, ...], str] = {
 }
 
 
+# Yazım toleransı (2026-08-31 anlama genişletmesi): "kişler", "ksiler",
+# "kişileer", "kişilerr" gibi yaygın yanlış yazımlar da bir liste isteğidir —
+# eskiden bunlar tek kelime "arama"ya (search) düşüp "eşleşen kişi yok"
+# cevabı alıyordu. Tam bir yanlış-yazım sözlüğü tutmak yerine küçük bir
+# kanonik listeye karşı Damerau-Levenshtein bakılır (düzenleme
+# tetikleyicileriyle aynı yöntem, bkz. _is_edit_trigger_word).
+#
+# Kasten DAR tutuldu ki gerçek bir isim/ürün liste komutu sanılmasın:
+#   - ilk harf aynı olmalı ("işler" -> "kişiler" eşleşmez),
+#   - uzunluk farkı en fazla 2,
+#   - 2 mesafe yalnızca en az 6 harfli kelimelerde kabul edilir ("kiler"
+#     gibi kısa gerçek kelimeler dışarıda kalır).
+LIST_ALL_CANONICALS = (
+    "kişiler", "kişileri", "kisiler", "kisileri",
+    "insanlar", "insanları", "müşteriler", "müşterileri",
+)
+_LIST_ALL_MIN_LEN = 5
+_LIST_ALL_LEN_GUARD = 2
+_LIST_ALL_FUZZY_MIN_LEN = 6  # mesafe 2 için gereken en kısa kelime
+
+# "{X} listesi" kalıbının tekil biçimleri: "kişi listesi", "müşteri listesi".
+LIST_ALL_SINGULAR_WORDS = {"kişi", "kisi", "müşteri", "musteri", "insan"}
+LIST_SUFFIX_WORDS = {"listesi", "listesini", "listemi"}
+LIST_DEBTORS_SINGULAR = {"borçlu", "borclu"}
+LIST_CREDITORS_SINGULAR = {"alacaklı", "alacakli"}
+
+
+def _is_list_all_word(word: str) -> bool:
+    """"kişiler"/"insanlar"/"müşteriler" ve bunların yaygın yanlış
+    yazımları ("kişler", "ksiler", "kişileer")."""
+    if word in LIST_ALL_WORDS:
+        return True
+    if len(word) < _LIST_ALL_MIN_LEN:
+        return False
+    for canon in LIST_ALL_CANONICALS:
+        if word[0] != canon[0] or abs(len(word) - len(canon)) > _LIST_ALL_LEN_GUARD:
+            continue
+        distance = _damerau_levenshtein(word, canon)
+        if distance <= 1 or (distance == 2 and len(word) >= _LIST_ALL_FUZZY_MIN_LEN):
+            return True
+    return False
+
+
+def _try_list_suffix_query(tokens: list[str]) -> ParsedIntent | None:
+    """"kişi listesi", "kişiler listesi", "müşteri listesi", "borçlu
+    listesi", "alacaklı listesi" -> ilgili liste. Cümle bir LIST_SUFFIX_WORDS
+    üyesiyle BİTMİYORSA hiç denenmez."""
+    if not tokens or tokens[-1] not in LIST_SUFFIX_WORDS:
+        return None
+    head = [t for t in tokens[:-1] if t not in _BARE_LIST_QUALIFIERS]
+    if not head:
+        return None
+    if all(t in LIST_ALL_SINGULAR_WORDS or _is_list_all_word(t) for t in head):
+        return ParsedIntent(kind="list_all")
+    if all(t in LIST_DEBTORS_SINGULAR or t in LIST_DEBTORS_WORDS for t in head):
+        return ParsedIntent(kind="list_debtors")
+    if all(t in LIST_CREDITORS_SINGULAR or t in LIST_CREDITORS_WORDS for t in head):
+        return ParsedIntent(kind="list_creditors")
+    return None
+
+
 def _try_bare_list_query(tokens: list[str]) -> ParsedIntent | None:
     """"kişiler", "tüm kişiler", "sistemdeki kişiler", "kişileri say",
     "kimler var", "listele" (tek), "kişi listesi", "borçlular", "kim
     borçlu", "borçlu olanlar" vb. -> list_all/list_debtors/list_creditors,
-    hiçbir listele/sırala fiili olmadan."""
+    hiçbir listele/sırala fiili olmadan. Yanlış yazılmış liste kelimeleri
+    ("kişler", "ksiler") de buraya düşer (bkz. _is_list_all_word)."""
     fixed_kind = _BARE_LIST_FIXED_PHRASES.get(tuple(tokens))
     if fixed_kind is not None:
         return ParsedIntent(kind=fixed_kind)
 
+    suffix_query = _try_list_suffix_query(tokens)
+    if suffix_query is not None:
+        return suffix_query
+
     remaining = [t for t in tokens if t not in _BARE_LIST_QUALIFIERS]
     if not remaining:
         return None
-    if all(t in LIST_ALL_WORDS for t in remaining):
+    if all(_is_list_all_word(t) for t in remaining):
         return ParsedIntent(kind="list_all")
     if all(t in LIST_DEBTORS_WORDS for t in remaining):
         return ParsedIntent(kind="list_debtors")
@@ -1057,6 +1176,126 @@ def _try_bare_district_query(tokens: list[str]) -> ParsedIntent | None:
     district = _district_from_word(word)
     if district:
         return ParsedIntent(kind="list_district", district=district)
+    return None
+
+
+# İlçeden kişi sorgusu (2026-08-31 anlama genişletmesi): "bergamadan kimler
+# var", "bergamadaki kimler", "bergamada kim var". Ayrılma (-dan/-den/-tan/
+# -ten) ve bulunma (-da/-de/-ta/-te) hâli ekleri YALNIZCA bu kalıp içinde
+# soyulur, _district_from_word'e eklenmez: tek başına bir kelimede ("aydan",
+# "sudan" gibi bir isim/soyad) bunları soymak yanlış ilçe üretirdi. Burada
+# kelimenin hemen ardından "kimler/kim (var)" geldiği için bağlam nettir.
+_DISTRICT_SOURCE_SUFFIXES = ("dan", "den", "tan", "ten", "da", "de", "ta", "te")
+# "kimler var" / "kim var" / "kimler" / "kim" — ilçe kelimesinden SONRA gelen
+# soru kuyruğu. Tek başına "kimler var" zaten list_all'dır (bkz.
+# _BARE_LIST_FIXED_PHRASES); burada mutlaka bir ilçe kelimesi önde olmalı.
+_DISTRICT_PEOPLE_TAILS = (
+    ("kimler", "var"), ("kim", "var"), ("kimler", "kayıtlı"),
+    ("kimler",), ("kim",),
+)
+
+
+def _district_from_source_word(word: str) -> str | None:
+    """"bergamadan"/"bergamada"/"bergamadaki"/"bergamalılar" -> "bergama"."""
+    district = _district_from_word(word)
+    if district:
+        return district
+    for suf in _DISTRICT_SOURCE_SUFFIXES:
+        if word.endswith(suf) and len(word) > len(suf) + 2:
+            return word[: -len(suf)]
+    return None
+
+
+def _try_district_people_query(tokens: list[str]) -> ParsedIntent | None:
+    """"bergamadan kimler var" / "bergamadaki kimler" -> list_district.
+    Kalıp kasten dar: soru kuyruğunun ÖNÜNDE tam olarak TEK kelime (ilçe
+    adı) durmalı, o kelimeden de bir ilçe adı çözülebilmeli."""
+    for tail in _DISTRICT_PEOPLE_TAILS:
+        if len(tokens) != len(tail) + 1 or tuple(tokens[-len(tail):]) != tail:
+            continue
+        district = _district_from_source_word(tokens[0])
+        if district:
+            return ParsedIntent(kind="list_district", district=district)
+    return None
+
+
+# Ürün/stok/fiyat sorgusu (Grup C): "toplam kaç saman satıldı", "ne kadar
+# arpa var", "saman fiyatı", "arpa stoğu". Bu sorular defterin BİLMEDİĞİ
+# şeyleri soruyor — sistem cari hesap tutar, stok/fiyat listesi tutmaz
+# (CLAUDE.md kural 4: fiyat listesi bağlamaz, tutarı kullanıcı yazar).
+# Yine de TANINIR: tanınmazsa cümle bir kişi adı ya da bir kayıt sanılıp
+# sessizce yanlış bir şey yapılabilir. Bot "bu özellik henüz yok" der.
+PRODUCT_QUERY_SOLD_WORDS = {"satıldı", "satildi", "sattım", "sattim", "satılmış", "satilmis"}
+PRODUCT_QUERY_NOUNS = {
+    "fiyat", "fiyatı", "fiyati", "fiyatını", "fiyatini",
+    "stok", "stoğu", "stogu", "stoku", "stokta",
+}
+PRODUCT_QUERY_QUANTITY_WORDS = {"kaç", "kac", "ne", "kadar", "toplam", "toplamda"}
+# Ürün adı yerine geçemeyecek kelimeler: bunlar bir bakiye/liste sorgusunun
+# parçasıdır, ürün DEĞİL ("ne kadar borcu var" ürün sorgusu değildir).
+_PRODUCT_QUERY_EXCLUDED = (
+    BALANCE_KEYWORDS | BALANCE_KEYWORDS_BARE | BALANCE_FILLERS
+    | TOTAL_BALANCE_QUALIFIERS | TOTAL_BALANCE_NOUNS
+    | LIST_ALL_WORDS | LIST_DEBTORS_WORDS | LIST_CREDITORS_WORDS
+    | LIST_ALL_SINGULAR_WORDS | DEBT_CLOSING_KEYWORDS
+    | {"var", "yok", "kimler", "kim"}
+)
+
+
+def _product_query_name(tokens: list[str]) -> str | None:
+    """Ürün adı adayı: dolgu/soru kelimeleri ayıklandıktan sonra kalan.
+    Boş kalırsa ya da elenmiş bir kelimeye denk gelirse None (uydurulmaz)."""
+    rest = [
+        t
+        for t in tokens
+        if t not in PRODUCT_QUERY_SOLD_WORDS
+        and t not in PRODUCT_QUERY_NOUNS
+        and t not in PRODUCT_QUERY_QUANTITY_WORDS
+        and t not in UNITS
+        and t != "var"
+    ]
+    if not rest or set(rest) & _PRODUCT_QUERY_EXCLUDED:
+        return None
+    if any(_consume_number(rest, i) is not None for i in range(len(rest))):
+        return None
+    return " ".join(rest).strip() or None
+
+
+def _try_product_query(tokens: list[str]) -> ParsedIntent | None:
+    """"toplam kaç saman satıldı" / "ne kadar arpa var" / "saman fiyatı" /
+    "arpa stoğu" -> product_query (henüz desteklenmeyen ürün sorgusu).
+
+    Üç dar kalıp; hiçbiri tutmazsa None (cümle normal akışa devam eder):
+      1. bir satış kelimesi ("satıldı") + bir miktar sorusu ("kaç"/"toplam"),
+      2. cümlenin sonunda fiyat/stok kelimesi ("saman fiyatı"),
+      3. "ne kadar {ürün} var" / "kaç {ürün} var".
+    """
+    token_set = set(tokens)
+    # Bir KAYIT cümlesi asla ürün sorgusu sayılmaz: para birimi ya da (satış
+    # kelimesi dışında) bir borç/tahsilat fiili varsa burada işimiz yok.
+    if token_set & CURRENCY_UNITS:
+        return None
+    if token_set & ((DEBT_WORDS | PAYMENT_WORDS) - PRODUCT_QUERY_SOLD_WORDS):
+        return None
+
+    if token_set & PRODUCT_QUERY_SOLD_WORDS and token_set & PRODUCT_QUERY_QUANTITY_WORDS:
+        product = _product_query_name(tokens)
+        if product:
+            return ParsedIntent(kind="product_query", product=product)
+        return None
+
+    if tokens[-1] in PRODUCT_QUERY_NOUNS and len(tokens) > 1:
+        product = _product_query_name(tokens)
+        if product:
+            return ParsedIntent(kind="product_query", product=product)
+        return None
+
+    if tokens[-1] == "var" and token_set & PRODUCT_QUERY_QUANTITY_WORDS:
+        product = _product_query_name(tokens)
+        if product:
+            return ParsedIntent(kind="product_query", product=product)
+        return None
+
     return None
 
 
@@ -1203,7 +1442,9 @@ _SINGLE_WORD_RESERVED = (
     | _NUMBER_WORDS
     | CREATE_PERSON_FILLERS
     | TOTAL_BALANCE_QUALIFIERS | TOTAL_BALANCE_NOUNS
-    | {"rapor", "sistemdeki", "kimler", "yeniden"}
+    | DEBT_CLOSING_KEYWORDS | PRODUCT_QUERY_NOUNS | PRODUCT_QUERY_SOLD_WORDS
+    | LIST_ALL_SINGULAR_WORDS | LIST_SUFFIX_WORDS
+    | {"rapor", "sistemdeki", "kimler", "yeniden", "kim", "para"}
 )
 
 
@@ -1261,6 +1502,13 @@ def parse(raw_text: str) -> ParsedIntent | None:
     bare_district = _try_bare_district_query(tokens)
     if bare_district is not None:
         return bare_district
+
+    # "bergamadan kimler var" / "bergamadaki kimler" — fiilsiz ilçe sorgusunun
+    # soru biçimi. Tek başına "kimler var" zaten yukarıdaki bare liste
+    # kontrolünde list_all olarak yakalanır, buraya düşmez.
+    district_people = _try_district_people_query(tokens)
+    if district_people is not None:
+        return district_people
 
     # Rapor niyetleri en spesifikten en geneline denenir (genel/günlük - ki
     # ikisi de yukarıda bare liste kontrolünden önce zaten denendi - kişi en
@@ -1325,6 +1573,17 @@ def parse(raw_text: str) -> ParsedIntent | None:
     # (aldı/verdim/çekti/ödedi/yatırdı/verdi) varsa bu ikisi çelişir —
     # kural parser'ın basit "sayı/birim/ürün" ayrıştırması böyle karışık
     # bir cümleyi güvenle çözemez, LLM'e bırakılır (None dön).
+    # Borç KAPANIŞI: "ali borcunu ödedi" — "borcunu" burada bir bakiye
+    # sorgusu değil, kapanan borcun kendisidir. Anahtar kelime düşürülür,
+    # kalan cümle normal TAHSİLAT akışından geçer (bkz. _strip_debt_closing).
+    # Aşağıdaki çelişki kontrolünden ÖNCE yapılmalı — yoksa cümle "bakiye
+    # kelimesi + kayıt fiili" sayılıp her seferinde LLM'e devrediliyordu.
+    close_debt = False
+    closing_tokens = _strip_debt_closing(tokens)
+    if closing_tokens is not None:
+        tokens = closing_tokens
+        close_debt = True
+
     token_set = set(tokens)
     if token_set & BALANCE_KEYWORDS and token_set & (DEBT_WORDS | PAYMENT_WORDS):
         return None
@@ -1340,6 +1599,14 @@ def parse(raw_text: str) -> ParsedIntent | None:
     bare_ne_kadar = _try_bare_ne_kadar_query(tokens)
     if bare_ne_kadar is not None:
         return bare_ne_kadar
+
+    # Ürün/stok/fiyat sorgusu (Grup C) — defterin tutmadığı bir bilgi
+    # soruluyor. Tanınır ki bot "bu özellik henüz yok" desin; tanınmasa
+    # cümle bir kişi adı ya da bir kayıt sanılabilirdi. Bakiye
+    # kontrollerinden SONRA denenir ("ne kadar borcu var" ürün sorgusu değil).
+    product_query = _try_product_query(tokens)
+    if product_query is not None:
+        return product_query
 
     # Kind, tutar çıkarılmadan ÖNCE tespit edilir: "borç" hem bir fiil
     # sinyali hem de (bkz. _extract_amount) tutarın bitişiğindeki bir
@@ -1390,4 +1657,7 @@ def parse(raw_text: str) -> ParsedIntent | None:
         unit=unit,
         product=product,
         amount=amount,
+        # Tutar SÖYLENMEMİŞ bir borç kapanışı ("ali borcunu ödedi"): tutar
+        # uydurulmaz, kişi çözülünce güncel bakiye teklif edilip onaylatılır.
+        close_debt=close_debt and amount is None,
     )
