@@ -118,6 +118,42 @@ async def _open_items_map(
 
 
 @dataclass(slots=True)
+class TotalBalance:
+    """Defterin TAMAMININ özeti (CLAUDE.md > "Toplam bakiye niyeti"):
+    "toplam borç" / "tüm bakiye" gibi sorgular tek bir kişiye değil bütün
+    aktif kişilerin bakiyeleri toplamına bakar.
+
+    İşaret yönü ledger ile aynı: bakiye > 0 = kişi SANA borçlu (senin
+    alacağın), bakiye < 0 = sen ona borçlusun. Bu yüzden `toplam_alacak`
+    pozitif bakiyelerin, `toplam_borc` negatif bakiyelerin mutlak
+    toplamıdır — report.GeneralStats ile aynı anlam."""
+
+    kisi_sayisi: int
+    borclu_sayisi: int
+    alacakli_sayisi: int
+    toplam_alacak: Decimal
+    toplam_borc: Decimal
+
+    @property
+    def net(self) -> Decimal:
+        return self.toplam_alacak - self.toplam_borc
+
+
+async def total_balance(session: AsyncSession) -> TotalBalance:
+    """Tüm aktif kişilerin bakiyelerinin özeti. Bakiye yine kolonda
+    tutulmaz, list_persons_with_balance'ın SUM'ından türetilir — tek yerde
+    tek mantık (bot, web sohbeti ve raporlar aynı sayıyı görür)."""
+    rows = await list_persons_with_balance(session, scope="all")
+    return TotalBalance(
+        kisi_sayisi=len(rows),
+        borclu_sayisi=sum(1 for r in rows if r.balance_try > 0),
+        alacakli_sayisi=sum(1 for r in rows if r.balance_try < 0),
+        toplam_alacak=sum((r.balance_try for r in rows if r.balance_try > 0), Decimal("0.00")),
+        toplam_borc=sum((-r.balance_try for r in rows if r.balance_try < 0), Decimal("0.00")),
+    )
+
+
+@dataclass(slots=True)
 class PersonTransactionRow:
     """Bir kişinin tek bir hareketi: bakiye TABLO çıktısı için (CLAUDE.md >
     "Bot sorgu anlama" Grup 1, madde 2). Ledger'daki Transaction'ın Telegram

@@ -61,6 +61,7 @@ VALID_KINDS = {
     "debt",
     "payment",
     "balance_query",
+    "total_balance",
     "create_person",
     "list_all",
     "list_debtors",

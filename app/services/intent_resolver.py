@@ -65,7 +65,12 @@ LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
 # (report_person) kişi çözümü gerektirdiği için burada değil, balance_query
 # gibi NO_AMOUNT_KINDS'te. "search" de kişi gerektirmez — belirli bir kişiye
 # değil, bir arama terimine (query) bağlanır (bkz. queries.search_persons).
-NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily", "search"}
+# "total_balance" da kişisizdir (CLAUDE.md > "Toplam bakiye niyeti"):
+# "toplam borç" defterin TAMAMININ özetidir, belirli bir kişiye bağlanmaz —
+# eskiden "tüm"/"total" kişi adı sanılıp "defterde yok" deniyordu.
+NO_PERSON_KINDS = LIST_KINDS | {
+    "report_menu", "report_general", "report_daily", "search", "total_balance",
+}
 # person_contact/info_menu (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
 # SOR") de kişi gerektirir ama tutar gerektirmez, balance_query/
 # report_person ile aynı kategoride. "create_person" de burada (CLAUDE.md >
@@ -82,10 +87,24 @@ NO_PERSON_KINDS = LIST_KINDS | {"report_menu", "report_general", "report_daily",
 # mesajı + kişi düzenleme — Grup 4") de burada: amaç kişi bilgisini
 # güncellemek, tutar hiç gerekmez; kişi netleşmeden düzenleme yapılmaz ve
 # olmayan biri de "Ekleyeyim mi?" sorusuna düşmez (aynı _QUERY_ONLY_KINDS).
+# "delete_ambiguous" (CLAUDE.md > "'sil' bağlam ayrımı"): silme fiili +
+# para/mal bağlamı içeren cümle — henüz ne tahsilat ne de silme yapılır,
+# yalnızca KİŞİ çözülür ki bot "tahsilat mı, kişiyi silmek mi?" diye
+# sorabilsin. Tutar gerekmez, aynı kişi eşleştirme güvenliğinden geçer.
 NO_AMOUNT_KINDS = {
     "balance_query", "report_person", "person_contact", "info_menu",
     "create_person", "archive_person", "archive_and_recreate", "edit_person",
+    "delete_ambiguous",
 }
+
+# LLM'e isim önerisi SORULMAYAN niyetler (2026-08-31 hız düzeltmesi):
+# create_person'da amaç zaten YENİ bir kişi açmaktır — pg_trgm'in "böyle
+# biri yok" demesi tek başına yeterli ve kesin bir cevaptır. Buluta ayrıca
+# "en yakın kişi kim?" diye sormak (~5 sn) hem gereksiz bekletiyor hem de
+# yeni kişi eklerken alakasız bir adayı gündeme getiriyordu. LLM önerisi
+# yalnızca MEVCUT bir kişiyle işlem yapılırken (borç/tahsilat/bakiye/ekstre)
+# ve isim hiçbir kayda benzemediğinde devreye girer.
+NO_LLM_SUGGESTION_KINDS = {"create_person"}
 
 
 @dataclass(slots=True)
@@ -108,9 +127,13 @@ class ResolvedIntent:
 
 
 async def find_person_match(
-    session: AsyncSession, name_raw: str
+    session: AsyncSession, name_raw: str, *, allow_llm_suggestion: bool = True
 ) -> tuple[Person | None, list[Person]]:
     """(net_eşleşme, adaylar) döner.
+
+    allow_llm_suggestion=False ise pg_trgm hiç aday bulamadığında LLM'e son
+    çare olarak danışılmaz (bkz. NO_LLM_SUGGESTION_KINDS) — sonuç doğrudan
+    "aday yok" olur, hiçbir ağ çağrısı yapılmaz.
 
     net_eşleşme dolu ise doğrudan kullanılabilir (adaylar bu durumda boştur).
     net_eşleşme None ise adaylar listesi kullanıcıya sorulacak seçenekleri
@@ -140,6 +163,8 @@ async def find_person_match(
     )
     rows = (await session.execute(stmt)).all()
     if not rows:
+        if not allow_llm_suggestion:
+            return None, []
         suggestion = await _llm_suggest_person(session, key)
         if suggestion is not None:
             # LLM'in önerisi TEK bir "aday" olarak mevcut NEEDS_CONFIRMATION
@@ -206,7 +231,11 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
     if intent.kind not in NO_AMOUNT_KINDS and intent.amount is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)
 
-    person, candidates = await find_person_match(session, intent.person_name or "")
+    person, candidates = await find_person_match(
+        session,
+        intent.person_name or "",
+        allow_llm_suggestion=intent.kind not in NO_LLM_SUGGESTION_KINDS,
+    )
 
     if person is None:
         if candidates:

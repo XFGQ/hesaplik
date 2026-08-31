@@ -81,6 +81,15 @@ Desteklenen kalıplar (kelime sırası biraz oynayabilir):
               GERÇEKTEN silinmez, arşive taşınır + pasifleştirilir).
             "{isim} sil/sıfırla yeniden oluştur/aç" -> archive_and_recreate
               (arşivle + aynı isimle temiz/bakiyesi sıfır yeni kişi açılır).
+            "{isim} {adet} {ürün} borcunu ödedi sil" (silme fiili + para/mal
+              bağlamı) -> delete_ambiguous: "tahsilat mı, kişiyi silmek mi?"
+              diye SORULUR, sessizce kişi silinmez (bkz.
+              _try_archive_person_query).
+  Toplam bakiye:
+            "tüm bakiye" / "toplam borç" / "toplam alacak" / "genel bakiye" /
+            "sistemdeki toplam borç" / "total borç" / "güncel toplam" ->
+            total_balance (defterin TAMAMININ özeti; "tüm"/"total" artık kişi
+            adı sanılmaz — bkz. _try_total_balance_query).
 """
 
 from __future__ import annotations
@@ -150,6 +159,46 @@ PERSON_CONTACT_KEYWORDS = {
 # istediğini belirtmemiş — bot VARSAYMAZ, üç seçenekli buton sorar
 # (bkz. app/bot/main.py > info_menu akışı).
 INFO_MENU_KEYWORDS = {"bilgi", "bilgisi", "bilgisini", "bilgiler", "bilgileri", "bilgilerini"}
+
+# Toplam/genel bakiye (CLAUDE.md > "Toplam bakiye niyeti", 2026-08-31):
+# "tüm bakiye", "toplam borç", "toplam alacak", "genel bakiye", "sistemdeki
+# toplam borç", "total borç", "güncel toplam" -> bunlar bir KİŞİ sorgusu
+# değil, defterin TAMAMININ özetidir. Eskiden "tüm"/"total" bir kişi adı
+# sanılıp "defterde yok" deniyordu.
+TOTAL_BALANCE_QUALIFIERS = {
+    "tüm", "tum", "bütün", "butun", "toplam", "toplamda", "total",
+    "genel", "sistemdeki", "sistemin", "güncel", "guncel",
+    "herkesin", "hepsinin",
+}
+# "durum"/"durumu" BİLEREK burada YOK: "genel durum"/"herkesin durumu" zaten
+# report_general'dır (genel durum raporu PDF'i) ve o davranış korunur.
+TOTAL_BALANCE_NOUNS = {
+    "bakiye", "bakiyesi", "bakiyeler", "bakiyeleri",
+    "borç", "borc", "borcu", "borçlar", "borclar", "borçları", "borclari",
+    "alacak", "alacağı", "alacagi", "alacaklar", "alacakları", "alacaklari",
+}
+# İsim (noun) hiç geçmese de tek başına anlamlı olan nitelikler: "toplam",
+# "güncel toplam" gibi. "tüm" ya da "genel" tek başına bir şey ifade etmez.
+TOTAL_BALANCE_STANDALONE = {"toplam", "toplamda", "total"}
+TOTAL_BALANCE_FILLERS = BALANCE_FILLERS | {"bana", "lütfen", "lutfen", "ver", "nedir"}
+
+
+def _try_total_balance_query(tokens: list[str]) -> ParsedIntent | None:
+    """"tüm bakiye" / "toplam borç" / "genel bakiye" / "güncel toplam" ->
+    total_balance (defterin tamamının özeti).
+
+    Kasten DAR: cümlenin TAMAMI nitelik/isim/dolgu kelimelerinden oluşmalı.
+    Araya bir kişi adı karışıyorsa ("furkan toplam borç") bu bir kişi
+    sorgusudur, buraya düşmez — mevcut bare bakiye akışına bırakılır."""
+    token_set = set(tokens)
+    if not token_set <= (TOTAL_BALANCE_QUALIFIERS | TOTAL_BALANCE_NOUNS | TOTAL_BALANCE_FILLERS):
+        return None
+    if not token_set & TOTAL_BALANCE_QUALIFIERS:
+        return None
+    if not (token_set & TOTAL_BALANCE_NOUNS or token_set & TOTAL_BALANCE_STANDALONE):
+        return None
+    return ParsedIntent(kind="total_balance")
+
 
 LIST_VERBS = {
     "listele", "sırala", "listeler", "sıralar", "listelesene", "sıralasana",
@@ -323,16 +372,84 @@ ARCHIVE_RECREATE_MARKERS = {"oluştur", "olustur", "aç", "ac"}
 ARCHIVE_FILLERS = ARCHIVE_ACTION_WORDS | ARCHIVE_RECREATE_MARKERS | {"yeniden"}
 
 
+# "sil" HER ZAMAN "kişiyi sil" DEMEK DEĞİLDİR (2026-08-31 düzeltmesi):
+# "furkan duman 20 saman borcunu ödedi sil" cümlesinde asıl niyet
+# TAHSİLAT'tır — kullanıcı kapanan BORCU silmek/kapatmak ister, KİŞİYİ
+# değil. Eskiden bu cümle archive_person'a düşüyor ve üstelik cümlenin
+# tamamı ("furkan duman 20 saman borcunu ödedi") kişi adı sanılıyordu.
+# Artık: bir silme fiiliyle birlikte para/mal bağlamı da varsa niyet
+# BELİRSİZ sayılır (kind="delete_ambiguous") ve bot/web üç butonla sorar
+# ("Tahsilat gir" / "Kişiyi sil" / "İptal"). Yanlış kişi silmek, bir soru
+# sormaktan çok daha pahalıdır. Bağlam yoksa ("furkanı sil") davranış
+# aynen eskisi gibi: doğrudan archive_person.
+_DELETE_MONEY_MARKERS = CURRENCY_UNITS | UNITS | {
+    "borç", "borc", "tahsilat", "parası", "parasını", "ödeme", "odeme",
+}
+# İsim öbeğini bitiren kelimeler: bunlardan biri (ya da bir sayı) görüldüğü
+# anda ad-soyad bitmiştir (bkz. _leading_name). BALANCE_KEYWORDS de dahil —
+# "furkan duman 20 saman borcunu ödedi" içindeki isim "furkan duman"dır.
+_NAME_STOP_WORDS = (
+    DEBT_WORDS | PAYMENT_WORDS | CURRENCY_UNITS | UNITS
+    | BALANCE_KEYWORDS | BALANCE_KEYWORDS_BARE | BALANCE_FILLERS
+    | {"borç", "borc", "tahsilat", "parası", "parasını", "ödeme", "odeme"}
+)
+
+
+def _leading_name(tokens: list[str]) -> str:
+    """Cümlenin BAŞINDAKİ ad-soyad öbeği: ilk sayıya ya da bilinen bir
+    fiil/birim/anahtar kelimeye kadar olan kısım. "furkan duman 20 saman
+    borcunu ödedi" -> "furkan duman". Baştan hiçbir şey toplanamazsa boş
+    string döner (uydurulmaz, çağıran taraf pes eder)."""
+    name: list[str] = []
+    for i, tok in enumerate(tokens):
+        if tok in _NAME_STOP_WORDS or _consume_number(tokens, i) is not None:
+            break
+        name.append(tok)
+    return " ".join(name).strip()
+
+
+def _has_money_context(tokens: list[str]) -> bool:
+    """Cümlede bir borç/tahsilat fiili, para birimi, ölçü birimi, "borç/
+    tahsilat" kelimesi ya da herhangi bir sayı var mı?"""
+    if set(tokens) & (DEBT_WORDS | PAYMENT_WORDS | _DELETE_MONEY_MARKERS):
+        return True
+    return any(_consume_number(tokens, i) is not None for i in range(len(tokens)))
+
+
+def strip_delete_words(raw_text: str) -> str:
+    """Silme fiilini ("sil/kaldır/arşivle/sıfırla" ve "yeniden oluştur")
+    cümleden çıkarır: "furkan duman 20 saman borcunu ödedi sil" ->
+    "furkan duman 20 saman borcunu ödedi". delete_ambiguous sorusunda
+    kullanıcı "Tahsilat gir" derse kalan metin normal akıştan yeniden
+    geçirilir (bkz. app/bot/main.py, app/services/web_chat.py)."""
+    tokens = _split_tokens(normalize(" ".join((raw_text or "").split())))
+    return " ".join(t for t in tokens if t not in ARCHIVE_FILLERS)
+
+
 def _try_archive_person_query(tokens: list[str]) -> ParsedIntent | None:
     """"{isim} sil/kaldır/arşivle/sıfırla" -> archive_person. Aynı cümlede
     "yeniden" + "oluştur"/"aç" de varsa -> archive_and_recreate (arşivle +
-    aynı isimle temiz yeni kişi). Silme fiili yoksa hiç tetiklenmez."""
+    aynı isimle temiz yeni kişi). Silme fiili yoksa hiç tetiklenmez.
+
+    Cümlede para/mal bağlamı da varsa (bkz. _DELETE_MONEY_MARKERS) niyet
+    belirsizdir — archive'a ATLANMAZ, delete_ambiguous dönülür ve kullanıcıya
+    sorulur. İsim bile güvenle çıkarılamıyorsa (baştan bir ad-soyad öbeği
+    yoksa) uydurulmaz: None dönülür ve cümle LLM'e devredilir."""
     token_set = set(tokens)
     if not (token_set & ARCHIVE_ACTION_WORDS):
         return None
 
-    recreate = "yeniden" in token_set and bool(token_set & ARCHIVE_RECREATE_MARKERS)
     person_tokens = [t for t in tokens if t not in ARCHIVE_FILLERS]
+    if not person_tokens:
+        return None
+
+    if _has_money_context(person_tokens):
+        person = _leading_name(person_tokens)
+        if not person:
+            return None
+        return ParsedIntent(kind="delete_ambiguous", person_name=person)
+
+    recreate = "yeniden" in token_set and bool(token_set & ARCHIVE_RECREATE_MARKERS)
     person = " ".join(person_tokens).strip()
     if not person:
         return None
@@ -514,7 +631,10 @@ class ParsedIntent:
                # "list_creditors" | "list_district" | "report_menu" | "report_person" |
                # "report_general" | "report_daily" | "person_contact" | "info_menu" |
                # "search" (tek kelime, Telegram arama gibi — bkz. _try_single_word_search) |
-               # "archive_person" | "archive_and_recreate" | "edit_person"
+               # "total_balance" (defterin tamamının özeti — bkz. _try_total_balance_query) |
+               # "archive_person" | "archive_and_recreate" |
+               # "delete_ambiguous" (silme mi tahsilat mı belirsiz, sorulur) |
+               # "edit_person"
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
@@ -1082,6 +1202,7 @@ _SINGLE_WORD_RESERVED = (
     | set(FIELD_WORDS) | EDIT_ASSIGN_VERBS | set(EDIT_TRIGGER_CANONICALS) | EDIT_MENU_FILLERS
     | _NUMBER_WORDS
     | CREATE_PERSON_FILLERS
+    | TOTAL_BALANCE_QUALIFIERS | TOTAL_BALANCE_NOUNS
     | {"rapor", "sistemdeki", "kimler", "yeniden"}
 )
 
@@ -1107,6 +1228,15 @@ def parse(raw_text: str) -> ParsedIntent | None:
     listing = _try_list_query(tokens)
     if listing is not None:
         return listing
+
+    # Toplam/genel bakiye ("tüm bakiye", "toplam borç") — kişi sorgularından
+    # ve rapor niyetlerinden ÖNCE denenir: "tüm"/"toplam"/"total" aksi halde
+    # bir kişi adı ya da bir dolgu kelimesi sanılıp yanlış niyete düşerdi.
+    # Kalıp kasten dar tutulduğu için ("genel durum" gibi rapor kalıpları
+    # burada eşleşmez) sonraki kontrollerin hiçbirini gölgelemez.
+    total_balance = _try_total_balance_query(tokens)
+    if total_balance is not None:
+        return total_balance
 
     # Rapor genel/günlük niyetleri BARE liste kontrolünden ÖNCE denenir:
     # "müşteriler" artık hem bir bare liste kelimesi (LIST_ALL_WORDS) hem de

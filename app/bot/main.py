@@ -66,6 +66,7 @@ from app.services import (
     llm_provider,
     message_processor,
     message_splitter,
+    parser,
     person_archive,
     person_edit,
     report,
@@ -76,7 +77,12 @@ from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
 from app.services.message_processor import BALANCE_TABLE_LIMIT, ProcessOutcome, ProcessResult
 from app.services.person_edit import PersonEditError
-from app.services.queries import PersonBalanceRow, PersonTransactionRow, list_person_transactions
+from app.services.queries import (
+    PersonBalanceRow,
+    PersonTransactionRow,
+    TotalBalance,
+    list_person_transactions,
+)
 from app.services.telegram_intake import save_raw_message
 
 logger = logging.getLogger(__name__)
@@ -110,9 +116,12 @@ VOICE_ANLASILAMADI_METNI = "Sesi anlayamadım, yazarak gönderir misin?"
 # sorusu kafa karıştırır (CLAUDE.md > "Bot kişi silme = arşivleme — Grup 3").
 # edit_person de aynı sebeple burada (CLAUDE.md > "Silme mesajı + kişi
 # düzenleme — Grup 4"): olmayan birinin bilgisini düzenlemek anlamsız.
+# "delete_ambiguous" de burada (CLAUDE.md > "'sil' bağlam ayrımı"): kişi
+# defterde yoksa "Ekleyeyim mi?" sorulmaz — ortada ne bir tahsilat ne bir
+# silme vardır, yeni kişi açmak anlamsız olurdu.
 _QUERY_ONLY_KINDS = (
     "balance_query", "report_person", "person_contact", "info_menu",
-    "archive_person", "archive_and_recreate", "edit_person",
+    "archive_person", "archive_and_recreate", "edit_person", "delete_ambiguous",
 )
 
 # Tek mesajda birden çok işlem (CLAUDE.md > "Tek mesajda birden çok istek",
@@ -130,6 +139,7 @@ _COMPLETES_WITHOUT_INPUT = frozenset({
     ProcessOutcome.BALANCE,
     ProcessOutcome.LIST,
     ProcessOutcome.SEARCH,
+    ProcessOutcome.TOTAL_BALANCE,
     ProcessOutcome.REPORT_DAILY,
     ProcessOutcome.REPORT_GENERAL,
     ProcessOutcome.REPORT_PERSON,
@@ -457,6 +467,47 @@ def _format_search_messages(term: str | None, rows: list[PersonBalanceRow]) -> l
     return _split_for_telegram(f"{header}\n{body}")
 
 
+def _format_total_balance(total: TotalBalance) -> str:
+    """Defterin TAMAMININ özeti (CLAUDE.md > "Toplam bakiye niyeti"):
+    "toplam borç"/"tüm bakiye" sorularının cevabı. İşaret yönü kişi
+    satırlarıyla aynı — pozitif bakiye kişinin SANA borcu (senin alacağın),
+    negatif bakiye senin ona borcun."""
+    net = total.net
+    if net > 0:
+        net_satir = f"Net: {_fmt_try(net)} TL alacaklısın"
+    elif net < 0:
+        net_satir = f"Net: {_fmt_try(-net)} TL borçlusun"
+    else:
+        net_satir = "Net: hesap sıfır"
+    return (
+        f"📊 Defter toplamı ({total.kisi_sayisi} kişi)\n"
+        f"Toplam alacak: {_fmt_try(total.toplam_alacak)} TL "
+        f"({total.borclu_sayisi} kişi sana borçlu)\n"
+        f"Toplam borç: {_fmt_try(total.toplam_borc)} TL "
+        f"({total.alacakli_sayisi} kişi senden alacaklı)\n"
+        f"{net_satir}"
+    )
+
+
+def _format_delete_ambiguous(person_full_name: str) -> str:
+    """"{isim} ... borcunu ödedi sil" — niyet belirsiz (CLAUDE.md > "'sil'
+    bağlam ayrımı"). ASLA sessizce kişi silme sanılmaz, sorulur."""
+    return (
+        f"{person_full_name} için ne yapayım?\n"
+        "Borcu kapatan bir tahsilat mı girmek istedin, yoksa kişiyi mi silmek?"
+    )
+
+
+def _delete_ambiguous_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton("Tahsilat gir", callback_data="delete:payment")],
+            [InlineKeyboardButton("Kişiyi sil", callback_data="delete:person")],
+            [InlineKeyboardButton("İptal", callback_data="delete:cancel")],
+        ]
+    )
+
+
 def _undo_keyboard(tx_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("↩ Geri al", callback_data=f"undo:{tx_id}")]])
 
@@ -552,6 +603,28 @@ async def _prompt_archive_confirm(session: AsyncSession, reply, context: Context
         "onay_kelimesi": onay,
     }
     await reply(_format_archive_confirm(resolved.person.full_name, bal, onay))
+
+
+async def _prompt_delete_ambiguous(
+    reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent,
+    raw_message_id: int, raw_text: str,
+) -> None:
+    """"sil" + para/mal bağlamı: niyet belirsiz, üç butonla sorulur
+    (CLAUDE.md > "'sil' bağlam ayrımı"). `reply` hem Message.reply_text hem
+    CallbackQuery.edit_message_text olabilir — cümleden mi ("...ödedi sil")
+    yoksa aday seçiminden mi (_finish_pending) gelindiği fark etmez.
+
+    Silme fiili ayıklanmış metin ŞİMDİ saklanır: kullanıcı "Tahsilat gir"
+    derse o metin normal akıştan yeniden geçirilir."""
+    context.chat_data["delete_ambiguous"] = {
+        "person_id": resolved.person.id,
+        "raw_message_id": raw_message_id,
+        "text": parser.strip_delete_words(raw_text),
+    }
+    await reply(
+        _format_delete_ambiguous(resolved.person.full_name),
+        reply_markup=_delete_ambiguous_keyboard(),
+    )
 
 
 # --------------------------------------------------------------- kişi düzenleme
@@ -1241,6 +1314,16 @@ async def _reply_outcome(
             await message.reply_text(msg)
         return
 
+    if result.outcome == ProcessOutcome.TOTAL_BALANCE:
+        assert result.total is not None
+        await message.reply_text(_format_total_balance(result.total))
+        return
+
+    if result.outcome == ProcessOutcome.DELETE_AMBIGUOUS:
+        # Kişi netleşti ama HİÇBİR ŞEY yapılmadı: kullanıcı seçecek.
+        await _prompt_delete_ambiguous(message.reply_text, context, resolved, raw.id, text)
+        return
+
     if result.outcome == ProcessOutcome.REPORT_MENU:
         await message.reply_text(
             "Hangi raporu istersin?", reply_markup=_report_menu_keyboard()
@@ -1447,6 +1530,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         field = data.split(":", 1)[1]
         await _handle_edit_field_pick(query, context, field)
         return
+    if data == "delete:person":
+        await _handle_delete_ambiguous_person(query, context)
+        return
+    if data == "delete:payment":
+        await _handle_delete_ambiguous_payment(query, context)
+        return
+    if data == "delete:cancel":
+        context.chat_data.pop("delete_ambiguous", None)
+        await query.edit_message_text("Tamam, iptal ettim.")
+        await _advance_queue(context, query.message)
+        return
     if data == "product:yes":
         await _handle_product_confirm(query, context, use_suggestion=True)
         return
@@ -1458,6 +1552,51 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await query.edit_message_text("İşlem iptal edildi.")
         await _advance_queue(context, query.message)
         return
+
+
+async def _handle_delete_ambiguous_person(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """"Kişiyi sil" seçildi: normal silme akışına (yazarak onay) girilir —
+    kısayol YOK, onay kelimesi yine istenir (CLAUDE.md > "Yazarak onay her
+    silmede")."""
+    pending = context.chat_data.pop("delete_ambiguous", None)
+    if not pending:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, pending["person_id"])
+        if person is None or not person.is_active:
+            await query.edit_message_text("Kişi bulunamadı.")
+            await _advance_queue(context, query.message)
+            return
+        bal = await balance_of(session, person.id)
+        resolved = ResolvedIntent(
+            status=ResolutionStatus.READY, kind="archive_person", person=person
+        )
+        await _prompt_archive_confirm(session, query.edit_message_text, context, resolved, bal)
+
+
+async def _handle_delete_ambiguous_payment(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """"Tahsilat gir" seçildi: silme fiili ayıklanmış metin ("...borcunu
+    ödedi") NORMAL akıştan (kural parser -> gerekirse LLM) yeniden geçirilir.
+    Böylece ikinci bir mantık yazılmaz; tutar eksikse akış her zamanki
+    "anlamadım" yönlendirmesiyle biter."""
+    pending = context.chat_data.pop("delete_ambiguous", None)
+    if not pending:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    text = pending["text"]
+    async with SessionLocal() as session:
+        raw = await session.get(RawMessage, pending["raw_message_id"])
+        async with typing_action(context.bot, query.message.chat_id):
+            result = await message_processor.process_raw_message(session, raw, text)
+            await session.commit()
+        await _reply_outcome(session, context, result, raw, text, query.message)
+
+    if result.outcome in _COMPLETES_WITHOUT_INPUT:
+        await _advance_queue(context, query.message)
 
 
 async def _handle_undo(query, context: ContextTypes.DEFAULT_TYPE, tx_id: int) -> None:
@@ -1739,6 +1878,12 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     elif result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
         await _prompt_archive_confirm(session, query.edit_message_text, context, resolved, result.balance)
+
+    elif result.outcome == ProcessOutcome.DELETE_AMBIGUOUS:
+        await _prompt_delete_ambiguous(
+            query.edit_message_text, context, resolved,
+            pending["raw_message_id"], pending["raw_text"],
+        )
 
     elif result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
         await _prompt_edit_confirm(query.edit_message_text, context, resolved)

@@ -1124,3 +1124,78 @@ async def test_urun_onerisi_evet_ile_mevcut_uruna_baglanir(session, ahmet):
     tx = await session.get(Transaction, follow_up.transaction_id)
     assert tx.lines[0].product_id == saman.id
     assert (await session.execute(select(func.count(Product.id)))).scalar_one() == 1
+
+
+# --------------------------------------------------------------- toplam bakiye
+# ve "sil" belirsizliği (2026-08-31).
+
+
+async def test_toplam_bakiye_defterin_ozetini_doner(session, ahmet):
+    from app.services.ledger import TxMeta, add_debt, add_payment
+
+    m = TxMeta(created_by="test", source=TxSource.WEB)
+    await add_debt(session, ahmet.id, [], m, amount_override=Decimal("1000"))
+
+    pesin = Person(full_name="Peşin Ödeyen")
+    session.add(pesin)
+    await session.flush()
+    await add_payment(session, pesin.id, Decimal("400"), m)
+
+    text = "toplam borç"
+    raw = await _make_raw(session, text, 501)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.TOTAL_BALANCE
+    assert result.total.toplam_alacak == Decimal("1000.00")
+    assert result.total.toplam_borc == Decimal("400.00")
+    assert result.total.net == Decimal("600.00")
+
+
+async def test_toplam_bakiye_kisi_aramaz(session, monkeypatch):
+    # Kişi hiç yokken de çalışır ve "tüm"/"toplam" kişi adı sanılmaz —
+    # eskiden "defterde yok" deniyordu. LLM'e de hiç gidilmez.
+    fake = _FakeLLMProvider(None)
+    _mock_llm(monkeypatch, fake)
+
+    text = "tüm bakiye"
+    raw = await _make_raw(session, text, 502)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.TOTAL_BALANCE
+    assert result.resolved.person is None
+    assert fake.called is False
+
+
+async def test_borcunu_odedi_sil_kisi_silmeye_atlamaz(session, ahmet):
+    text = "ahmet yılmaz 20 saman borcunu ödedi sil"
+    raw = await _make_raw(session, text, 503)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.DELETE_AMBIGUOUS
+    assert result.resolved.person.id == ahmet.id
+    # HİÇBİR ŞEY yapılmadı: ne kayıt ne arşivleme.
+    assert result.transaction_id is None
+    assert ahmet.is_active is True
+
+
+async def test_net_kisi_silme_hala_arsiv_onayina_gider(session, ahmet):
+    text = "ahmet yılmaz sil"
+    raw = await _make_raw(session, text, 504)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.ARCHIVE_CONFIRM
+    assert result.resolved.kind == "archive_person"
+
+
+async def test_sil_ayiklanan_metin_normal_tahsilat_akisina_girer(session, ahmet):
+    # Kullanıcı "Tahsilat gir" derse bot/web bu metni yeniden işler.
+    from app.services.parser import strip_delete_words
+
+    text = strip_delete_words("ahmet yılmaz 5000 tl ödedi sil")
+    raw = await _make_raw(session, text, 505)
+    result = await message_processor.process_raw_message(session, raw, text)
+
+    assert result.outcome == ProcessOutcome.RECORDED
+    tx = await session.get(Transaction, result.transaction_id)
+    assert tx.kind == TxKind.CREDIT
+    assert tx.amount_try == Decimal("5000.00")

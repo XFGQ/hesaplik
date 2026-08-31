@@ -351,6 +351,123 @@ async def test_kisi_silme_yanlis_kelimeyle_iptal_edilir(client, auth_account, se
     assert ahmet.is_active is True
 
 
+# ---------------------------------------------------------------- yeni kişi hızı
+# (2026-08-31): create_person yolunda LLM'e HİÇ gidilmez — pg_trgm'in "böyle
+# biri yok" demesi yeterli. Eskiden her yeni kişi eklemede buluta bir isim
+# benzerliği sorusu gidiyor ve cevap ~5 sn gecikiyordu.
+
+
+async def test_yeni_kisi_ekleme_llme_hic_gitmez(client, auth_account, session, ahmet, fake_llm):
+    fake_llm.name_match = "Ahmet Yılmaz"
+    await _login(client, auth_account)
+
+    r = await client.post("/api/chat", json={"text": "hayrettin uçar yeni kişi"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "person_not_found"
+    assert "Ekleyeyim mi?" in msg["reply"]
+    assert {b["action"] for b in msg["buttons"]} == {"person:yes", "person:no"}
+    assert fake_llm.chat_json_calls == []
+    assert fake_llm.calls == []
+
+
+# ---------------------------------------------------------------- "sil" belirsizliği
+# (2026-08-31): "sil" geçen her cümle kişi silme değildir — para/mal bağlamı
+# varsa üç butonla SORULUR, sessizce kişi silinmez.
+
+
+async def test_borcunu_odedi_sil_sorar_kisi_silmez(client, auth_account, session, ahmet):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 20 saman borcunu ödedi sil"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "delete_ambiguous"
+    assert {b["action"] for b in msg["buttons"]} == {"delete:payment", "delete:person", "delete:cancel"}
+    await session.refresh(ahmet)
+    assert ahmet.is_active is True
+
+
+async def test_delete_ambiguous_kisiyi_sil_yazarak_onaya_gider(client, auth_account, session, ahmet):
+    await _login(client, auth_account)
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 20 saman borcunu ödedi sil"})
+
+    r = await client.post("/api/chat/confirm", json={"action": "delete:person"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "archive_confirm"
+    assert msg["awaits_text"] is True
+
+    # Kısayol yok: yazarak onay hâlâ şart.
+    await session.refresh(ahmet)
+    assert ahmet.is_active is True
+
+    r2 = await client.post("/api/chat", json={"text": "hesaplık"})
+    assert r2.json()["messages"][0]["reply"] == "Ahmet Yılmaz silindi."
+    await session.refresh(ahmet)
+    assert ahmet.is_active is False
+
+
+async def test_delete_ambiguous_tahsilat_gir_kaydi_olusturur(client, auth_account, session, ahmet):
+    await _login(client, auth_account)
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 5000 tl ödedi sil"})
+
+    r = await client.post("/api/chat/confirm", json={"action": "delete:payment"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "recorded"
+    tx = (await session.execute(select(Transaction))).scalars().one()
+    assert tx.amount_try == Decimal("5000.00")
+    await session.refresh(ahmet)
+    assert ahmet.is_active is True
+
+
+async def test_delete_ambiguous_iptal_hicbir_sey_yapmaz(client, auth_account, session, ahmet):
+    await _login(client, auth_account)
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 5000 tl ödedi sil"})
+
+    r = await client.post("/api/chat/confirm", json={"action": "delete:cancel"})
+    assert r.json()["messages"][0]["outcome"] == "cancelled"
+
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+    await session.refresh(ahmet)
+    assert ahmet.is_active is True
+
+
+async def test_net_kisi_silme_hala_dogrudan_onay_ister(client, auth_account, session, ahmet):
+    # Mevcut davranış bozulmadı: para/mal bağlamı yoksa doğrudan silme onayı.
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz sil"})
+    assert r.json()["messages"][0]["outcome"] == "archive_confirm"
+
+
+# ---------------------------------------------------------------- toplam bakiye
+
+
+async def test_toplam_bakiye_defter_ozetini_doner(client, auth_account, session, ahmet):
+    from app.services.ledger import TxMeta, add_debt
+
+    await _login(client, auth_account)
+    await add_debt(
+        session, ahmet.id, [], TxMeta(created_by="test", source=TxSource.WEB),
+        amount_override=Decimal("1500"),
+    )
+
+    r = await client.post("/api/chat", json={"text": "toplam borç"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "total_balance"
+    assert "1.500,00" in msg["reply"]
+    assert "defterde yok" not in msg["reply"]
+
+
+async def test_tum_bakiye_kisi_adi_sanilmaz(client, auth_account, session, ahmet):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "tüm bakiye"})
+    msg = r.json()["messages"][0]
+
+    assert msg["outcome"] == "total_balance"
+    assert "Tüm" not in msg["reply"]
+
+
 # ---------------------------------------------------------------- rapor / liste / bilgi
 
 async def test_rapor_menu_secim_sonrasi_report_path_doner(client, auth_account, session):

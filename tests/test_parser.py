@@ -1416,3 +1416,134 @@ def test_edit_person_borc_cumlesiyle_karismaz():
 def test_edit_person_archive_ile_karismaz():
     p = parse("furkanı sil")
     assert p.kind == "archive_person"
+
+
+# --------------------------------------------------------------- "sil" bağlam
+# ayrımı (2026-08-31): "sil" geçen her cümle kişi silme DEĞİLDİR. Cümlede
+# para/mal bağlamı da varsa niyet belirsizdir ve sorulur (delete_ambiguous);
+# bağlam yoksa mevcut archive_person davranışı AYNEN korunur.
+
+
+def test_borcunu_odedi_sil_kisi_silme_sayilmaz():
+    p = parse("furkan duman 20 saman borcunu ödedi sil")
+    assert p.kind == "delete_ambiguous"
+
+
+def test_borcunu_odedi_sil_ismi_dogru_ayiklar():
+    # Eskiden cümlenin TAMAMI kişi adı sanılıyordu ("furkan duman 20 saman
+    # borcunu ödedi") — artık yalnızca baştaki ad-soyad alınır.
+    p = parse("furkan duman 20 saman borcunu ödedi sil")
+    assert p.person_name == "furkan duman"
+
+
+def test_tahsilat_fiilli_sil_belirsiz_sayilir():
+    p = parse("mehmet 5000 tl ödedi sil")
+    assert p.kind == "delete_ambiguous"
+    assert p.person_name == "mehmet"
+
+
+def test_borc_fiilli_sil_de_belirsiz_sayilir():
+    p = parse("ahmet 20 balya saman aldı 15000 tl borç sil")
+    assert p.kind == "delete_ambiguous"
+    assert p.person_name == "ahmet"
+
+
+def test_sadece_isim_ve_sil_hala_archive():
+    # Mevcut davranış bozulmamalı: para/mal bağlamı YOKSA doğrudan silme.
+    p = parse("furkanı sil")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkanı"
+
+
+def test_soyadli_sil_hala_archive():
+    p = parse("furkan duman sil")
+    assert p.kind == "archive_person"
+    assert p.person_name == "furkan duman"
+
+
+def test_sil_yeniden_olustur_hala_archive_and_recreate():
+    p = parse("furkanı sil yeniden oluştur")
+    assert p.kind == "archive_and_recreate"
+
+
+def test_hesabini_sil_hala_archive():
+    # "hesabını" bir bakiye kelimesi ama para/mal bağlamı değil — bu cümle
+    # eskiden olduğu gibi kişi silmedir.
+    p = parse("furkanın hesabını sil")
+    assert p.kind == "archive_person"
+
+
+def test_isim_cikarilamayan_sil_cumlesi_llme_birakilir():
+    # Baştan bir ad-soyad öbeği yoksa isim UYDURULMAZ: parser pes eder
+    # (None), cümle LLM'e devredilir.
+    assert parse("20 balya saman 5000 tl ödedi sil") is None
+
+
+def test_sil_olmayan_tahsilat_cumlesi_etkilenmez():
+    p = parse("furkan 5000 ödedi")
+    assert p.kind == "payment"
+    assert p.person_name == "furkan"
+    assert p.amount == Decimal("5000")
+
+
+def test_strip_delete_words_silme_fiilini_ayiklar():
+    from app.services.parser import strip_delete_words
+
+    assert strip_delete_words("furkan duman 20 saman borcunu ödedi sil") == (
+        "furkan duman 20 saman borcunu ödedi"
+    )
+
+
+# --------------------------------------------------------------- toplam bakiye
+# (2026-08-31): "tüm bakiye"/"toplam borç" bir KİŞİ sorgusu değil, defterin
+# tamamının özetidir. Eskiden "tüm"/"total" kişi adı sanılıp "defterde yok"
+# deniyordu.
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "tüm bakiye",
+        "toplam borç",
+        "toplam alacak",
+        "genel bakiye",
+        "sistemdeki toplam borç",
+        "total borç",
+        "güncel toplam",
+        "güncel total borç",
+        "toplam borç ne kadar",
+        "bütün bakiyeler",
+        "toplam",
+    ],
+)
+def test_toplam_bakiye_niyeti(metin):
+    p = parse(metin)
+    assert p.kind == "total_balance"
+    assert p.person_name is None
+
+
+def test_toplam_kelimesi_kisi_adi_sayilmaz():
+    p = parse("tüm bakiye")
+    assert p.person_name is None
+    assert p.query is None
+
+
+def test_kisi_adi_varsa_toplam_degil_kisi_bakiyesi():
+    # "furkan toplam borç" -> tek kişinin bakiyesi ("toplam" burada dolgu).
+    p = parse("furkan toplam borç")
+    assert p.kind == "balance_query"
+    assert p.person_name == "furkan"
+
+
+def test_genel_durum_hala_genel_rapor():
+    # "genel durum" = genel durum RAPORU (PDF) — toplam bakiye niyeti bunu
+    # gölgelememeli.
+    assert parse("genel durum").kind == "report_general"
+
+
+def test_tum_zamanlarin_raporu_hala_genel_rapor():
+    assert parse("tüm zamanların raporu").kind == "report_general"
+
+
+def test_tum_kisileri_listele_hala_liste():
+    assert parse("tüm kişileri listele").kind == "list_all"

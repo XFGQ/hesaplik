@@ -29,9 +29,11 @@ from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_paymen
 from app.services.queries import (
     PersonBalanceRow,
     PersonTransactionRow,
+    TotalBalance,
     list_person_transactions,
     list_persons_with_balance,
     search_persons,
+    total_balance,
 )
 
 log = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ class ProcessOutcome(str, enum.Enum):
     BALANCE = "balance"
     LIST = "list"
     SEARCH = "search"
+    TOTAL_BALANCE = "total_balance"
     REPORT_MENU = "report_menu"
     REPORT_DAILY = "report_daily"
     REPORT_GENERAL = "report_general"
@@ -64,6 +67,7 @@ class ProcessOutcome(str, enum.Enum):
     PERSON_CONTACT = "person_contact"
     INFO_MENU = "info_menu"
     ARCHIVE_CONFIRM = "archive_confirm"
+    DELETE_AMBIGUOUS = "delete_ambiguous"
     EDIT_PERSON_CONFIRM = "edit_person_confirm"
     EDIT_PERSON_MENU = "edit_person_menu"
     PRODUCT_NEEDS_CONFIRMATION = "product_needs_confirmation"
@@ -81,6 +85,7 @@ class ProcessResult:
     balance: Balance | None = None
     balance_before: Balance | None = None
     persons: list[PersonBalanceRow] | None = None
+    total: TotalBalance | None = None  # yalnızca outcome == TOTAL_BALANCE
     transactions: list[PersonTransactionRow] | None = None
     transactions_total: int | None = None
     report_pdf: bytes | None = None
@@ -295,6 +300,13 @@ async def _dispatch(
         rows = await search_persons(session, resolved.query or "")
         return ProcessResult(outcome=ProcessOutcome.SEARCH, resolved=resolved, persons=rows)
 
+    if resolved.kind == "total_balance":
+        # Defterin TAMAMININ özeti (CLAUDE.md > "Toplam bakiye niyeti") —
+        # kişi gerektirmez, salt okunur.
+        return ProcessResult(
+            outcome=ProcessOutcome.TOTAL_BALANCE, resolved=resolved, total=await total_balance(session)
+        )
+
     assert resolved.person is not None
 
     if resolved.kind == "balance_query":
@@ -338,6 +350,13 @@ async def _dispatch(
         #     toplama akışı sonunda BURAYA, yeni oluşturulmuş kişiyle gelinir
         #     (bkz. _complete_new_person): bot "eklendi" der.
         return ProcessResult(outcome=ProcessOutcome.CREATE_PERSON, resolved=resolved)
+
+    if resolved.kind == "delete_ambiguous":
+        # "furkan duman 20 saman borcunu ödedi sil": silme fiili var ama
+        # cümlede para/mal bağlamı da var — niyet belirsiz (CLAUDE.md >
+        # "'sil' bağlam ayrımı"). Kişi netleşti ama HİÇBİR ŞEY yapılmaz:
+        # bot/web "Tahsilat gir / Kişiyi sil / İptal" diye sorar.
+        return ProcessResult(outcome=ProcessOutcome.DELETE_AMBIGUOUS, resolved=resolved)
 
     if resolved.kind in ("archive_person", "archive_and_recreate"):
         # Kişi netleşti (READY) ama HENÜZ arşivlenmedi — gerçek arşivleme
