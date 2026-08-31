@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app import __version__
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
+from app.api.chat import router as chat_router
 from app.api.routes import router
 from app.config import settings
 
@@ -29,6 +30,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(router)
 app.include_router(admin_router)
+app.include_router(chat_router)
 
 
 @app.get("/api/health")

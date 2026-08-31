@@ -112,3 +112,20 @@ export type BackupRunResult = {
   message: string;
   duration_seconds: number;
 };
+
+// ------------------------------------------------------------ web sohbet
+// `action` Telegram botunun callback_data sözlüğüyle AYNI ("person:pick:12",
+// "product:yes", "report:daily", "undo:45" vb.) — bkz. app/services/web_chat.py.
+
+export type ChatButton = { label: string; action: string };
+
+export type ChatMessage = {
+  reply: string;
+  outcome: string;
+  buttons: ChatButton[];
+  awaits_text: boolean;
+  report_path: string | null;
+  data: Record<string, unknown> | null;
+};
+
+export type ChatResponse = { messages: ChatMessage[] };

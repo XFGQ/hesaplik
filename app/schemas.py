@@ -178,3 +178,36 @@ class VllmDesiredOut(BaseModel):
     sızdırmaz."""
 
     desired: str
+
+
+# --------------------------------------------------------------- web sohbet
+# CLAUDE.md > "Web'e chat asistanı ekle": Telegram botunun web karşılığı.
+# `action` alanı, botun callback_data sözlüğüyle AYNI vocabülary'yi kullanır
+# ("person:pick:12", "product:yes", "report:daily", "undo:45" vb.) — hem
+# davranış paritesini belgeler hem test edilebilirliği kolaylaştırır.
+
+
+class ChatIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class ChatConfirmIn(BaseModel):
+    action: str = Field(min_length=1, max_length=80)
+
+
+class ChatButton(BaseModel):
+    label: str
+    action: str
+
+
+class ChatMessage(BaseModel):
+    reply: str
+    outcome: str
+    buttons: list[ChatButton] = []
+    awaits_text: bool = False
+    report_path: str | None = None
+    data: dict | None = None
+
+
+class ChatResponse(BaseModel):
+    messages: list[ChatMessage]
