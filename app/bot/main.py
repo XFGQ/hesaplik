@@ -39,6 +39,7 @@ import time
 from decimal import Decimal
 
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from telegram import (
     BotCommand,
     BotCommandScopeChat,
@@ -513,9 +514,12 @@ def _turkce_buyuk(s: str) -> str:
     return s.replace("i", "İ").upper()
 
 
-async def _archive_onay_kelimesi() -> str:
-    async with SessionLocal() as session:
-        isletme = await report.isletme_adi(session)
+async def _archive_onay_kelimesi(session: AsyncSession) -> str:
+    """Onay kelimesi ÇAĞIRANIN session'ıyla okunur — bu fonksiyon kendi
+    bağlantısını AÇMAZ: web chat (app/services/web_chat.py) kendi
+    session'ında çalışır ve buradan açılacak ikinci bir bağlantı hem
+    tutarsız olur hem de test ortamında yanlış veritabanına gider."""
+    isletme = await report.isletme_adi(session)
     ilk_kelime = (isletme or "Hesaplık").split()[0]
     return _turkce_buyuk(ilk_kelime)
 
@@ -536,12 +540,12 @@ def _format_archive_confirm(person_full_name: str, bal: Balance, onay_kelimesi: 
     )
 
 
-async def _prompt_archive_confirm(reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, bal: Balance) -> None:
+async def _prompt_archive_confirm(session: AsyncSession, reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, bal: Balance) -> None:
     """`reply`, hem Message.reply_text hem CallbackQuery.edit_message_text
     olabilir (ikisi de aynı imzayla metin gönderir) — direkt metinden mi
     ("furkanı sil") yoksa aday seçiminden mi (_finish_pending) geldiği fark
     etmez, onay isteme mantığı tek yerde."""
-    onay = await _archive_onay_kelimesi()
+    onay = await _archive_onay_kelimesi(session)
     context.chat_data["archive_confirm"] = {
         "person_id": resolved.person.id,
         "kind": resolved.kind,
@@ -1036,7 +1040,7 @@ async def _process_text(
             result = await message_processor.process_raw_message(session, raw, piece)
             await session.commit()
 
-        await _reply_outcome(context, result, raw, piece, update.message, is_multi)
+        await _reply_outcome(session, context, result, raw, piece, update.message, is_multi)
 
         # Bu işlem kullanıcıdan onay/seçim bekliyorsa (ör. "hangisi?", ürün
         # önerisi, silme onayı) sıradaki parça OTOMATİK işlenmez — kalan
@@ -1161,6 +1165,7 @@ async def _handle_archive_confirm_text(
 
 
 async def _reply_outcome(
+    session: AsyncSession,
     context: ContextTypes.DEFAULT_TYPE,
     result: ProcessResult,
     raw: RawMessage,
@@ -1211,7 +1216,7 @@ async def _reply_outcome(
 
     if result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
-        await _prompt_archive_confirm(message.reply_text, context, resolved, result.balance)
+        await _prompt_archive_confirm(session, message.reply_text, context, resolved, result.balance)
         return
 
     if result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
@@ -1309,6 +1314,7 @@ async def _reply_outcome(
 
 
 async def _reply_result(
+    session: AsyncSession,
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     result: ProcessResult,
@@ -1316,7 +1322,7 @@ async def _reply_result(
     text: str,
     is_multi: bool = False,
 ) -> None:
-    await _reply_outcome(context, result, raw, text, update.message, is_multi)
+    await _reply_outcome(session, context, result, raw, text, update.message, is_multi)
 
 
 async def _advance_queue(context: ContextTypes.DEFAULT_TYPE, message) -> None:
@@ -1351,7 +1357,7 @@ async def _advance_queue(context: ContextTypes.DEFAULT_TYPE, message) -> None:
             result = await message_processor.process_raw_message(session, raw, piece)
             await session.commit()
 
-        await _reply_outcome(context, result, raw, piece, message, is_multi=True)
+        await _reply_outcome(session, context, result, raw, piece, message, is_multi=True)
 
     if result.outcome in _COMPLETES_WITHOUT_INPUT:
         await _advance_queue(context, message)  # zincirleme devam
@@ -1732,7 +1738,7 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
 
     elif result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         assert result.balance is not None
-        await _prompt_archive_confirm(query.edit_message_text, context, resolved, result.balance)
+        await _prompt_archive_confirm(session, query.edit_message_text, context, resolved, result.balance)
 
     elif result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
         await _prompt_edit_confirm(query.edit_message_text, context, resolved)
@@ -1813,9 +1819,12 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     elif result.outcome == ProcessOutcome.ARCHIVE_CONFIRM:
         # Nadir yol: "+ Yeni kişi ekle" ile arşivleme niyeti için az önce
-        # oluşturulmuş bir kişi üzerinde çalışılıyor demektir.
+        # oluşturulmuş bir kişi üzerinde çalışılıyor demektir. Yukarıdaki
+        # session bu noktada KAPANMIŞ olduğundan (kişi oluşturma commit
+        # edildi) onay kelimesini okumak için kısa ömürlü bir session açılır.
         assert result.balance is not None
-        await _prompt_archive_confirm(msg.reply_text, context, resolved, result.balance)
+        async with SessionLocal() as onay_session:
+            await _prompt_archive_confirm(onay_session, msg.reply_text, context, resolved, result.balance)
 
     elif result.outcome == ProcessOutcome.EDIT_PERSON_CONFIRM:
         # Nadir yol: "+ Yeni kişi ekle" ile düzenleme niyeti için az önce
