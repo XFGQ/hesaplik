@@ -2171,6 +2171,60 @@ input.amount {
   border-bottom-right-radius: 4px;
 }
 
+/* Kullanıcı balonu + solundaki düzenle (kalem) butonu tek satır. Kalem hep
+   görünür (hover'a saklanmaz — dokunmatikte hover yok, 60 yaş okunabilirlik
+   kuralı), ama soluk durur ki balonun önüne geçmesin. */
+.chat-row-user {
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 90%;
+}
+
+.chat-row-user .chat-bubble-user {
+  max-width: none;
+}
+
+.chat-edit {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-faint);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-edit:hover:not(:disabled) {
+  background: var(--card);
+  color: var(--ink);
+}
+
+.chat-edit:disabled {
+  opacity: 0.4;
+}
+
+/* Şu an düzenlenen balon: hangi mesajın düzeltildiği bir bakışta belli olsun. */
+.chat-bubble-editing {
+  outline: 2px solid var(--stamp);
+  outline-offset: 1px;
+}
+
+/* Yerel bilgi satırı ("İptal edildi.") — bot cevabı değil, ortada ve soluk. */
+.chat-bubble-note {
+  align-self: center;
+  background: none;
+  color: var(--ink-soft);
+  font-size: 13px;
+  padding: 2px 8px;
+}
+
 .chat-bubble-assistant {
   align-self: flex-start;
   background: var(--card);
@@ -2248,6 +2302,31 @@ input.amount {
 .chat-send:disabled {
   background: var(--rule-strong);
   color: var(--ink-faint);
+}
+
+/* Durdurma (⏹): süren isteği ya da bekleyen soruyu iptal eder. Gönder
+   butonuyla aynı boy/biçim ama ters kontrast — "bu farklı bir iş" desin. */
+.chat-stop {
+  background: var(--card);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+}
+
+.chat-stop:hover {
+  border-color: var(--stamp);
+  color: var(--stamp);
+}
+
+.chat-edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--rule);
+  background: var(--card);
+  color: var(--ink-soft);
+  font-size: 13px;
 }
 
 @media (min-width: 480px) {

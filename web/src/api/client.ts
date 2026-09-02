@@ -144,9 +144,15 @@ export const api = {
    * olduğuna bakmadan doğrudan indirir (bkz. ChatWidget). */
   openReportPath: (path: string) => openReport(path),
 
-  chat: (text: string) => req<ChatResponse>("/chat", { method: "POST", body: JSON.stringify({ text }) }),
-  chatConfirm: (action: string) =>
-    req<ChatResponse>("/chat/confirm", { method: "POST", body: JSON.stringify({ action }) }),
+  /* signal: durdurma (⏹) butonu süren isteği AbortController ile keser —
+   * bkz. ChatWidget. İptal edilen fetch AbortError fırlatır, ApiError değil. */
+  chat: (text: string, signal?: AbortSignal) =>
+    req<ChatResponse>("/chat", { method: "POST", body: JSON.stringify({ text }), signal }),
+  chatConfirm: (action: string, signal?: AbortSignal) =>
+    req<ChatResponse>("/chat/confirm", { method: "POST", body: JSON.stringify({ action }), signal }),
+  /* Bekleyen soruyu (ve kuyrukta kalanları) sunucuda iptal eder. Gövde yok:
+   * iptal edilecek durum zaten oturumun kendisine ait. */
+  chatCancel: () => req<ChatResponse>("/chat/cancel", { method: "POST" }),
 
   adminLlmStatus: () => req<AdminLLMStatus>("/admin/llm"),
   adminSetLlmPrimary: (llmPrimary: string) =>

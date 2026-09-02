@@ -608,3 +608,86 @@ async def test_urun_sorgusu_desteklenmiyor_mesaji(client, auth_account, session)
     assert msg["outcome"] == "product_query_unsupported"
     assert "Arpa" in msg["reply"]
     assert "henüz yok" in msg["reply"]
+
+
+# ---------------------------------------------------------------- durdurma (⏹)
+# Web sohbetindeki durdurma butonunun sunucu yarısı: bekleyen soru + kuyrukta
+# kalan parçalar iptal edilir, DEFTERE dokunulmaz (CLAUDE.md > "Web chat
+# durdurma ve mesaj düzenleme").
+
+
+async def test_cancel_tokensiz_401(client, auth_account):
+    r = await client.post("/api/chat/cancel")
+    assert r.status_code == 401
+
+
+async def test_cancel_bekleyen_soruyu_temizler(client, auth_account, session):
+    await _login(client, auth_account)
+    session.add_all([Person(full_name="Furkan Duman"), Person(full_name="Furkan Yılmaz")])
+    await session.flush()
+
+    r = await client.post("/api/chat", json={"text": "furkan borcunu söyle"})
+    assert r.json()["messages"][0]["outcome"] == "needs_confirmation"
+
+    r2 = await client.post("/api/chat/cancel")
+    assert r2.status_code == 200
+    assert r2.json()["messages"][0]["outcome"] == "cancelled"
+
+    # Bekleyen soru düştü: sonraki metin bir "cevap" değil, yeni komut sayılır.
+    from app.services import web_chat_state
+
+    pending = await web_chat_state.load(session, AUTH_USERNAME)
+    assert pending.kind is None
+
+
+async def test_cancel_kuyrukta_kalan_parcalari_iptal_eder(client, auth_account, session):
+    await _login(client, auth_account)
+    session.add_all(
+        [Person(full_name="Furkan Duman"), Person(full_name="Furkan Yılmaz"), Person(full_name="Mehmet Demir")]
+    )
+    await session.flush()
+
+    text = "furkan borcunu söyle ve mehmet demir borcunu söyle"
+    r = await client.post("/api/chat", json={"text": text})
+    outcomes = [m["outcome"] for m in r.json()["messages"]]
+
+    await client.post("/api/chat/cancel")
+
+    # Bölünmüş olsun ya da olmasın, kuyrukta hiçbir satır asılı kalmamalı.
+    stuck = (
+        await session.execute(
+            select(func.count(PendingRequest.id)).where(PendingRequest.durum.in_(["beklemede", "isleniyor"]))
+        )
+    ).scalar_one()
+    assert stuck == 0
+    if "needs_confirmation" in outcomes:
+        iptal = (
+            await session.execute(
+                select(func.count(PendingRequest.id)).where(PendingRequest.durum == "iptal")
+            )
+        ).scalar_one()
+        assert iptal >= 1
+
+
+async def test_cancel_bekleyen_yokken_zararsizdir(client, auth_account, session):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat/cancel")
+    assert r.status_code == 200
+    assert r.json()["messages"][0]["outcome"] == "info"
+
+
+async def test_cancel_kaydedilmis_islemi_silmez_undo_penceresini_bozmaz(client, auth_account, session, ahmet):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 500 tl borç yazdım"})
+    assert r.json()["messages"][0]["outcome"] == "recorded"
+    tx_count = (await session.execute(select(func.count(Transaction.id)))).scalar_one()
+
+    await client.post("/api/chat/cancel")
+
+    # Kayıt duruyor ve "Geri al" penceresi hâlâ geçerli (durdurma bekleyen
+    # SORUYU iptal eder, kaydedilmiş işlemi değil).
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == tx_count
+    from app.services import web_chat_state
+
+    pending = await web_chat_state.load(session, AUTH_USERNAME)
+    assert pending.undo is not None
