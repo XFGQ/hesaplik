@@ -33,3 +33,13 @@ async def chat_confirm(
     actor: str = Depends(auth.require_auth),
 ):
     return await web_chat.handle_action(session, actor, body.action)
+
+
+@router.post("/cancel", response_model=ChatResponse)
+async def chat_cancel(
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
+):
+    """Durdurma (⏹) butonu — bekleyen soruyu ve kuyrukta kalanları iptal eder.
+    Gövde almaz: iptal edilecek şey zaten oturumun (actor) kendi durumudur."""
+    return await web_chat.handle_cancel(session, actor)

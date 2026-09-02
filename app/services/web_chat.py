@@ -959,3 +959,35 @@ async def handle_action(session: AsyncSession, chat_id: str, action: str, text: 
         return ChatResponse(messages=await _conclude(session, chat_id, msg, False, durum=request_queue.IPTAL))
 
     return ChatResponse(messages=[ChatMessage(reply="Bu işlem tanınmıyor.", outcome=OUTCOME_UNKNOWN_ACTION)])
+
+
+async def handle_cancel(session: AsyncSession, chat_id: str) -> ChatResponse:
+    """POST /api/chat/cancel — durdurma (⏹) butonunun karşılığı.
+
+    Kullanıcı bir soruya cevap vermek yerine "dur" derse iki şeyin de
+    temizlenmesi gerekir: (1) bekleyen soru (`web_chat_pending` — "hangisi?",
+    "DUMAN yaz", yeni kişi adımları...), (2) kuyrukta o mesajdan kalan diğer
+    parçalar. İkincisi olmazsa bir sonraki komut, iptal edilen batch'in
+    kalanını da sürükler.
+
+    `undo` alanına KASTEN dokunulmaz: "Geri al" son KAYDEDİLMİŞ işlemin 60 sn'lik
+    ayrı penceresidir, bekleyen bir soru değil — durdurma onu iptal etmez.
+    Hiçbir şey kaydedilmez/silinmez; yalnızca "cevap bekliyorum" durumu düşer.
+    """
+    pending = await web_chat_state.load(session, chat_id)
+    had_pending = pending.kind is not None
+    await web_chat_state.clear_pending(session, chat_id)
+
+    stmt = select(PendingRequest).where(
+        PendingRequest.chat_id == chat_id,
+        PendingRequest.durum.in_([request_queue.BEKLEMEDE, request_queue.ISLENIYOR]),
+    )
+    kalanlar = (await session.execute(stmt)).scalars().all()
+    for req in kalanlar:
+        await request_queue.mark(session, req.id, request_queue.IPTAL, sonuc="kullanici_durdurdu")
+
+    if not had_pending and not kalanlar:
+        return ChatResponse(messages=[ChatMessage(reply="Bekleyen bir işlem yok.", outcome=OUTCOME_INFO)])
+    return ChatResponse(
+        messages=[ChatMessage(reply="İptal edildi, yeni komut bekliyorum.", outcome=OUTCOME_CANCELLED)]
+    )
