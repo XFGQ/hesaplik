@@ -13,3 +13,4 @@ web/tsconfig.tsbuildinfo
 web/tsconfig.tsbuildinfo
 .env.prod.test
 whisper/
+*.egg-info/
