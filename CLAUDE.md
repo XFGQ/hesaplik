@@ -841,3 +841,105 @@ yanlış cevap vermez. Gerçek ürün/stok raporlaması sonraki iş.
 **Prompt bütçesi.** `llm_prompt.py` ~9,5 bin karakter; her yeni örnek
 soğuk model süresinden yenir. Yeni bir kalıp önce regex'e eklenmeye
 çalışılır — regex'in çözdüğü cümle LLM'e hiç gitmez.
+
+## Web chat durdurma ve mesaj düzenleme (2026-09-02)
+
+Web sohbeti normal AI arayüzleri gibi davranır: süren/bekleyen işi durdurma
+ve önceki mesajı düzenleyip yeniden gönderme. İş ağırlıklı FRONTEND'dedir
+(`web/src/components/ChatWidget.tsx`); sunucuda tek yeni uç var.
+
+**Durdurma (⏹).** Buton, gönder okunun yerinde ya da yanında durur:
+- İstek sürerken (`sending`) → gönder butonunun YERİNE geçer; `AbortController`
+  ile /api/chat isteğini keser, "İptal edildi." notu yazılır (toast YOK,
+  kullanıcı bilerek durdurdu).
+- Bot bir şey sormuşken (son cevapta buton var ya da `awaits_text`) → gönder
+  butonunun YANINDA durur; gönder erişilebilir kalmalı ki kullanıcı isterse
+  soruyu yazarak da cevaplayabilsin.
+İki durumda da `POST /api/chat/cancel` çağrılır.
+
+**`POST /api/chat/cancel` (JWT korumalı, gövdesiz).** İptal edilecek durum
+zaten oturumun kendisine ait (`actor` = chat_id). Yaptığı iki şey:
+`web_chat_state.clear_pending` + kuyrukta `beklemede`/`isleniyor` kalan
+parçaları `iptal` işaretlemek. İkincisi olmazsa bir sonraki komut, iptal
+edilen batch'in kalanını sürükler. **Deftere dokunmaz** — hiçbir kayıt
+silinmez/arşivlenmez, `undo` (60 sn "Geri al") alanına KASTEN dokunulmaz:
+o, kaydedilmiş bir işlemin ayrı penceresidir, bekleyen bir soru değil.
+
+Bilinen sınır: yoldaki istek sunucuda iptalden SONRA biterse yeni bir
+bekleyen soru bırakabilir; buton yeniden görünür, ikinci basış temizler.
+Sessiz bozulma değil, görünür ve tekrarlanabilir.
+
+**Mesaj düzenleme (kalem).** Her KULLANICI balonunun solunda kalem ikonu
+(hover'a saklanmaz — dokunmatikte hover yok). Tıklayınca metin input'a gelir,
+düzenleme moduna girilir (üstte "Mesaj düzenleniyor" + Vazgeç, Esc de vazgeçer).
+Gönderilince o balon ve ONDAN SONRAKİ TÜM balonlar (botun ona verdiği cevap
+dahil) silinir, düzenlenmiş metin yeniden gönderilir — sohbet oradan yeniden
+başlar. Silinen dalın sunucuda bıraktığı bekleyen soru da `cancel` ile
+düşürülür, yoksa yeni metin o soruya "cevap" sanılır.
+
+## Chat balonu: dışa tıkla küçült + hatırlatma animasyonu (2026-09-03)
+
+**Boşluğa tıkla → küçült.** Panel açıkken panelin DIŞINA (`pointerdown`,
+`document` üzerinde) tıklamak paneli küçültür; başlıktaki ✕ de kalır. İkisi
+de yalnızca `open`'ı false yapar: `bubbles` ChatWidget'ta yaşadığı ve bileşen
+Layout'ta monte kaldığı için geçmiş KORUNUR, balona basınca aynı sohbet
+geri gelir. Sunucudaki bekleyen soru da düşürülmez — küçültmek "iptal"
+değildir, iptal ⏹ butonudur. Panelin içi (girdi, teyit butonları, mesajlar)
+asla küçültmez. Dinleyici `pointerdown`da (click değil) ki tıklanan öğe
+kaybolsa bile hedef hâlâ panelin içinde sayılsın. Dar ekranda panel zaten tam
+ekran olduğu için "dış" yoktur, davranış değişmez. Arka planda karartma
+(backdrop) YOK: uygulama panel açıkken de kullanılabilir kalır.
+
+**Balonun hatırlatma animasyonu.** Panel KAPALIYKEN sağ alttaki balon
+~10 saniyede bir 1,4 saniyelik kısa bir hareket yapar (hafif zıplama +
+%4 büyüme). Oturumda BİR KEZ, ilk açılıştan 2,5 sn sonra biraz daha belirgin
+hâli oynar (halka + %8). Panel açıkken animasyon yok. İpucu balonu ("yardım
+lazım mı?") kasten eklenmedi — 60 yaş kullanıcı için hareket az ve sade
+olmalı. `prefers-reduced-motion` açıksa index.css'in genel kuralı tüm
+animasyonları kapatır.
+
+Zamanlayıcı ve "dışarısı mı?" kararı bileşenden ayrı: `web/src/lib/
+chatNudge.ts` (süre sabitleri burada, CSS'teki 1,4 sn ile aynı olmalı).
+Böylece DOM'suz test edilir: `just web-test` → `node --test` (Node kendi
+koşucusu, ek npm bağımlılığı yok; `*.test.ts` tsconfig'de hariç tutulur).
+
+## Mobil düzen: çekmece panel + çakışmayan balon (2026-09-03)
+
+Masaüstü tasarımı dar ekranda bozuluyordu: 230px'lik sol panel telefonda
+tüm ekranı yiyordu ve sohbet balonu "Kişi ekle" butonunun üstüne biniyordu.
+Eşik **720px** — zaten tablo/defter satırı ayrımının kullandığı eşik, ikinci
+bir kırılma noktası açılmadı. Masaüstü (≥720px) HİÇ değişmedi; her şey
+`@media (max-width: 719px)` bloğunda.
+
+**Sol panel mobilde çekmece.** Varsayılan gizli (`visibility: hidden` +
+`translateX(-100%)`, display:none DEĞİL — kayma animasyonu bozulmasın ve
+kapalıyken sekme sırasına girmesin). Üstte yapışkan bir şerit (`.mobile-bar`,
+56px): solda ☰ (48px dokunma alanı), yanında işletme adı. ☰ paneli soldan
+kaydırarak açar; arka plan karartılır. Kapatma: ☰'ye tekrar basmak,
+karartıya tıklamak, paneldeki ✕, Esc, ya da menüden bir yere gitmek.
+Kural bileşende değil `web/src/lib/sideDrawer.ts`'te (`nextDrawerState`):
+yalnızca ☰ AÇAR, diğer her olay kapatır — DOM'suz test edilir
+(`just web-test`). Panel üstüne binen bir katman (fixed), içerik kaymaz.
+PersonDetail'in kendi yapışkan başlığı mobil barın altına yapışır
+(`.side-main .bar { top: 56px }`).
+
+**Karartma sohbet balonunun da üstünde** (z-index: karartma 160, çekmece 170,
+sohbet 150). Menü açıkken ekranın tek işi menüdür; balona denk gelen yere
+dokunmak menüyü kapatır, yanlışlıkla sohbet açmaz.
+
+**Sohbet balonu artık alt eylem barının ÜSTÜNDE.** `bottom: 88px` — alttaki
+tam genişlik buton ("Kişi ekle" / "Borç ekle + Tahsilat ekle") 56px yüksek
+ve 20px yukarıda durur, 12px net boşluk kalır. Bu yalnızca mobil sorunu
+değildi: 720–1260px arası masaüstünde de biniyordu. ≥1280px'te bar ortalanıp
+sağda yer açıldığı için balon eski köşesine (16px) iner.
+
+**Sohbet paneli mobilde tam ekran.** Yüzen panele geçiş eşiği 480px'ten
+720px'e çekildi: 360px'lik telefonda 380px'lik yüzen panel okunmuyordu.
+Tam ekranda "dışarısı" olmadığı için dışa-tıkla küçültme mobilde doğal
+olarak devre dışı; ✕ ile kapatılır (geçmiş yine korunur).
+
+**Okunabilirlik (60 yaş).** Dar ekranda 13px'lik yardımcı metinler
+(`.row-sub`, `.muted`, `.chip`, `.hint`) 14px'e, sohbet balonu 15px'e
+çıkar; metrik kartları çekmecede alt alta durur (yatay kaydırma yok);
+kişi defteri başlığındaki butonlar sığmazsa alt satıra taşar (isim
+kırpılmaz). Dokunma hedefleri `--tap` (52px) ve ☰ için 48px.
