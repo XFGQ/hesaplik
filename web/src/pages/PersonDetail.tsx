@@ -10,6 +10,7 @@ import EditTxModal from "../components/EditTxModal";
 import PaymentModal from "../components/PaymentModal";
 import PersonModal from "../components/PersonModal";
 import RowMenu from "../components/RowMenu";
+import { ActionBarMain } from "../lib/actionBar";
 import {
   balanceLabel,
   balanceTone,
@@ -83,8 +84,14 @@ export default function PersonDetail() {
   return (
     <div className="page">
       <div className="bar">
-        <button className="back" onClick={() => nav("/")}>
-          ← Defter
+        {/* Geri: barın SOL ucunda, çerçeveli ve büyük (min 52px dokunma
+            alanı). Eskiden kenarlıksız küçük bir yazıydı ve hemen yanındaki
+            tıklanabilir kişi adına/PDF butonuna yanlışlıkla basılıyordu. */}
+        <button className="back" onClick={() => nav("/")} aria-label="Deftere dön">
+          <span className="back-arrow" aria-hidden="true">
+            ←
+          </span>
+          Defter
         </button>
         <h1 style={{ cursor: "pointer" }} onClick={() => setModal("edit")}>
           {p?.full_name ?? "Kişi"}
@@ -193,14 +200,16 @@ export default function PersonDetail() {
         )}
       </div>
 
-      <div className="fab-row">
-        <button className="fab-borc" onClick={() => setModal("debt")}>
-          Borç ekle
-        </button>
-        <button className="fab-tahsilat" onClick={() => setModal("payment")}>
-          Tahsilat ekle
-        </button>
-      </div>
+      <ActionBarMain>
+        <div className="fab-row">
+          <button className="fab-borc" onClick={() => setModal("debt")}>
+            Borç ekle
+          </button>
+          <button className="fab-tahsilat" onClick={() => setModal("payment")}>
+            Tahsilat ekle
+          </button>
+        </div>
+      </ActionBarMain>
 
       {modal === "debt" && p && (
         <DebtModal personId={personId} personName={p.full_name} onClose={() => setModal(null)} />

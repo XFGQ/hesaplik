@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 
 import { api } from "../api/client";
 import type { ChatButton, ChatMessage } from "../api/types";
+import { ActionBarSide } from "../lib/actionBar";
 import type { NudgeKind } from "../lib/chatNudge";
 import { isOutsideClick, startNudgeCycle } from "../lib/chatNudge";
 import { useToast } from "../lib/toast";
@@ -239,15 +240,21 @@ export default function ChatWidget() {
     else send(input);
   }
 
+  /* Balon artık serbest yüzen bir buton değil, alt eylem barının SAĞ
+   * yuvasında duruyor: "Kişi ekle"nin üstüne binmiyor, yanında duruyor.
+   * Boyu (56px kare) değişmez; solundaki buton esner. Panel açıkken yuva
+   * boşalır ama CSS'te yeri ayrılmıştır (.action-bar-side), bar zıplamaz. */
   if (!open) {
     return (
-      <button
-        className={`chat-fab${nudge === "none" ? "" : ` chat-fab-${nudge}`}`}
-        onClick={() => setOpen(true)}
-        aria-label="Sohbeti aç"
-      >
-        💬
-      </button>
+      <ActionBarSide>
+        <button
+          className={`chat-fab${nudge === "none" ? "" : ` chat-fab-${nudge}`}`}
+          onClick={() => setOpen(true)}
+          aria-label="Sohbeti aç"
+        >
+          💬
+        </button>
+      </ActionBarSide>
     );
   }
 

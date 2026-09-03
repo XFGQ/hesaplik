@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../api/client";
+import { ActionBarProvider } from "../lib/actionBar";
 import { clearToken } from "../lib/auth";
 import { hhmm, money } from "../lib/format";
 import type { DrawerEvent } from "../lib/sideDrawer";
@@ -37,6 +38,11 @@ export default function Layout() {
    * açılır. Masaüstünde bu state hiçbir şeye karışmaz — oradaki panel
    * CSS'te sabit yan panel olarak kalır (bkz. index.css > mobil çekmece). */
   const [menuOpen, setMenuOpen] = useState(false);
+  /* Alt eylem barının iki yuvası. Sayfalar (People/PersonDetail) ve
+   * ChatWidget butonlarını buraya portal'lar — bkz. lib/actionBar.tsx. */
+  const [barMain, setBarMain] = useState<HTMLElement | null>(null);
+  const [barSide, setBarSide] = useState<HTMLElement | null>(null);
+  const barSlots = useMemo(() => ({ main: barMain, side: barSide }), [barMain, barSide]);
 
   /* Menüyü açan/kapatan tek kapı: kural sideDrawer.ts'te, orada test edilir. */
   function drawer(event: DrawerEvent) {
@@ -198,12 +204,24 @@ export default function Layout() {
         </button>
       </aside>
 
-      <div className="side-main">
-        <Outlet />
-      </div>
+      <ActionBarProvider value={barSlots}>
+        <div className="side-main">
+          <Outlet />
+        </div>
 
-      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
-      <ChatWidget />
+        {/* Alt eylem barı: OPAK ve sabit. Sayfa kaydırılınca içerik barın
+            ARKASINDAN geçmez — .side-main'in alt boşluğu (--bar-space) tam
+            bar yüksekliği kadardır, son satır barın hemen üstünde biter. */}
+        <div className="action-bar">
+          <div className="action-bar-inner">
+            <div className="action-bar-main" ref={setBarMain} />
+            <div className="action-bar-side" ref={setBarSide} />
+          </div>
+        </div>
+
+        {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+        <ChatWidget />
+      </ActionBarProvider>
     </div>
   );
 }

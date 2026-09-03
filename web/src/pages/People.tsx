@@ -7,6 +7,7 @@ import type { PersonRow } from "../api/types";
 import DeletePersonModal from "../components/DeletePersonModal";
 import PersonModal from "../components/PersonModal";
 import RowMenu from "../components/RowMenu";
+import { ActionBarMain } from "../lib/actionBar";
 import { balanceLabel, balanceTone, itemsSummary, shortDate, signedMoney } from "../lib/format";
 
 export default function People() {
@@ -111,9 +112,13 @@ export default function People() {
         ))}
       </ul>
 
-      <button className="fab" onClick={() => setShowNew(true)}>
-        Kişi ekle
-      </button>
+      {/* Buton alt eylem barının SOL yuvasına çizilir (sağda sohbet balonu
+          durur). Bar Layout'ta, opak ve sabit — bkz. lib/actionBar.tsx. */}
+      <ActionBarMain>
+        <button className="fab" onClick={() => setShowNew(true)}>
+          Kişi ekle
+        </button>
+      </ActionBarMain>
 
       {showNew && <PersonModal onClose={() => setShowNew(false)} />}
       {editingPerson && (
