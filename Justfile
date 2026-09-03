@@ -16,6 +16,10 @@ web:
 test: db
     .venv/bin/pytest -q
 
+# Arayuz testleri (Node'un kendi kosucusu, ek bagimlilik yok)
+web-test:
+    cd web && node --test "src/**/*.test.ts"
+
 # Lint
 lint:
     .venv/bin/ruff check app tests

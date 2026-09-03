@@ -3,6 +3,8 @@ import type { FormEvent } from "react";
 
 import { api } from "../api/client";
 import type { ChatButton, ChatMessage } from "../api/types";
+import type { NudgeKind } from "../lib/chatNudge";
+import { isOutsideClick, startNudgeCycle } from "../lib/chatNudge";
 import { useToast } from "../lib/toast";
 
 type Bubble = {
@@ -56,7 +58,12 @@ function PencilIcon() {
  * Durdurma (⏹) ve mesaj düzenleme ağırlıklı olarak burada, frontend'de yaşar
  * (CLAUDE.md > "Web chat durdurma ve mesaj düzenleme"); sunucuda yalnızca
  * /api/chat/cancel var — o da bekleyen soruyu ve kuyrukta kalan parçaları
- * düşürür, deftere dokunmaz. */
+ * düşürür, deftere dokunmaz.
+ *
+ * Küçültmenin iki yolu var: başlıktaki ✕ ve panelin DIŞINA (boşluğa) tıklama.
+ * İkisi de yalnızca `open`'ı false yapar — `bubbles` bu bileşende yaşadığı ve
+ * bileşen Layout'ta monte kaldığı için geçmiş silinmez, sunucudaki bekleyen
+ * soru da düşürülmez (küçültmek "iptal" değildir; iptal ⏹ butonudur). */
 export default function ChatWidget() {
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -69,13 +76,50 @@ export default function ChatWidget() {
   const [pendingConfirm, setPendingConfirm] = useState(false);
   /* Düzenlenen KULLANICI balonunun id'si; null ise normal gönderme modu. */
   const [editingId, setEditingId] = useState<number | null>(null);
+  /* Panel kapalıyken balonun kısa hatırlatma animasyonu; "intro" oturumda bir
+   * kez (biraz daha belirgin), sonrası "soft". */
+  const [nudge, setNudge] = useState<NudgeKind>("none");
+  const introDoneRef = useRef(false);
   const listRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (open) listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [bubbles, open]);
+
+  /* Boşluğa tıkla → küçült. Dinleyici `pointerdown`da: tıklanan öğe cevap
+   * verirken (menü kapanması gibi) DOM'dan düşse bile hedef hâlâ paneldedir.
+   * Paneli açan tıklama bu dinleyiciden ÖNCE bittiği için panel anında geri
+   * kapanmaz. */
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (isOutsideClick(panelRef.current, e.target)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  /* Hatırlatma yalnızca panel KAPALIYKEN döner; açılınca durur ve sıfırlanır
+   * (açık panelin yanında kıpırdayan bir buton rahatsız eder). */
+  useEffect(() => {
+    if (open) {
+      setNudge("none");
+      return;
+    }
+    /* "Bir kez" işareti animasyon GERÇEKTEN oynayınca konur, zamanlayıcı
+     * kurulunca değil: StrictMode geliştirmede efekti iki kez kurar, kurulumda
+     * işaretlesek belirgin ilk hareket hiç görünmezdi. */
+    return startNudgeCycle(
+      (kind) => {
+        if (kind === "intro") introDoneRef.current = true;
+        setNudge(kind);
+      },
+      { intro: !introDoneRef.current },
+    );
+  }, [open]);
 
   function appendAssistant(messages: ChatMessage[]) {
     setBubbles((prev) => [
@@ -197,14 +241,18 @@ export default function ChatWidget() {
 
   if (!open) {
     return (
-      <button className="chat-fab" onClick={() => setOpen(true)} aria-label="Sohbeti aç">
+      <button
+        className={`chat-fab${nudge === "none" ? "" : ` chat-fab-${nudge}`}`}
+        onClick={() => setOpen(true)}
+        aria-label="Sohbeti aç"
+      >
         💬
       </button>
     );
   }
 
   return (
-    <div className="chat-panel" role="complementary" aria-label="Sohbet asistanı">
+    <div className="chat-panel" role="complementary" aria-label="Sohbet asistanı" ref={panelRef}>
       <div className="chat-panel-bar">
         <h2>Asistan</h2>
         <button className="chat-panel-min" onClick={() => setOpen(false)} aria-label="Küçült">

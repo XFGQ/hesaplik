@@ -309,6 +309,35 @@ tbody tr:hover {
   padding: var(--pad);
 }
 
+/* Panel başlığı ile mobil ✕ aynı satırda; ✕ yalnızca dar ekranda görünür. */
+.side-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.side-head-text {
+  min-width: 0;
+}
+
+.side-close {
+  display: none;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 44px;
+  min-height: 0;
+  margin: -8px -8px 0 0;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  border-radius: 12px;
+  color: var(--ink-soft);
+  font-size: 18px;
+  line-height: 1;
+}
+
 .side-title {
   margin: 0;
   font-size: 16px;
@@ -491,6 +520,168 @@ tbody tr:hover {
     width: auto;
     max-width: 868px;
     margin: 0 auto;
+  }
+}
+
+/* ------------------------------------------- mobil: üst bar + çekmece panel
+
+   Dar ekranda 230px'lik yan panel ekranın tamamını yerdi; bu yüzden <720px'te
+   panel VARSAYILAN GİZLİ bir çekmecedir: soldaki ☰ ile soldan kayarak açılır,
+   arkası karartılır, karartıya/✕/Esc ile kapanır (kural: lib/sideDrawer.ts).
+   Panel her sayfada yine erişilebilir (CLAUDE.md > "Kalıcı düzen"), sadece
+   yer kaplamaz. Bu bloğun hiçbiri masaüstünde geçerli değil — oradaki sabit
+   yan panel aynen kalır. */
+
+.mobile-bar {
+  display: none;
+}
+
+@media (max-width: 719px) {
+  .mobile-bar {
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 56px;
+    padding: 0 12px 0 4px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  /* 48px dokunma alanı (min 44 kuralının üstünde) — parmakla ıskalanmasın. */
+  .menu-toggle {
+    flex: 0 0 auto;
+    width: 48px;
+    height: 48px;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    background: none;
+    border: 0;
+    border-radius: 12px;
+    color: var(--ink);
+  }
+
+  .menu-toggle:active {
+    background: var(--card);
+  }
+
+  .mobile-bar-title {
+    min-width: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Sayfaların kendi yapışkan başlığı (PersonDetail) mobil barın ALTINA
+     yapışsın, üstüne binmesin. */
+  .side-main .bar {
+    top: 56px;
+  }
+
+  /* Karartma sohbet balonunun (z-index 150) da ÜSTÜNDE: menü açıkken ekranın
+     tek işi menüdür, oraya dokunmak menüyü kapatır. */
+  .side-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 160;
+    background: rgb(0 0 0 / 45%);
+  }
+
+  .side-panel {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 170;
+    width: min(288px, 86vw);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding-top: max(var(--pad), env(safe-area-inset-top));
+    padding-bottom: max(var(--pad), env(safe-area-inset-bottom));
+    border-bottom: 0;
+    border-right: 1px solid var(--rule);
+    box-shadow: 0 0 40px rgb(0 0 0 / 45%);
+    /* Kapalıyken görünmez VE odaklanılamaz (visibility, display:none'ın
+       aksine kayma animasyonunu bozmaz). */
+    visibility: hidden;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease, visibility 0.2s;
+  }
+
+  .side-panel-open {
+    visibility: visible;
+    transform: none;
+  }
+
+  .side-close {
+    display: flex;
+  }
+
+  /* Çekmece dikey bir sütun: metrikler yan yana sıkışmaz, alt alta durur. */
+  .metrics {
+    flex-direction: column;
+    overflow-x: visible;
+  }
+
+  .metric-card {
+    min-width: 0;
+  }
+
+  .metric-value {
+    font-size: 17px;
+  }
+
+  .side-actions {
+    margin-top: auto;
+    padding-top: 16px;
+    flex-wrap: wrap;
+  }
+
+  .side-updated {
+    width: 100%;
+  }
+
+  /* -------- okunabilirlik (60 yaş): dar ekranda küçük yazı bırakmayız */
+
+  .row-sub,
+  .muted,
+  .chip,
+  .hint {
+    font-size: 14px;
+  }
+
+  .chat-bubble {
+    font-size: 15px;
+  }
+
+  /* Kişi defterinin başlığı: 4 öğe tek satıra sığmaz, alt satıra taşsın —
+     isim kırpılmaktansa butonlar aşağı insin. */
+  .bar {
+    flex-wrap: wrap;
+    gap: 8px 12px;
+  }
+
+  .bar h1 {
+    flex: 1 1 60%;
+  }
+
+  .balance-amount {
+    font-size: 30px;
+  }
+
+  /* 100vh + 56px'lik mobil bar = gereksiz kaydırma; sayfa barın altında
+     kalan yeri doldursun. */
+  .page {
+    min-height: calc(100vh - 56px);
   }
 }
 
@@ -2080,10 +2271,14 @@ input.amount {
    buton görünümü. z-index toast'ın (100) üstünde kalır ki panel açıkken
    bildirimler görünmez olmasın. */
 
+/* Konum: sağ altta ama alttaki tam genişlik eylem barının ("Kişi ekle",
+   "Borç ekle / Tahsilat ekle") ÜSTÜNDE — o bar 56px yüksekliğinde ve 20px
+   yukarıda durur, 88px net boşluk bırakır. Çok geniş ekranda (≥1280px) bar
+   ortalanıp sağda yer açıldığı için balon köşesine iner. */
 .chat-fab {
   position: fixed;
   right: 16px;
-  bottom: calc(16px + env(safe-area-inset-bottom));
+  bottom: calc(88px + env(safe-area-inset-bottom));
   z-index: 150;
   width: 56px;
   height: 56px;
@@ -2096,6 +2291,69 @@ input.amount {
   align-items: center;
   justify-content: center;
   box-shadow: 0 6px 20px rgb(22 24 29 / 25%);
+}
+
+@media (min-width: 1280px) {
+  .chat-fab {
+    bottom: calc(16px + env(safe-area-inset-bottom));
+  }
+}
+
+/* "Burada bir asistan var" hatırlatması: panel KAPALIYKEN ~10 saniyede bir
+   1,4 saniyelik kısa hareket (zamanlayıcı: web/src/lib/chatNudge.ts). Hareket
+   kasten küçük — 60 yaş kullanıcı için göz yormayacak kadar, ama kenarda
+   duran bir butonu fark ettirecek kadar. Süreler CSS ile chatNudge.ts'te
+   aynı olmalı. prefers-reduced-motion açıksa dosyanın üstündeki genel kural
+   tüm animasyonları zaten kapatır. */
+.chat-fab-soft {
+  animation: chat-fab-hatirlat 1.4s ease-in-out;
+}
+
+/* Oturumda bir kez, ilk açılışta: aynı hareketin biraz daha belirgin hâli +
+   yumuşak bir halka. Kullanıcı butonun varlığını bir kere net görsün. */
+.chat-fab-intro {
+  animation: chat-fab-hatirlat-ilk 1.4s ease-in-out;
+}
+
+@keyframes chat-fab-hatirlat {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+
+  25% {
+    transform: translateY(-5px) scale(1.04);
+  }
+
+  50% {
+    transform: translateY(0) scale(1);
+  }
+
+  70% {
+    transform: translateY(-2px) scale(1.02);
+  }
+}
+
+@keyframes chat-fab-hatirlat-ilk {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 6px 20px rgb(22 24 29 / 25%);
+  }
+
+  25% {
+    transform: translateY(-8px) scale(1.08);
+    box-shadow: 0 10px 26px rgb(22 24 29 / 32%), 0 0 0 8px var(--stamp-bg);
+  }
+
+  55% {
+    transform: translateY(0) scale(1);
+    box-shadow: 0 6px 20px rgb(22 24 29 / 25%), 0 0 0 4px var(--stamp-bg);
+  }
+
+  75% {
+    transform: translateY(-3px) scale(1.03);
+  }
 }
 
 .chat-panel {
@@ -2329,7 +2587,9 @@ input.amount {
   font-size: 13px;
 }
 
-@media (min-width: 480px) {
+/* Dar ekranda panel TAM EKRAN kalır: 360px'lik telefonda yüzen dar bir
+   panel okunmaz. Masaüstü eşiğinden (720px) itibaren sağ altta yüzer. */
+@media (min-width: 720px) {
   .chat-panel {
     inset: auto 16px calc(16px + env(safe-area-inset-bottom)) auto;
     top: 16px;

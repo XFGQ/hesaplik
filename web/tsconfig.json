@@ -15,5 +15,8 @@
     "noEmit": true,
     "types": ["vite/client"]
   },
-  "include": ["src", "vite.config.ts"]
+  "include": ["src", "vite.config.ts"],
+  /* Test dosyaları Node'un kendi koşucusuyla çalışır (node --test src/lib/...);
+     tip denetimine girmezler, node:test tipleri kurulu değil. */
+  "exclude": ["src/**/*.test.ts"]
 }
