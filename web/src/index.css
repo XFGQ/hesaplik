@@ -34,6 +34,14 @@
   --tap: 52px;
   --pad: 16px;
 
+  /* Alt eylem barın (.action-bar) TAM yüksekliği: 1px üst çizgi + 12px +
+     56px sohbet balonu + 12px. İçeriğin alt boşluğu (--bar-space) bu değerden
+     türer ki liste barın ARKASINA kaymasın, tam üstünde bitsin — 1px'i unutmak
+     son satırı barın kenarlığına sokuyor. Dar ekranda bar alçalır (dosya
+     sonundaki mobil blok). */
+  --bar-h: 81px;
+  --bar-space: calc(var(--bar-h) + env(safe-area-inset-bottom));
+
   color-scheme: dark;
 }
 
@@ -108,7 +116,6 @@ button {
 
 .app {
   min-height: 100%;
-  padding-bottom: calc(88px + env(safe-area-inset-bottom));
 }
 
 /* PersonDetail gibi tek sütun sayfalar okunabilirlik için dar kalır.
@@ -116,7 +123,7 @@ button {
 .page {
   max-width: 760px;
   margin: 0 auto;
-  min-height: 100vh;
+  min-height: calc(100vh - var(--bar-space));
   display: flex;
   flex-direction: column;
 }
@@ -127,14 +134,17 @@ button {
   z-index: 10;
   background: var(--paper);
   border-bottom: 1px solid var(--rule);
-  padding: 12px var(--pad);
+  padding: 10px var(--pad);
   display: flex;
   align-items: center;
-  gap: 12px;
+  /* Geri butonu ile tıklanabilir kişi adı/PDF arasında net boşluk: bunlar
+     farklı işlevler, parmak birini isterken diğerine denk gelmesin. */
+  gap: 8px 14px;
 }
 
 .bar h1 {
   margin: 0;
+  padding: 6px 0;
   font-size: 19px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -144,14 +154,39 @@ button {
   text-overflow: ellipsis;
 }
 
+/* Geri ("← Defter"): standart sol üst konum, ama artık kenarlıksız 15px'lik
+   bir yazı değil — çerçeveli, min 52px yüksekliğinde bir tuş. Hem masaüstü
+   hem mobilde aynı boyda: kullanıcı ona basmaya çalışırken yanındaki kişi
+   adına ya da "Ekstre (PDF)" bağlantısına deniyordu. */
 .back {
-  background: none;
-  border: 0;
-  padding: 8px;
-  margin: -8px;
-  color: var(--ink-soft);
-  font-size: 15px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: var(--tap);
+  margin: 0 4px 0 0;
+  padding: 0 16px;
+  background: var(--card);
+  border: 1px solid var(--rule-strong);
+  border-radius: 12px;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 500;
   white-space: nowrap;
+}
+
+.back:hover {
+  border-color: var(--stamp);
+  color: var(--stamp);
+}
+
+.back:active {
+  background: var(--panel);
+}
+
+.back-arrow {
+  font-size: 19px;
+  line-height: 1;
 }
 
 .pad {
@@ -324,8 +359,8 @@ tbody tr:hover {
 .side-close {
   display: none;
   flex: 0 0 auto;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 48px;
   min-height: 0;
   margin: -8px -8px 0 0;
   align-items: center;
@@ -355,11 +390,12 @@ tbody tr:hover {
 }
 
 .side-back {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   margin-top: 14px;
-  padding: 10px 12px;
-  min-height: 0;
+  padding: 8px 12px;
+  min-height: 48px;
   background: var(--card);
   border: 1px solid var(--rule);
   border-radius: 10px;
@@ -438,8 +474,8 @@ tbody tr:hover {
 
 .side-icon-btn {
   flex: 0 0 auto;
-  width: 40px;
-  height: 40px;
+  width: 48px;
+  height: 48px;
   min-height: 0;
   display: flex;
   align-items: center;
@@ -457,8 +493,12 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+/* Alt boşluk = tam bar yüksekliği: listenin son satırı barın ARKASINA
+   girmez, hemen üstünde tam görünür (HCI: kesik içerik "daha var mı?"
+   sorusu doğurur). */
 .side-main {
   min-width: 0;
+  padding-bottom: var(--bar-space);
 }
 
 @media (min-width: 720px) {
@@ -502,25 +542,58 @@ tbody tr:hover {
     min-width: 0;
   }
 
-  /* Sol panel 230px sabit; fab bu yüzden tüm viewport'a değil yalnızca
-     .side-main'in kapladığı alana göre ortalanır, panele binmesin. */
-  .side-main .fab {
+  /* Sol panel 230px sabit; alt bar bu yüzden viewport'un tamamını değil
+     yalnızca .side-main'in alanını kaplar, panelin üstüne binmez. */
+  .action-bar {
     left: 230px;
-    right: 0;
-    transform: none;
-    width: auto;
-    max-width: 868px;
-    margin: 0 auto;
   }
+}
 
-  .side-main .fab-row {
-    left: 230px;
-    right: 0;
-    transform: none;
-    width: auto;
-    max-width: 868px;
-    margin: 0 auto;
-  }
+/* ------------------------------------------------- alt eylem barı (sabit)
+
+   Tek OPAK şerit. Eskiden her sayfa kendi yüzen butonunu çiziyordu; liste
+   kaydırılınca kişi isimleri butonun altından geçip görünüyordu ve sohbet
+   balonu "Kişi ekle"nin üstüne biniyordu. Şimdi: bar zeminle aynı ton
+   değil (--panel), üstünde çizgi + yukarı vuran gölge var, arkasından
+   HİÇBİR ŞEY görünmez; içerik ise --bar-space kadar alt boşlukla tam barın
+   üstünde biter (bkz. .side-main). */
+
+.action-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 150;
+  background: var(--panel);
+  border-top: 1px solid var(--rule-strong);
+  box-shadow: 0 -6px 20px rgb(0 0 0 / 22%);
+  padding: 12px var(--pad);
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+}
+
+.action-bar-inner {
+  display: flex;
+  align-items: center;
+  /* İki farklı işlevli buton arasındaki boşluk kasıtlı: yanlış tıklamayı
+     önleyecek kadar geniş, aynı bara ait olduklarını gösterecek kadar dar. */
+  gap: 12px;
+  width: 100%;
+  max-width: 868px;
+  margin: 0 auto;
+}
+
+/* Sayfanın birincil eylemi: kalan genişliği doldurur. */
+.action-bar-main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Sohbet balonu: kendi boyunu korur (56px kare), esnemez. Panel açıkken
+   yuva boşalır ama yeri ayrılı kalır — bar zıplamasın. */
+.action-bar-side {
+  flex: 0 0 56px;
+  display: flex;
+  justify-content: flex-end;
 }
 
 /* ------------------------------------------- mobil: üst bar + çekmece panel
@@ -664,24 +737,27 @@ tbody tr:hover {
   }
 
   /* Kişi defterinin başlığı: 4 öğe tek satıra sığmaz, alt satıra taşsın —
-     isim kırpılmaktansa butonlar aşağı insin. */
+     isim kırpılmaktansa butonlar aşağı insin. Pratikte ilk satır
+     [← Defter] [kişi adı], ikinci satır [Düzenle] [Ekstre (PDF)] olur:
+     geri butonu tek başına sol üstte, komşularından net ayrı. */
   .bar {
     flex-wrap: wrap;
-    gap: 8px 12px;
+    gap: 6px 14px;
   }
 
   .bar h1 {
-    flex: 1 1 60%;
+    flex: 1 1 45%;
+    font-size: 18px;
   }
 
   .balance-amount {
     font-size: 30px;
   }
 
-  /* 100vh + 56px'lik mobil bar = gereksiz kaydırma; sayfa barın altında
-     kalan yeri doldursun. */
+  /* 100vh + 56px'lik üst bar + alt eylem barı = gereksiz kaydırma; sayfa
+     ikisinin arasında kalan yeri doldursun. */
   .page {
-    min-height: calc(100vh - 56px);
+    min-height: calc(100vh - 56px - var(--bar-space));
   }
 }
 
@@ -902,23 +978,31 @@ input.amount {
   white-space: nowrap;
 }
 
+/* Metin bağlantı görünümü korunur ama dokunma alanı tam boy: 6px'lik dikey
+   boşlukla "Ekstre (PDF)" parmakla ıskalanan bir hedefti. */
 .link {
   background: none;
   border: 0;
-  padding: 6px 0;
+  min-height: var(--tap);
+  padding: 0 8px;
+  border-radius: 10px;
   color: var(--stamp);
-  font-size: 14px;
+  font-size: 15px;
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
 
+.link:hover {
+  background: var(--card);
+}
+
+/* Sayfaların birincil eylem butonları. Kendi `position: fixed`leri YOK:
+   alt eylem barının sol yuvasına çizilirler (lib/actionBar.tsx), genişliği
+   oradan alırlar. Gölge de kalktı — bar kendisi zaten yüzeydir. */
 .fab {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(20px + env(safe-area-inset-bottom));
-  width: min(868px, calc(100% - 32px));
+  display: block;
+  width: 100%;
   min-height: 56px;
   border: 0;
   border-radius: 14px;
@@ -926,15 +1010,9 @@ input.amount {
   color: var(--paper);
   font-weight: 500;
   font-size: 16px;
-  box-shadow: 0 6px 20px rgb(22 24 29 / 18%);
 }
 
 .fab-row {
-  position: fixed;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: calc(20px + env(safe-area-inset-bottom));
-  width: min(868px, calc(100% - 32px));
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
@@ -946,7 +1024,6 @@ input.amount {
   border-radius: 14px;
   font-weight: 500;
   font-size: 16px;
-  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
 }
 
 .fab-borc {
@@ -1041,6 +1118,10 @@ input.amount {
   width: 1%;
   text-align: right;
   white-space: nowrap;
+  /* 44px'lik tetikleyici satırı boyamasın: hücrenin kendi dikey boşluğu
+     küçülür, satır yüksekliği aynı kalır. */
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .row-menu {
@@ -1048,12 +1129,20 @@ input.amount {
   display: inline-block;
 }
 
+/* İkon görsel olarak küçük (18px nokta üçlüsü) ama dokunma alanı 44px kare
+   — HCI: görsel boyut ile hedef boyutu aynı olmak zorunda değil. Dar ekranda
+   48px'e çıkar (aşağıdaki mobil blok). */
 .row-menu-trigger {
+  width: 44px;
+  height: 44px;
   min-height: 0;
-  padding: 6px 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   background: none;
   border: 0;
-  border-radius: 8px;
+  border-radius: 10px;
   color: var(--ink-soft);
   font-size: 18px;
   line-height: 1;
@@ -1078,14 +1167,15 @@ input.amount {
 }
 
 .row-menu-dropdown button {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
-  min-height: 0;
-  padding: 10px 14px;
+  min-height: 48px;
+  padding: 0 16px;
   background: none;
   border: 0;
   text-align: left;
-  font-size: 14px;
+  font-size: 15px;
 }
 
 .row-menu-dropdown button:hover {
@@ -1098,11 +1188,13 @@ input.amount {
 
 /* ---------------------------------------------------------- toast */
 
+/* Bildirimler alt barın (z-index 150) ARKASINDA kalmasın: hem üstüne
+   çıkarılır hem de bar yüksekliği kadar yukarıda başlar. */
 .toast-wrap {
   position: fixed;
-  bottom: calc(12px + env(safe-area-inset-bottom));
+  z-index: 155;
+  bottom: calc(var(--bar-space) + 12px);
   right: 12px;
-  z-index: 100;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -2271,15 +2363,13 @@ input.amount {
    buton görünümü. z-index toast'ın (100) üstünde kalır ki panel açıkken
    bildirimler görünmez olmasın. */
 
-/* Konum: sağ altta ama alttaki tam genişlik eylem barının ("Kişi ekle",
-   "Borç ekle / Tahsilat ekle") ÜSTÜNDE — o bar 56px yüksekliğinde ve 20px
-   yukarıda durur, 88px net boşluk bırakır. Çok geniş ekranda (≥1280px) bar
-   ortalanıp sağda yer açıldığı için balon köşesine iner. */
+/* Konum: alt eylem barının SAĞ yuvasında, "Kişi ekle"nin yanında (eskiden
+   serbest yüzüyordu ve o butonun üstüne biniyordu — bkz. lib/actionBar.tsx).
+   Boyu her ekranda aynı 56px kare: yanındaki buton esner, bu esnemez.
+   Yuvarlak biçim korunur; bardaki dikdörtgen butondan bir bakışta ayrılsın
+   diye. */
 .chat-fab {
-  position: fixed;
-  right: 16px;
-  bottom: calc(88px + env(safe-area-inset-bottom));
-  z-index: 150;
+  flex: 0 0 auto;
   width: 56px;
   height: 56px;
   border-radius: 50%;
@@ -2290,13 +2380,7 @@ input.amount {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 6px 20px rgb(22 24 29 / 25%);
-}
-
-@media (min-width: 1280px) {
-  .chat-fab {
-    bottom: calc(16px + env(safe-area-inset-bottom));
-  }
+  box-shadow: 0 4px 14px rgb(22 24 29 / 25%);
 }
 
 /* "Burada bir asistan var" hatırlatması: panel KAPALIYKEN ~10 saniyede bir
@@ -2382,10 +2466,17 @@ input.amount {
 }
 
 .chat-panel-min {
+  width: 48px;
+  height: 48px;
+  min-height: 0;
+  margin: -8px -8px -8px 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   background: none;
   border: 0;
-  padding: 8px;
-  margin: -8px;
+  border-radius: 12px;
   color: var(--ink-soft);
   font-size: 18px;
   line-height: 1;
@@ -2446,8 +2537,8 @@ input.amount {
 
 .chat-edit {
   flex: 0 0 auto;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   min-height: 0;
   padding: 0;
   border: 0;
@@ -2503,14 +2594,16 @@ input.amount {
   margin-top: 8px;
 }
 
+/* Botun sorduğu şıklar ("hangisi?", "Evet/İptal") — para yazan kararlar,
+   yanlış şıkka basılmasın: 44px hedef, dar ekranda 48px. */
 .chat-btn {
-  min-height: 0;
-  padding: 7px 12px;
+  min-height: 44px;
+  padding: 0 14px;
   background: var(--panel);
   border: 1px solid var(--rule-strong);
   border-radius: 999px;
   color: var(--ink);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
 }
 
@@ -2539,13 +2632,13 @@ input.amount {
 
 .chat-input-row input {
   flex: 1;
-  min-height: 46px;
+  min-height: 48px;
 }
 
 .chat-send {
   flex: 0 0 auto;
-  width: 46px;
-  height: 46px;
+  width: 48px;
+  height: 48px;
   min-height: 0;
   border: 0;
   border-radius: 50%;
@@ -2591,7 +2684,7 @@ input.amount {
    panel okunmaz. Masaüstü eşiğinden (720px) itibaren sağ altta yüzer. */
 @media (min-width: 720px) {
   .chat-panel {
-    inset: auto 16px calc(16px + env(safe-area-inset-bottom)) auto;
+    inset: auto 16px calc(var(--bar-space) + 12px) auto;
     top: 16px;
     width: min(380px, calc(100vw - 32px));
     border-radius: 18px;
@@ -2603,5 +2696,67 @@ input.amount {
   .chat-panel-bar {
     border-top-left-radius: 18px;
     border-top-right-radius: 18px;
+  }
+}
+
+/* -------------------------------------------- mobil HCI (<720px) — EN SONDA
+
+   Bu blok dosyanın SONUNDA durmak zorunda: aşağıdaki kuralların hepsi kendi
+   temel tanımlarıyla aynı özgüllükte (tek sınıf). Medya sorgusu özgüllük
+   eklemez, yalnızca sırayı bekler — blok .fab / .row-menu-trigger / .chat-btn
+   tanımlarından ÖNCE dursaydı sessizce ezilirdi (bir kez öyle oldu: mobil
+   "Kişi ekle" 48px yazıyordu ama 56px çiziliyordu).
+
+   Bar burada alçalır (8px boşluk), sohbet balonu 56px kaldığı için toplam
+   73px'te kalır; --bar-h yeniden tanımlanınca .side-main'in alt boşluğu ve
+   .page'in yüksekliği kendiliğinden uyar. */
+@media (max-width: 719px) {
+  :root {
+    /* 1px çizgi + 8px + 56px + 8px */
+    --bar-h: 73px;
+  }
+
+  .action-bar {
+    padding: 8px 12px;
+    padding-bottom: calc(8px + env(safe-area-inset-bottom));
+  }
+
+  .action-bar-inner {
+    /* Dar ekranda boşluk biraz daha geniş: parmak, kalemden kalın. */
+    gap: 14px;
+  }
+
+  /* "Kişi ekle" telefonda 56px'e gerek duymuyor — ama dokunma hedefi
+     asla 48px'in altına inmez (HCI alt sınırı). */
+  .fab {
+    min-height: 48px;
+    font-size: 15px;
+    border-radius: 12px;
+  }
+
+  .fab-row {
+    gap: 12px;
+  }
+
+  .fab-row button {
+    min-height: 48px;
+    font-size: 15px;
+    border-radius: 12px;
+  }
+
+  /* Parmakla seçilen her hedef en az 48px. */
+  .row-menu-trigger {
+    width: 48px;
+    height: 48px;
+  }
+
+  .chat-btn {
+    min-height: 48px;
+    font-size: 15px;
+  }
+
+  .chat-edit {
+    width: 48px;
+    height: 48px;
   }
 }

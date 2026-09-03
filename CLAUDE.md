@@ -927,11 +927,9 @@ PersonDetail'in kendi yapışkan başlığı mobil barın altına yapışır
 sohbet 150). Menü açıkken ekranın tek işi menüdür; balona denk gelen yere
 dokunmak menüyü kapatır, yanlışlıkla sohbet açmaz.
 
-**Sohbet balonu artık alt eylem barının ÜSTÜNDE.** `bottom: 88px` — alttaki
-tam genişlik buton ("Kişi ekle" / "Borç ekle + Tahsilat ekle") 56px yüksek
-ve 20px yukarıda durur, 12px net boşluk kalır. Bu yalnızca mobil sorunu
-değildi: 720–1260px arası masaüstünde de biniyordu. ≥1280px'te bar ortalanıp
-sağda yer açıldığı için balon eski köşesine (16px) iner.
+**Sohbet balonu artık alt eylem barının ÜSTÜNDE.** (GÜNCELLENDİ 2026-09-04:
+balon artık barın üstünde değil, barın İÇİNDE — aşağıdaki "Alt eylem barı"
+bölümüne bak. Yüzer konum, üst üste binme sorununu tam çözmüyordu.)
 
 **Sohbet paneli mobilde tam ekran.** Yüzen panele geçiş eşiği 480px'ten
 720px'e çekildi: 360px'lik telefonda 380px'lik yüzen panel okunmuyordu.
@@ -943,3 +941,50 @@ olarak devre dışı; ✕ ile kapatılır (geçmiş yine korunur).
 çıkar; metrik kartları çekmecede alt alta durur (yatay kaydırma yok);
 kişi defteri başlığındaki butonlar sığmazsa alt satıra taşar (isim
 kırpılmaz). Dokunma hedefleri `--tap` (52px) ve ☰ için 48px.
+
+## Alt eylem barı — tek opak şerit (2026-09-04, HCI)
+
+Gerçek telefonda dört sorun çıktı: (1) kaydırınca kişi isimleri "Kişi ekle"
+butonunun arkasından geçip gidiyordu, (2) buton telefonda gereğinden büyüktü,
+(3) sohbet balonu butonun üstüne biniyordu, (4) "← Defter" o kadar küçüktü ki
+basmaya çalışırken kişi adına ya da "Ekstre (PDF)"ye deniyordu.
+
+**Kök sebep: her eylem kendi `position: fixed` butonuydu.** Yüzen butonların
+arkası boştur; içerik altlarından akar ve birbirlerinin yerini bilmezler.
+Çözüm tek bir bardır: `.action-bar` (Layout'ta, fixed, OPAK `--panel` zemin +
+üst çizgi + yukarı gölge), içinde iki yuva — `main` esner, `side` 56px sabit.
+
+**Butonlar sayfada kalır, yeri bar olur.** Mantık People/PersonDetail/
+ChatWidget'ta; yalnızca çizildikleri yer değişir (`lib/actionBar.tsx`, context
++ `createPortal`). Yuvalar DOM düğümü olarak paylaşılır, Layout onları
+callback ref ile state'e koyar; ilk render'da null dönmek normaldir.
+
+**İçerik barın arkasına GİRMEZ.** `--bar-h` barın TAM yüksekliği (1px üst
+çizgi dahil: masaüstü 81px, <720px 73px), `--bar-space` buna safe-area ekler.
+`.side-main` bu kadar alt boşluk bırakır, `.page`in min-height'ı bu kadar
+kısalır. 1px'i unutmak son satırı barın kenarlığına sokuyordu (ölçümle
+yakalandı).
+
+**Sıra: "Kişi ekle" solda esner, sohbet balonu sağda 56px kare sabit**,
+aralarında 12px (mobilde 14px) — yanlış tıklamayı önleyecek kadar. Panel
+açıkken yuva boşalır ama yeri ayrılı kalır, bar zıplamaz. Toast (z-index 155)
+ve masaüstündeki yüzen sohbet paneli barın üstünde başlar.
+
+**Mobil override'lar dosyanın EN SONUNDA.** `@media` özgüllük eklemez; aynı
+özgüllükte sonra gelen kazanır. Mobil blok `.fab`/`.row-menu-trigger`/
+`.chat-btn` temel tanımlarından önce durursa CSS'te doğru görünür ama
+tarayıcıda uygulanmaz — bir kez tam olarak bu oldu (48px yazıyordu, 56px
+çiziliyordu). `actionBar.test.ts` bunu sıra kontrolüyle koruyor.
+
+**Dokunma hedefleri (HCI alt sınırı 48px).** "Kişi ekle" mobilde 56→48px
+küçülür ama altına inmez. "← Defter" her iki ekranda da çerçeveli 52px'lik bir
+tuş (metin bağlantı değil), kişi adından 18px ayrık. Üç nokta menüsü 44px
+(mobilde 48), menü seçenekleri 48px, bot şıkları 44/48px, yan panel ikonları
+ve ✕'ler 48px, `.link` (Düzenle / Ekstre PDF) `--tap` yüksekliğinde — ikon
+görsel olarak küçük kalır, dokunma alanı büyür.
+
+**Test:** `web/src/lib/actionBar.test.ts` (`just web-test`) index.css ve
+Layout.tsx metnini okuyup sözleşmeyi doğrular: bar opak mı, `--bar-space`
+türetilmiş mi, butonlar hâlâ fixed mi, balon sağda mı, hedefler 48px mi,
+mobil override sırası doğru mu. DOM koşucusu yok; geometri ayrıca headless
+Chrome ile 345/500/768/1400px'te ölçülerek doğrulandı.
