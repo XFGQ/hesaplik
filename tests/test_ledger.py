@@ -424,3 +424,164 @@ async def test_ters_kaydi_olan_kayit_silinemez_once_ters_kayit(session, ahmet, s
     await ledger.archive_transaction(session, tx.id, actor="furkan", reason="sil")
     bal = await ledger.balance_of(session, ahmet.id)
     assert bal.balance_try == Decimal("0.00")
+
+
+# ------------------------------------------------------------ koşan bakiye
+#
+# Kişi defterinde her satır KENDİ anındaki bakiyeyi gösterir. Ölçüt tek:
+# koşan bakiye `balance_of` ile aynı defteri saymalı — onaylı kayıtlar,
+# occurred_at sırasıyla. Sapma olursa kullanıcı ekranda birbirini tutmayan
+# iki sayı görür.
+
+
+async def _running_sirali(session, person_id):
+    """Koşan bakiyeler, kaydın kendi sırasında (eskiden yeniye)."""
+    running = await ledger.running_balances(session, person_id)
+    return [running[tx_id] for tx_id in sorted(running)]
+
+
+async def test_kosan_bakiye_kumulatif_ilerler(session, ahmet, saman):
+    await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(20))],
+        meta(occurred_at=datetime(2026, 1, 1, tzinfo=timezone.utc)),
+    )
+    await ledger.add_payment(
+        session,
+        ahmet.id,
+        Decimal("500.00"),
+        meta(occurred_at=datetime(2026, 1, 2, tzinfo=timezone.utc)),
+    )
+    await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 1, 3, tzinfo=timezone.utc)),
+        amount_override=Decimal("300.00"),
+    )
+
+    assert await _running_sirali(session, ahmet.id) == [
+        Decimal("1500.00"),  # borç
+        Decimal("1000.00"),  # −500 tahsilat
+        Decimal("1300.00"),  # +300 borç
+    ]
+
+
+async def test_kosan_bakiye_sonu_balance_of_ile_ayni(session, ahmet, saman):
+    await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(20))], meta()
+    )
+    await ledger.add_payment(session, ahmet.id, Decimal("3750.00"), meta())
+
+    running = await _running_sirali(session, ahmet.id)
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert running[-1] == bal.balance_try == Decimal("-2250.00")
+
+
+async def test_kosan_bakiye_tarih_sirasina_gore_kayit_sirasina_degil(session, ahmet):
+    """Sonradan girilen ESKİ tarihli kayıt, tarih sırasına oturur."""
+    yeni = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 3, 10, tzinfo=timezone.utc)),
+        amount_override=Decimal("100.00"),
+    )
+    eski = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 3, 1, tzinfo=timezone.utc)),
+        amount_override=Decimal("400.00"),
+    )
+
+    running = await ledger.running_balances(session, ahmet.id)
+    assert running[eski.id] == Decimal("400.00")  # önce o gelir
+    assert running[yeni.id] == Decimal("500.00")
+
+
+async def test_kosan_bakiye_ters_kayitta_geri_duser(session, ahmet, saman):
+    tx = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(20))],
+        meta(occurred_at=datetime(2026, 2, 1, tzinfo=timezone.utc)),
+    )
+    contra = await ledger.reverse(session, tx.id, actor="furkan", reason="yanlış kişi")
+
+    running = await ledger.running_balances(session, ahmet.id)
+    assert running[tx.id] == Decimal("1500.00")
+    assert running[contra.id] == Decimal("0.00")
+
+
+async def test_kosan_bakiye_onaysiz_kaydi_saymaz(session, ahmet):
+    onayli = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 4, 1, tzinfo=timezone.utc)),
+        amount_override=Decimal("200.00"),
+    )
+    bekleyen = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 4, 2, tzinfo=timezone.utc)),
+        amount_override=Decimal("900.00"),
+        status=TxStatus.PENDING,
+    )
+
+    running = await ledger.running_balances(session, ahmet.id)
+    assert running[onayli.id] == Decimal("200.00")
+    assert bekleyen.id not in running  # bakiyeye girmez → satırda bakiye yok
+
+
+async def test_kosan_bakiye_arsivlenen_kaydi_saymaz(session, ahmet):
+    silinecek = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 5, 1, tzinfo=timezone.utc)),
+        amount_override=Decimal("700.00"),
+    )
+    kalan = await ledger.add_debt(
+        session,
+        ahmet.id,
+        [],
+        meta(occurred_at=datetime(2026, 5, 2, tzinfo=timezone.utc)),
+        amount_override=Decimal("300.00"),
+    )
+    await ledger.archive_transaction(
+        session, silinecek.id, actor="furkan", reason="kullanıcı sildi"
+    )
+
+    running = await ledger.running_balances(session, ahmet.id)
+    assert silinecek.id not in running
+    assert running[kalan.id] == Decimal("300.00")  # silinen toplamdan düşer
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert running[kalan.id] == bal.balance_try
+
+
+async def test_ucta_kosan_bakiye_her_satirda_gelir(session, ahmet, saman):
+    """Uç, listeyi yeniden eskiye döner ama her satır kendi bakiyesini taşır."""
+    from app.api.routes import person_transactions
+
+    await ledger.add_debt(
+        session,
+        ahmet.id,
+        [LineInput(product_id=saman.id, qty=Decimal(20))],
+        meta(occurred_at=datetime(2026, 6, 1, tzinfo=timezone.utc)),
+    )
+    await ledger.add_payment(
+        session,
+        ahmet.id,
+        Decimal("500.00"),
+        meta(occurred_at=datetime(2026, 6, 2, tzinfo=timezone.utc)),
+    )
+
+    rows = await person_transactions(ahmet.id, session=session)
+    assert [r.running_balance_try for r in rows] == [
+        Decimal("1000.00"),  # en yeni satır üstte
+        Decimal("1500.00"),
+    ]

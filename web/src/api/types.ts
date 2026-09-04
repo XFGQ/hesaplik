@@ -42,6 +42,9 @@ export type TxDetail = {
   note: string | null;
   reverses_id: number | null;
   is_reversed: boolean;
+  /** Bu kayıttan SONRA kalan bakiye — sunucuda hesaplanır (ledger.running_balances).
+   *  Onaylanmamış kayıt bakiyeye girmediği için null olabilir. */
+  running_balance_try: string | null;
   lines: TxLine[];
 };
 

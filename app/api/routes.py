@@ -346,6 +346,11 @@ async def person_transactions(
     )
     txs = list((await session.execute(stmt)).scalars())
 
+    # Koşan bakiye tek sorguda, kaydın başından itibaren (limit kırpsa bile
+    # doğru). Bakiye burada değil ledger'da hesaplanır — para aritmetiği
+    # yalnızca orada yaşar.
+    running = await ledger.running_balances(session, person_id)
+
     reversed_ids = set(
         (
             await session.execute(
@@ -366,6 +371,7 @@ async def person_transactions(
             note=t.note,
             reverses_id=t.reverses_id,
             is_reversed=t.id in reversed_ids,
+            running_balance_try=running.get(t.id),
             lines=[
                 TxLineOut(
                     product_name=li.product.name,

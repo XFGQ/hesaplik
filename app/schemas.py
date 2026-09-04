@@ -113,6 +113,9 @@ class TxDetailOut(BaseModel):
     note: str | None = None
     reverses_id: int | None = None
     is_reversed: bool = False
+    # Bu kaydın ARDINDAN kalan bakiye (koşan bakiye). Onaylı olmayan kayıt
+    # bakiyeye girmediği için orada None kalır — bkz. ledger.running_balances.
+    running_balance_try: Decimal | None = None
     lines: list[TxLineOut] = []
 
 
