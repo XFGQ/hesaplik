@@ -190,7 +190,9 @@ CREATE TABLE raw_messages (
     trace_id       TEXT,
     received_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     processed_at   TIMESTAMPTZ,
-    transaction_id BIGINT REFERENCES transactions(id),
+    -- ON DELETE SET NULL: kayit arsive tasininca (ledger.archive_transaction)
+    -- ham mesaj SILINMEZ, yalnizca baglantisi kopar (bkz. 011 migration).
+    transaction_id BIGINT REFERENCES transactions(id) ON DELETE SET NULL,
     voice_transcript TEXT,             -- sesli mesajin Groq'la cevrilmis metni (Faz 5)
 
     -- izleme (admin paneli): sistem ne algiladi

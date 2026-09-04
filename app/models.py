@@ -273,7 +273,13 @@ class RawMessage(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    transaction_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey("transactions.id"))
+    # ondelete="SET NULL": kayıt arşive taşınınca (ledger.archive_transaction)
+    # ham mesaj SİLİNMEZ — bu tablo dokunulmaz mesaj logudur — yalnızca
+    # silinen kayda olan bağlantısı kopar. Boş bırakılırsa FK, arşivlemenin
+    # DELETE'ini reddeder (HTTP 500).
+    transaction_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("transactions.id", ondelete="SET NULL")
+    )
     # Sesli mesajın Groq'la çevrilmiş metni (Faz 5). payload asla değişmez,
     # bu yüzden çeviri ayrı bir kolonda tutulur (bkz. message_trace.display_text).
     voice_transcript: Mapped[str | None] = mapped_column(Text)
