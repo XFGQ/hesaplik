@@ -270,6 +270,12 @@ button {
   color: var(--ink-faint);
 }
 
+/* Hesabın lehte olduğu durum (kişiye borçluyuz / peşin ödemiş): yeşil.
+   Tek bir tahsilat işleminin mavisiyle karışmasın diye ayrı sınıf. */
+.alacak {
+  color: var(--success);
+}
+
 /* ---------------------------------------------------------- tablo (geniş ekran) */
 
 .table-wrap {
@@ -1071,13 +1077,6 @@ input.amount {
   font-size: 13px;
 }
 
-.struck .row-name,
-.struck .row-amount,
-.struck td {
-  text-decoration: line-through;
-  color: var(--ink-faint);
-}
-
 @media (prefers-reduced-motion: reduce) {
   * {
     animation: none !important;
@@ -1105,13 +1104,174 @@ input.amount {
   justify-content: center;
 }
 
-.tx-table-wrap {
+/* Hareketler tablo değil KART: kullanıcının elindeki defterde her işlem
+   kendi kutusudur. Tablo dar ekranda yatay kaydırma istiyordu ve satırlar
+   birbirine giriyordu; kart hem telefonda hem masaüstünde aynı okunuyor.
+   Kartlar arası boşluk kasıtlı geniş (12px) — ferahlık okunabilirlik. */
+.tx-cards {
   flex: 1;
-  overflow-x: auto;
+  list-style: none;
+  margin: 0;
+  padding: 14px var(--pad);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.tx-table-wrap table {
-  min-width: 640px;
+.tx-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 6px 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--rule);
+  /* Sol kenardaki renkli çizgi işlemin TÜRÜ: borç kırmızı, tahsilat yeşil.
+     Kart yüksekliği boyunca uzanır — göz tutara bakmadan da ayırt eder. */
+  border-left: 4px solid var(--rule-strong);
+  border-radius: 14px;
+}
+
+/* Kendi sınıfı: .borc/.tahsilat metin rengi kuralları kartın TAMAMINI
+   (başlık, tarih) boyardı — renk yalnızca sol çizgide ve tutarda olmalı. */
+.tx-card-borc {
+  border-left-color: var(--borc);
+}
+
+.tx-card-tahsilat {
+  border-left-color: var(--success);
+}
+
+/* İptal edilen / iptal kaydı olan satır soluk ve üstü çizili: defterde
+   duruyor ama artık geçerli değil. */
+.tx-card-iptal {
+  opacity: 0.65;
+}
+
+.tx-card-iptal .tx-title,
+.tx-card-iptal .tx-amount {
+  text-decoration: line-through;
+}
+
+.tx-date {
+  flex: 0 0 auto;
+  min-width: 42px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.1;
+}
+
+.tx-day {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.tx-month {
+  font-size: 11px;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.tx-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.tx-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Alt satır sığmazsa koşan bakiye kendi satırına iner (sağa yaslı) —
+   telefonda "Borç e..." gibi kırpılmış bir etiket okunmaz. Geniş ekranda
+   ikisi yan yana kalır. */
+.tx-line-sub {
+  margin-top: 4px;
+  flex-wrap: wrap;
+  row-gap: 2px;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+/* Başlık gerekirse ALT SATIRA taşar, kırpılmaz: telefonda "20 balya sa..."
+   okunmaz bir defterdir. Kırpılan tek şey aşağıdaki tür etiketidir. */
+.tx-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+/* Para hiçbir ekranda kısalmaz: tutar ve koşan bakiye tam görünür, yer
+   sıkışırsa yanlarındaki YAZI kısalır. */
+.tx-amount {
+  flex: 0 0 auto;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.tx-kind {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tx-running {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.tx-birim {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Koşan bakiye: bu işlemden SONRAKİ toplam. Sunucudan gelir, ekranda
+   hesaplanmaz — defterdeki bakiye ile birebir aynı sayı olmak zorunda. */
+.tx-running b {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Masaüstünde aynı kart, sadece daha ferah: kutu içi boşluk ve kartlar
+   arası aralık büyür, tarih sütunu genişler. Düzen değişmez — kullanıcı
+   telefonda gördüğü şeyi bilgisayarda da görsün. */
+@media (min-width: 720px) {
+  .tx-cards {
+    padding: 18px var(--pad);
+    gap: 14px;
+  }
+
+  .tx-card {
+    gap: 18px;
+    padding: 14px 8px 14px 18px;
+  }
+
+  .tx-date {
+    min-width: 50px;
+  }
+
+  .tx-title,
+  .tx-amount {
+    font-size: 16px;
+  }
+
+  .tx-line-sub {
+    font-size: 13px;
+  }
 }
 
 .row-menu-cell {
@@ -2758,5 +2918,20 @@ input.amount {
   .chat-edit {
     width: 48px;
     height: 48px;
+  }
+
+  /* 60 yaş okunabilirliği: karttaki yardımcı satır 13px'te kalmaz. Tarih
+     sütunu biraz daralır ki başlık için yer kalsın. */
+  .tx-line-sub {
+    font-size: 14px;
+  }
+
+  .tx-date {
+    min-width: 38px;
+  }
+
+  .tx-card {
+    gap: 12px;
+    padding: 12px 2px 12px 12px;
   }
 }

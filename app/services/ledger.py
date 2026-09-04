@@ -414,6 +414,35 @@ async def archive_transaction(
     return archived
 
 
+async def running_balances(session: AsyncSession, person_id: int) -> dict[int, Decimal]:
+    """Her hareketin ARDINDAN kalan bakiye (koşan bakiye), kayıt id'siyle.
+
+    Defter mantığı `balance_of` ile birebir aynı: yalnızca CONFIRMED kayıtlar
+    sayılır (PENDING/REJECTED bakiyeye girmez), DEBIT +, CREDIT −. Ters kayıt
+    da CONFIRMED bir karşıt kayıttır; kendi satırında bakiyeyi geri düşer —
+    bu yüzden en son satırın koşan bakiyesi `balance_of` ile aynı sayıyı verir.
+
+    Sıra `occurred_at`, eşitlikte `id` — uçtaki listeleme sırasının tersi,
+    yani liste yeniden eskiye gösterilse bile her satır KENDİ anındaki
+    bakiyeyi taşır. Toplam SQL'de pencere fonksiyonuyla alınır: listeleme
+    `limit` ile kırpılsa da kümülatif toplam kaydın başından itibaren doğru
+    kalır.
+    """
+    sign = case((Transaction.kind == TxKind.DEBIT, 1), else_=-1)
+    running = func.sum(Transaction.amount_try * sign).over(
+        order_by=(Transaction.occurred_at.asc(), Transaction.id.asc())
+    )
+    rows = (
+        await session.execute(
+            select(Transaction.id, running.label("running")).where(
+                Transaction.person_id == person_id,
+                Transaction.status == TxStatus.CONFIRMED,
+            )
+        )
+    ).all()
+    return {tx_id: money(total) for tx_id, total in rows}
+
+
 async def balance_of(session: AsyncSession, person_id: int) -> Balance:
     """Bakiye + açık kalemler. Tek kaynak: onaylı hareketlerin toplamı."""
     sign = case((Transaction.kind == TxKind.DEBIT, 1), else_=-1)

@@ -12,32 +12,29 @@ import PersonModal from "../components/PersonModal";
 import RowMenu from "../components/RowMenu";
 import { ActionBarMain } from "../lib/actionBar";
 import {
+  accountTone,
   balanceLabel,
-  balanceTone,
+  dateParts,
   itemLabel,
-  itemsSummary,
   money,
-  qty,
   shortDate,
   signedMoney,
+  txCardTitle,
+  txKindLabel,
+  txUnitPrice,
 } from "../lib/format";
 import { useToast } from "../lib/toast";
 
 type ModalKind = "debt" | "payment" | "edit" | null;
 
+/** Silme onayındaki tek satırlık özet — karttakiyle aynı dili konuşur. */
 function txSummary(t: TxDetail): string {
   const isDebt = t.kind === "DEBIT";
-  const parts = [shortDate(t.occurred_at)];
-  if (t.lines.length > 0) {
-    const l = t.lines[0];
-    parts.push(`${qty(l.qty)} ${l.unit} ${l.product_name.toLocaleLowerCase("tr")}`);
-  } else if (t.note) {
-    parts.push(t.note);
-  } else {
-    parts.push(isDebt ? "borç" : "tahsilat");
-  }
-  parts.push(`${isDebt ? "+" : "−"}${money(t.amount_try)}`);
-  return parts.join(" · ");
+  return [
+    shortDate(t.occurred_at),
+    txCardTitle(t),
+    `${isDebt ? "+" : "−"}${money(t.amount_try)}`,
+  ].join(" · ");
 }
 
 export default function PersonDetail() {
@@ -78,7 +75,7 @@ export default function PersonDetail() {
     },
   });
 
-  const tone = balance.data ? balanceTone(balance.data.balance_try) : "zero";
+  const tone = balance.data ? accountTone(balance.data.balance_try) : "zero";
   const p = person.data;
 
   return (
@@ -148,55 +145,62 @@ export default function PersonDetail() {
         )}
 
         {txs.data && txs.data.length > 0 && (
-          <div className="tx-table-wrap">
-            <table>
-            <thead>
-              <tr>
-                <th>Tarih</th>
-                <th>Ürün</th>
-                <th style={{ textAlign: "right" }}>Adet</th>
-                <th style={{ textAlign: "right" }}>Birim fiyat</th>
-                <th style={{ textAlign: "right" }}>Tutar</th>
-                <th aria-hidden="true"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {txs.data.map((t) => {
-                const isDebt = t.kind === "DEBIT";
-                const hasLines = t.lines.length > 0;
-                const detail = hasLines
-                  ? itemsSummary(t.lines)
-                  : (t.note ?? (isDebt ? "borç" : "tahsilat"));
-                return (
-                  <tr key={t.id} className={t.is_reversed ? "struck" : undefined}>
-                    <td className="muted">{shortDate(t.occurred_at)}</td>
-                    <td>
-                      {detail}
-                      {t.reverses_id ? " · iptal kaydı" : ""}
-                      {t.is_reversed ? " · iptal edildi" : ""}
-                    </td>
-                    <td className="num">{hasLines ? qty(t.lines[0].qty) : "—"}</td>
-                    <td className="num">
-                      {hasLines ? `${money(t.lines[0].unit_price)}/${t.lines[0].unit}` : "—"}
-                    </td>
-                    <td className={`num ${isDebt ? "borc" : "tahsilat"}`}>
-                      {isDebt ? "+" : "−"}
-                      {money(t.amount_try)}
-                    </td>
-                    <td className="row-menu-cell">
-                      <RowMenu
-                        items={[
-                          { label: "Düzelt", onClick: () => setEditingTx(t) },
-                          { label: "Sil", onClick: () => setDeletingTx(t), danger: true },
-                        ]}
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-          </div>
+          <ol className="tx-cards">
+            {txs.data.map((t) => {
+              const isDebt = t.kind === "DEBIT";
+              const gun = dateParts(t.occurred_at);
+              const birim = txUnitPrice(t);
+              return (
+                <li
+                  key={t.id}
+                  className={`tx-card ${isDebt ? "tx-card-borc" : "tx-card-tahsilat"}${
+                    t.is_reversed || t.reverses_id ? " tx-card-iptal" : ""
+                  }`}
+                >
+                  {/* Dikey tarih: gün büyük, ay-yıl küçük. Defterde gözün ilk
+                      aradığı şey "ne zaman" — o yüzden en solda, tek başına. */}
+                  <div className="tx-date">
+                    <span className="tx-day">{gun.day}</span>
+                    <span className="tx-month">{gun.monthYear}</span>
+                  </div>
+
+                  <div className="tx-body">
+                    <div className="tx-line">
+                      <span className="tx-title">{txCardTitle(t)}</span>
+                      <span className={`tx-amount ${isDebt ? "borc" : "tahsilat"}`}>
+                        {isDebt ? "+" : "−"}
+                        {money(t.amount_try)}
+                      </span>
+                    </div>
+                    <div className="tx-line tx-line-sub">
+                      <span className="tx-kind">
+                        {txKindLabel(t)}
+                        {birim && <span className="tx-birim"> · {birim}</span>}
+                      </span>
+                      {/* Koşan bakiye: bu kayıt işlendikten SONRAKİ toplam
+                          (sunucudan gelir). Onaysız kayıt bakiyeye girmez,
+                          orada gösterilecek bir sayı da yoktur. */}
+                      {t.running_balance_try !== null && (
+                        <span className="tx-running">
+                          Bakiye{" "}
+                          <b className={accountTone(t.running_balance_try)}>
+                            {signedMoney(t.running_balance_try)}
+                          </b>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  <RowMenu
+                    items={[
+                      { label: "Düzelt", onClick: () => setEditingTx(t) },
+                      { label: "Sil", onClick: () => setDeletingTx(t), danger: true },
+                    ]}
+                  />
+                </li>
+              );
+            })}
+          </ol>
         )}
       </div>
 
