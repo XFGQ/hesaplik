@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from sqlalchemy import text
 
-from app.models import Person, PriceHistory, Product, TxKind, TxSource, TxStatus
+from app.models import Person, PriceHistory, Product, RawMessage, TxKind, TxSource, TxStatus
 from app.services import ledger
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
@@ -359,3 +359,68 @@ async def test_arsivleme_isareti_olmadan_delete_hala_reddedilir(session, ahmet, 
         await session.execute(text("DELETE FROM transactions WHERE id = :i"), {"i": tx.id})
         await session.commit()
     await session.rollback()
+
+
+async def test_arsivleme_ham_mesaji_korur_baglantiyi_koparir(session, ahmet, saman):
+    """Ham mesaja bağlı bir kayıt silinebilmeli (FK 500'ü). raw_messages
+    KALIR (ham mesaj logu asla kaybolmaz), yalnızca transaction_id null olur."""
+    tx = await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(20))], meta()
+    )
+    tx_id = tx.id
+    session.add(
+        RawMessage(
+            channel="telegram",
+            external_id="42",
+            chat_id="999",
+            payload={"text": "ahmet 20 saman"},
+            transaction_id=tx_id,
+        )
+    )
+    await session.flush()
+
+    await ledger.archive_transaction(session, tx_id, actor="furkan", reason="yanlış kayıt")
+
+    # canlı defterden çıktı, arşivde duruyor
+    live = (
+        await session.execute(text("SELECT id FROM transactions WHERE id = :i"), {"i": tx_id})
+    ).first()
+    assert live is None
+    assert (
+        await session.execute(
+            text("SELECT id FROM archived_transactions WHERE id = :i"), {"i": tx_id}
+        )
+    ).first() is not None
+
+    # ham mesaj KORUNDU, yalnızca bağlantı koptu
+    row = (
+        await session.execute(
+            text("SELECT payload, transaction_id FROM raw_messages WHERE external_id = '42'")
+        )
+    ).first()
+    assert row is not None
+    assert row.payload == {"text": "ahmet 20 saman"}
+    assert row.transaction_id is None
+
+    # bakiye artık bu kaydı saymaz
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("0.00")
+    assert bal.items == []
+
+
+async def test_ters_kaydi_olan_kayit_silinemez_once_ters_kayit(session, ahmet, saman):
+    """İptal edilmiş kaydı tek başına silmek bakiyeyi bozardı (ters kayıt
+    ortada kalır). 500 değil, anlaşılır bir iş kuralı hatası verilir."""
+    tx = await ledger.add_debt(
+        session, ahmet.id, [LineInput(product_id=saman.id, qty=Decimal(20))], meta()
+    )
+    contra = await ledger.reverse(session, tx.id, actor="furkan", reason="yanlış")
+
+    with pytest.raises(LedgerError, match="ters kayd"):
+        await ledger.archive_transaction(session, tx.id, actor="furkan", reason="sil")
+
+    # ters kayıt önce silinince asıl kayıt da silinebilir
+    await ledger.archive_transaction(session, contra.id, actor="furkan", reason="sil")
+    await ledger.archive_transaction(session, tx.id, actor="furkan", reason="sil")
+    bal = await ledger.balance_of(session, ahmet.id)
+    assert bal.balance_try == Decimal("0.00")

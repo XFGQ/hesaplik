@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from sqlalchemy import case, func, select, text
+from sqlalchemy import case, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -21,6 +21,7 @@ from app.models import (
     AuditLog,
     PriceHistory,
     Product,
+    RawMessage,
     Transaction,
     TransactionLine,
     TxKind,
@@ -329,6 +330,19 @@ async def archive_transaction(
     if tx is None:
         raise LedgerError(f"Kayıt bulunamadı: {transaction_id}")
 
+    # Ters kaydı olan kayıt tek başına silinemez: silinirse ters kayıt ortada
+    # kalır ve bakiyeyi tersine bozar. Ayrıca reverses_id FK'sı DELETE'i
+    # reddederdi (500). Önce ters kayıt silinir, sonra bu kayıt.
+    contra_id = (
+        await session.execute(
+            select(Transaction.id).where(Transaction.reverses_id == transaction_id)
+        )
+    ).scalar_one_or_none()
+    if contra_id is not None:
+        raise LedgerError(
+            f"Bu kayıt iptal edilmiş; önce ters kaydını (#{contra_id}) silin"
+        )
+
     lines_json = [
         {
             "product_id": li.product_id,
@@ -369,6 +383,16 @@ async def archive_transaction(
     )
     session.add(archived)
     await session.flush()
+
+    # Ham mesaj logu KORUNUR, yalnızca silinen kayda olan bağlantısı kopar.
+    # FK zaten ON DELETE SET NULL (bkz. migration 011) ama bağlantıyı burada
+    # açıkça koparmak savunmacıdır: kısıt bir sunucuda eski hâlde kalmışsa
+    # bile silme 500 vermez, hangi satırların etkilendiği kodda görünür.
+    await session.execute(
+        update(RawMessage)
+        .where(RawMessage.transaction_id == transaction_id)
+        .values(transaction_id=None)
+    )
 
     # Append-only tetikleyicisi bu isareti gorene kadar DELETE'i reddeder.
     await session.execute(text("SET LOCAL app.archiving = 'on'"))
