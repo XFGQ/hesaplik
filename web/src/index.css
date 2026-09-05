@@ -154,6 +154,21 @@ button {
   text-overflow: ellipsis;
 }
 
+/* Sağ üstteki eylemler tek SÜTUN: [Düzenle] üstte, [Ekstre (PDF)] altında.
+   Yan yanayken iki kısa bağlantı birbirine yapışıyordu; alt alta her biri
+   kendi satırında tam boy (--tap) dokunma hedefi oluyor. `margin-left: auto`
+   grubu sağa yaslar — dar ekranda alt satıra taştığında da sağda kalsın.
+   `align-items: stretch` + butonların sağa yaslı içeriği: ikisi de aynı
+   genişlikte (en genişi "Ekstre (PDF)") ve metinleri sağda hizalı. */
+.bar-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
 /* Geri ("← Defter"): standart sol üst konum, ama artık kenarlıksız 15px'lik
    bir yazı değil — çerçeveli, min 52px yüksekliğinde bir tuş. Hem masaüstü
    hem mobilde aynı boyda: kullanıcı ona basmaya çalışırken yanındaki kişi
@@ -742,10 +757,9 @@ tbody tr:hover {
     font-size: 15px;
   }
 
-  /* Kişi defterinin başlığı: 4 öğe tek satıra sığmaz, alt satıra taşsın —
-     isim kırpılmaktansa butonlar aşağı insin. Pratikte ilk satır
-     [← Defter] [kişi adı], ikinci satır [Düzenle] [Ekstre (PDF)] olur:
-     geri butonu tek başına sol üstte, komşularından net ayrı. */
+  /* Kişi defterinin başlığı dar ekranda: [← Defter] [kişi adı] solda, sağda
+     [Düzenle] / [Ekstre (PDF)] sütunu. Sığmazsa isim kırpılmaktansa sütun
+     alt satıra taşar ve `margin-left: auto` sayesinde yine sağda durur. */
   .bar {
     flex-wrap: wrap;
     gap: 6px 14px;
@@ -754,6 +768,12 @@ tbody tr:hover {
   .bar h1 {
     flex: 1 1 45%;
     font-size: 18px;
+  }
+
+  /* Butonlar arası boşluk mobilde biraz daha açık: iki hedef arasında
+     parmak payı kalsın. */
+  .bar-actions {
+    gap: 10px;
   }
 
   .balance-amount {
@@ -1001,6 +1021,14 @@ input.amount {
 
 .link:hover {
   background: var(--card);
+}
+
+/* Kişi defteri başlığındaki sütun (bkz. .bar-actions): metinler sağa yaslı,
+   ikisi de aynı genişlikte. Temel `.link` kuralından SONRA gelmeli —
+   aynı özgüllükte değil ama okurken de sıra doğru olsun. */
+.bar-actions .link {
+  justify-content: flex-end;
+  padding: 0 10px;
 }
 
 /* Sayfaların birincil eylem butonları. Kendi `position: fixed`leri YOK:
