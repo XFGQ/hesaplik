@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+from app.services import parser
 from app.services.parser import parse
 
 
@@ -1769,3 +1770,154 @@ def test_urun_sorgusu_taninir(metin, beklenen_urun):
 def test_urun_sorgusu_kayitlari_ve_bakiyeyi_bozmaz(metin):
     p = parse(metin)
     assert p is None or p.kind != "product_query"
+
+
+# --------------------------------------------------------------- koşan format
+#
+# CLAUDE.md > "Koşan format": "70-20-50" = 70 vardı, 20 değişti, 50 oldu.
+# Yön ilk-son karşılaştırmasından, kaydedilen sayı üçlünün FARKINDAN çıkar.
+# Form tarafının ikizi: web/src/lib/running.test.ts.
+
+
+def test_kosan_azalis_borc():
+    p = parse("ahmet 70-20-50 saman")
+    assert p.kind == "debt"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("20")
+    assert p.product == "saman"
+    assert p.running is True
+    assert (p.running_before, p.running_change, p.running_after) == (
+        Decimal("70"), Decimal("20"), Decimal("50"),
+    )
+    assert p.amount is None  # TL ayrı girilir, uydurulmaz
+
+
+def test_kosan_artis_tahsilat():
+    p = parse("ahmet 70-30-100 saman tahsilat")
+    assert p.kind == "payment"
+    assert p.person_name == "ahmet"
+    assert p.qty == Decimal("30")
+    assert p.product == "saman"
+
+
+def test_kosan_buyuk_sayilar():
+    p = parse("furkan duman 1000-285-715 saman")
+    assert p.kind == "debt"
+    assert p.person_name == "furkan duman"
+    assert p.qty == Decimal("285")
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "ahmet 70-20-50 saman",
+        "ahmet 70+20+50 saman",
+        "ahmet 70*20*50 saman",
+        "ahmet 70 - 20 - 50 saman",
+        "ahmet 70 +20+ 50 saman",
+    ],
+)
+def test_kosan_ayrac_salt_gorsel(metin):
+    """Ayraç matematik işareti DEĞİL: üçü de aynı işlemi anlatır."""
+    p = parse(metin)
+    assert p.kind == "debt"
+    assert p.qty == Decimal("20")
+    assert p.person_name == "ahmet"
+
+
+def test_kosan_matematik_tutmuyorsa_kaydedilmez_sorulur():
+    p = parse("ahmet 70-25-50 saman")
+    assert p.kind == "running_mismatch"  # borç/tahsilat DEĞİL: soru
+    assert p.qty == Decimal("20")  # önerilen doğru fark
+    assert p.running_change == Decimal("25")  # kullanıcının yazdığı
+
+
+def test_kosan_duzeltme_orta_sayiyi_farka_esitler():
+    assert parser.correct_running_text("Ahmet 70-25-50 saman") == "Ahmet 70-20-50 saman"
+    # Ayraç varyantı da tek biçime toplanır, cümlenin geri kalanı korunur.
+    assert parser.correct_running_text("Ahmet 70 + 25 + 50 saman 5000 tl") == (
+        "Ahmet 70-20-50 saman 5000 tl"
+    )
+
+
+def test_kosan_urun_soylenmezse_varsayilan_saman():
+    p = parse("ahmet 70-20-50")
+    assert p.kind == "debt"
+    assert p.product == "saman"
+
+
+def test_kosan_urun_ve_birim_soylenirse_kullanilir():
+    p = parse("ahmet 70-20-50 balya arpa")
+    assert p.kind == "debt"
+    assert p.unit == "balya"
+    assert p.product == "arpa"
+
+
+def test_kosan_tutar_ayni_cumlede_verilebilir():
+    p = parse("ahmet 70-20-50 saman 5000 tl")
+    assert p.kind == "debt"
+    assert p.qty == Decimal("20")
+    assert p.amount == Decimal("5000")
+    assert p.person_name == "ahmet"
+
+
+def test_kosan_baglam_kelimesi_ismi_bozmaz():
+    p = parse("ahmet duman 70-20-50 saman aldı")
+    assert p.kind == "debt"
+    assert p.person_name == "ahmet duman"
+    assert p.product == "saman"
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "12-05-2026",              # tarih
+        "2026-05-12",              # tarih (ters)
+        "ahmet 12-05-2026 saman",  # tarih, isimle birlikte de olsa
+        "0532-456-789",            # baştaki sıfır: adet olamaz
+        "0532-456-78-90",          # dört parça: telefon
+        "70-20-50",                # kime yazılacağı söylenmemiş
+        "ahmet 70-0-70 saman",     # hareket yok
+    ],
+)
+def test_kosan_yanlis_tetiklenmez(metin):
+    p = parse(metin)
+    assert p is None or p.kind not in ("debt", "payment", "running_mismatch")
+
+
+def test_kosan_ciplak_uclu_arama_da_sayilmaz():
+    """Eskiden "70-20-50" bir kişi ARAMASINA dönüşüyordu (yanlış)."""
+    assert parse("70-20-50") is None
+    assert parse("12-05-2026") is None
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "ahmet 500 tl borç",
+        "ahmet 20 saman aldı",
+        "ahmet 20 balya saman aldı 15000 tl borç",
+        "ahmet 30 saman 5000tl",
+    ],
+)
+def test_kosan_normal_kayitlari_bozmaz(metin):
+    p = parse(metin)
+    assert p.kind in ("debt", "payment")
+    assert p.running is False
+
+
+def test_kosan_net_komutlar_hala_kazanir():
+    """Silme/düzenleme gibi net komutlar koşan formattan ÖNCE gelir."""
+    assert parse("ahmeti sil").kind == "archive_person"
+    assert parse("ahmet bakiye").kind == "balance_query"
+    assert parse("kişileri listele").kind == "list_all"
+
+
+def test_kosan_parse_running_dogrudan():
+    r = parser.parse_running("70-20-50")
+    assert (r.before, r.change, r.after) == (Decimal("70"), Decimal("20"), Decimal("50"))
+    assert r.qty == Decimal("20") and r.kind == "debt" and r.consistent is True
+    # Tarihe benzeyen ama matematiği TUTAN üçlü geçerlidir.
+    assert parser.parse_running("10-5-5").qty == Decimal("5")
+    # İki üçlü varsa hangisi olduğu belirsiz: hiçbiri.
+    assert parser.parse_running("70-20-50 ve 30-10-20") is None

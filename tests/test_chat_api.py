@@ -691,3 +691,140 @@ async def test_cancel_kaydedilmis_islemi_silmez_undo_penceresini_bozmaz(client, 
 
     pending = await web_chat_state.load(session, AUTH_USERNAME)
     assert pending.undo is not None
+
+
+# ---------------------------------------------------------------- koşan format
+#
+# CLAUDE.md > "Koşan format". Telegram tarafının ikizi:
+# tests/test_bot_running_format.py (aynı senaryolar, aynı sıra).
+
+
+async def test_kosan_format_tutar_sorulur_ve_kaydedilir(client, auth_account, session, ahmet, saman):
+    """"ahmet yılmaz 70-20-50 saman" -> 20 balya borç. Üçlü YALNIZCA adedi
+    söyler; TL uydurulmaz, yazarak sorulur."""
+    await _login(client, auth_account)
+
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "running_amount_needed"
+    assert msg["awaits_text"] is True
+    assert "70 → 50" in msg["reply"]
+    assert "20" in msg["reply"]
+    # Henüz HİÇBİR kayıt yok.
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+    r2 = await client.post("/api/chat", json={"text": "5000"})
+    msg2 = r2.json()["messages"][0]
+    assert msg2["outcome"] == "recorded"
+
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.amount_try == Decimal("5000.00")
+    assert len(tx.lines) == 1
+    assert tx.lines[0].qty == Decimal("20.000")  # kaydedilen sayı FARK
+
+
+async def test_kosan_format_tutar_ayni_cumlede_verilirse_dogrudan_kaydeder(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman 5000 tl"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "recorded"
+
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.amount_try == Decimal("5000.00")
+    assert tx.lines[0].qty == Decimal("20.000")
+
+
+async def test_kosan_format_artis_tahsilat_yazar(client, auth_account, session, ahmet, saman):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-30-100 saman tahsilat 3000 tl"})
+    assert r.json()["messages"][0]["outcome"] == "recorded"
+
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.kind.name == "CREDIT"
+    assert tx.lines[0].qty == Decimal("30.000")
+
+
+async def test_kosan_matematik_yanlissa_kaydetmez_sorar(client, auth_account, session, ahmet, saman):
+    await _login(client, auth_account)
+
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-25-50 saman 5000 tl"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "running_mismatch"
+    assert "fark 20 olmalı ama 25" in msg["reply"]
+    assert _actions(r.json()["messages"]) == ["running:fix", "running:cancel"]
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+    # "Fark 20 olsun": düzeltilmiş cümle NORMAL akıştan yeniden geçer.
+    r2 = await client.post("/api/chat/confirm", json={"action": "running:fix"})
+    assert r2.json()["messages"][0]["outcome"] == "recorded"
+
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.lines[0].qty == Decimal("20.000")
+    assert tx.amount_try == Decimal("5000.00")
+
+
+async def test_kosan_matematik_yanlissa_iptal_hicbir_sey_kaydetmez(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-25-50 saman 5000 tl"})
+
+    r = await client.post("/api/chat/confirm", json={"action": "running:cancel"})
+    assert r.json()["messages"][0]["outcome"] == "cancelled"
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+
+async def test_kosan_tutar_anlasilmazsa_tekrar_sorar_kayit_yok(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+
+    r = await client.post("/api/chat", json={"text": "bilmiyorum"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "running_amount_needed"
+    assert msg["awaits_text"] is True
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+    # Soru hâlâ açık: doğru cevap gelince kayıt tamamlanır.
+    r2 = await client.post("/api/chat", json={"text": "5 bin"})
+    assert r2.json()["messages"][0]["outcome"] == "recorded"
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.amount_try == Decimal("5000.00")
+
+
+async def test_kosan_coklu_kisi_once_hangisi_sonra_tutar_sorar(client, auth_account, session, saman):
+    """Kişi güvenliği koşan formatta da AYNI: önce "hangisi?", sonra tutar."""
+    await _login(client, auth_account)
+    duman = Person(full_name="Furkan Duman")
+    yildiz = Person(full_name="Furkan Yıldız")
+    session.add_all([duman, yildiz])
+    await session.flush()
+
+    r = await client.post("/api/chat", json={"text": "furkan 70-20-50 saman"})
+    assert r.json()["messages"][0]["outcome"] == "needs_confirmation"
+
+    r2 = await client.post("/api/chat/confirm", json={"action": f"person:pick:{duman.id}"})
+    msg2 = r2.json()["messages"][0]
+    assert msg2["outcome"] == "running_amount_needed"
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+    r3 = await client.post("/api/chat", json={"text": "4000 tl"})
+    assert r3.json()["messages"][0]["outcome"] == "recorded"
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == duman.id))).scalar_one()
+    assert tx.lines[0].qty == Decimal("20.000")
+
+
+async def test_kosan_durdurma_bekleyen_tutar_sorusunu_dusurur(client, auth_account, session, ahmet, saman):
+    await _login(client, auth_account)
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+
+    r = await client.post("/api/chat/cancel")
+    assert r.json()["messages"][0]["outcome"] == "cancelled"
+
+    # Artık "5000" bir tutar cevabı değil, sıradan bir mesajdır.
+    r2 = await client.post("/api/chat", json={"text": "5000"})
+    assert r2.json()["messages"][0]["outcome"] != "recorded"
+    assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0

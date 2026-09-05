@@ -72,9 +72,15 @@ LIST_KINDS = {"list_all", "list_debtors", "list_creditors", "list_district"}
 # tutmadığı bir bilgi soruluyor, bu yüzden bot "bu özellik henüz yok" der
 # (bkz. message_processor > PRODUCT_QUERY_UNSUPPORTED). Yine de NİYET olarak
 # tanınır: tanınmazsa cümle bir kişi adı ya da bir kayıt sanılabilirdi.
+# "running_mismatch" (CLAUDE.md > "Koşan format"): koşan üçlünün matematiği
+# tutmuyor ("70-25-50": 70'ten 50'ye fark 20 olmalı ama 25 yazılmış). Sorulan
+# şey saf aritmetiktir, kişiye bağlı değildir — bu yüzden kişi ÇÖZÜLMEZ (ve
+# yanlış yazılmış bir isim yüzünden asıl uyarı gölgelenmez). Kullanıcı "fark
+# N olsun" derse cümle DÜZELTİLİP normal akıştan yeniden geçirilir; kişi/ürün
+# çözümü orada, her zamanki güvenlik kurallarıyla yapılır.
 NO_PERSON_KINDS = LIST_KINDS | {
     "report_menu", "report_general", "report_daily", "search", "total_balance",
-    "product_query",
+    "product_query", "running_mismatch",
 }
 # person_contact/info_menu (CLAUDE.md > "DÜZELTME — 'bilgi ver' belirsiz,
 # SOR") de kişi gerektirir ama tutar gerektirmez, balance_query/
@@ -132,6 +138,14 @@ class ResolvedIntent:
     # Tutarı söylenmemiş borç kapanışı ("ali borcunu ödedi"): tutar burada
     # UYDURULMAZ, message_processor güncel bakiyeyi teklif edip onaylatır.
     close_debt: bool = False
+    # Koşan format ("70-20-50" — CLAUDE.md > "Koşan format"): qty üç sayının
+    # FARKI, running_before/change/after kullanıcıya gösterilecek üçlü.
+    # running=True olan bir kayıt niyetinde tutar boş kalabilir (uydurulmaz,
+    # message_processor sorar).
+    running: bool = False
+    running_before: Decimal | None = None
+    running_change: Decimal | None = None
+    running_after: Decimal | None = None
 
 
 async def find_person_match(
@@ -238,13 +252,26 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
             district=intent.district,
             query=intent.query,
             product_name_raw=intent.product,
+            qty=intent.qty,
+            running=intent.running,
+            running_before=intent.running_before,
+            running_change=intent.running_change,
+            running_after=intent.running_after,
         )
 
     # Tutarsız bir kayıt niyeti normalde çözülemez sayılır. Tek istisna borç
     # KAPANIŞIDIR ("ali borcunu ödedi"): niyet net, yalnızca tutar
     # söylenmemiş — kişi çözüldükten sonra güncel bakiye teklif edilip
     # kullanıcıya onaylatılır (bkz. message_processor).
-    if intent.kind not in NO_AMOUNT_KINDS and intent.amount is None and not intent.close_debt:
+    # Koşan format (CLAUDE.md > "Koşan format") da tutarsız gelebilir:
+    # "70-20-50" yalnızca MAL adedini söyler, TL ayrıca girilir. Tutar
+    # uydurulmaz — kişi/ürün çözüldükten sonra message_processor sorar.
+    if (
+        intent.kind not in NO_AMOUNT_KINDS
+        and intent.amount is None
+        and not intent.close_debt
+        and not intent.running
+    ):
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)
 
     person, candidates = await find_person_match(
@@ -267,6 +294,10 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 field_name=intent.field,
                 new_value=intent.new_value,
                 close_debt=intent.close_debt,
+                running=intent.running,
+                running_before=intent.running_before,
+                running_change=intent.running_change,
+                running_after=intent.running_after,
             )
         return ResolvedIntent(
             status=ResolutionStatus.PERSON_NOT_FOUND,
@@ -279,6 +310,10 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
             field_name=intent.field,
             new_value=intent.new_value,
             close_debt=intent.close_debt,
+            running=intent.running,
+            running_before=intent.running_before,
+            running_change=intent.running_change,
+            running_after=intent.running_after,
         )
 
     product = None
@@ -299,6 +334,10 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 field_name=intent.field,
                 new_value=intent.new_value,
                 close_debt=intent.close_debt,
+                running=intent.running,
+                running_before=intent.running_before,
+                running_change=intent.running_change,
+                running_after=intent.running_after,
             )
 
     return ResolvedIntent(
@@ -313,4 +352,8 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         field_name=intent.field,
         new_value=intent.new_value,
         close_debt=intent.close_debt,
+        running=intent.running,
+        running_before=intent.running_before,
+        running_change=intent.running_change,
+        running_after=intent.running_after,
     )

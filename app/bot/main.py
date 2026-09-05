@@ -841,6 +841,7 @@ async def _prompt_product_confirm(
         "amount": resolved.amount,
         "raw_message_id": raw_message_id,
         "raw_text": raw_text,
+        "running": resolved.running,
     }
     msg = _format_product_suggestion(resolved.product_name_raw, resolved.product_suggestion.name)
     await reply(msg, reply_markup=_product_suggestion_keyboard())
@@ -878,6 +879,7 @@ async def _handle_product_confirm(query, context: ContextTypes.DEFAULT_TYPE, use
             product_name_raw=pending["product_name_raw"],
             product=product,
             amount=pending["amount"],
+            running=pending.get("running", False),
         )
 
         raw = await session.get(RawMessage, pending["raw_message_id"])
@@ -885,6 +887,15 @@ async def _handle_product_confirm(query, context: ContextTypes.DEFAULT_TYPE, use
             session, raw, resolved, pending["raw_text"], source="rule"
         )
         await session.commit()
+
+    if result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
+        # Koşan formatta ürün de netleşti ama tutar hâlâ söylenmemiş: kayıt
+        # yapılmadan tutar sorulur (kuyruk İLERLETİLMEZ, parça hâlâ açık).
+        await _prompt_running_amount(
+            query.edit_message_text, context, resolved,
+            pending["raw_message_id"], pending["raw_text"],
+        )
+        return
 
     msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
     context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
@@ -961,6 +972,10 @@ def _pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, raw_te
         "raw_text": raw_text,
         "field": resolved.field_name,  # yalnızca edit_person için dolu
         "new_value": resolved.new_value,  # yalnızca edit_person için dolu
+        # Koşan format: kişi seçildikten SONRA da tutarın sorulması gerekir
+        # (bkz. _resolve_and_process) — bayrak taşınmazsa adedi belli ama
+        # tutarı belli olmayan bir kayıt sessizce fiyat listesine düşerdi.
+        "running": resolved.running,
     }
 
 
@@ -1020,6 +1035,165 @@ def _llm_pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, ra
         "raw_message_id": raw_message_id,
         "raw_text": raw_text,
     }
+
+# --------------------------------------------------------------- koşan format
+#
+# CLAUDE.md > "Koşan format": "ahmet 70-20-50 saman" = 70 vardı, 20 değişti,
+# 50 oldu -> 20 balya saman BORÇ (azalış). Üçlü YALNIZCA mal adedini söyler;
+# TL ayrı girilir. Bu yüzden iki ayrı soru doğabilir:
+#
+#   RUNNING_MISMATCH      "70-25-50" — 70'ten 50'ye fark 20 olmalı ama 25
+#                         yazılmış. Hiçbir şey kaydedilmez. [Fark 20 olsun]
+#                         denirse cümle parser.correct_running_text ile
+#                         düzeltilip NORMAL akıştan yeniden geçirilir —
+#                         ikinci bir kayıt mantığı yazılmaz.
+#   RUNNING_AMOUNT_NEEDED adet net ama tutar söylenmemiş. Tutar UYDURULMAZ
+#                         (fiyat listesinden de türetilmez, kural 4), yazarak
+#                         sorulur. Gelen metin Türkçe sayı olarak çözülür
+#                         ("5000", "5 bin", "5000 tl").
+
+
+def _running_ok_label(resolved: ResolvedIntent) -> str:
+    return f"Fark {_fmt_decimal(resolved.qty)} olsun"
+
+
+def _running_fix_keyboard(resolved: ResolvedIntent) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(_running_ok_label(resolved), callback_data="running:fix")],
+            [InlineKeyboardButton("İptal", callback_data="running:cancel")],
+        ]
+    )
+
+
+def _format_running_mismatch(resolved: ResolvedIntent) -> str:
+    """Matematik uyarısı: ne yazıldığı, ne olması gerektiği ve kararın
+    kullanıcıda olduğu açıkça söylenir. Hiçbir şey kaydedilmedi."""
+    return (
+        f"Sayılar tutmuyor: {_fmt_decimal(resolved.running_before)} → "
+        f"{_fmt_decimal(resolved.running_after)} için fark "
+        f"{_fmt_decimal(resolved.qty)} olmalı ama "
+        f"{_fmt_decimal(resolved.running_change)} yazdınız. Hangisi doğru?\n"
+        "Kayıt yapmadım."
+    )
+
+
+def _format_running_summary(resolved: ResolvedIntent) -> str:
+    """"70 → 50 · 20 balya saman borç" — koşan formatın ne anlaşıldığı."""
+    yon = "borç" if resolved.kind == "debt" else "tahsilat"
+    birim = f" {resolved.unit}" if resolved.unit else ""
+    urun = resolved.product.name if resolved.product else (resolved.product_name_raw or "")
+    return (
+        f"{_fmt_decimal(resolved.running_before)} → {_fmt_decimal(resolved.running_after)} · "
+        f"{_fmt_decimal(resolved.qty)}{birim} {urun} {yon}"
+    )
+
+
+def _format_running_amount_prompt(resolved: ResolvedIntent) -> str:
+    return f"{_format_running_summary(resolved)}\nTutar kaç TL?"
+
+
+async def _prompt_running_fix(
+    reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, raw_message_id: int, raw_text: str
+) -> None:
+    context.chat_data["running_fix"] = {
+        "raw_message_id": raw_message_id,
+        "raw_text": raw_text,
+    }
+    await reply(_format_running_mismatch(resolved), reply_markup=_running_fix_keyboard(resolved))
+
+
+async def _prompt_running_amount(
+    reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, raw_message_id: int, raw_text: str
+) -> None:
+    """Kişi ve ürün zaten çözülmüş (READY); yalnızca tutar bekletiliyor.
+    Bekleyen kayıt LLM önizlemesiyle AYNI şekli taşır (id'ler, yeniden
+    fuzzy eşleştirme yok)."""
+    context.chat_data["running_amount"] = _llm_pending_from_resolved(resolved, raw_message_id, raw_text)
+    await reply(_format_running_amount_prompt(resolved))
+
+
+def parse_amount_reply(text: str) -> Decimal | None:
+    """Tutar sorusuna gelen serbest cevabı çözer: "5000", "5.000", "5 bin",
+    "5000 tl", "5bin lira". Sayı çıkmazsa (ya da sıfır/negatifse) None —
+    uydurma yok, tekrar sorulur."""
+    temiz = " ".join(
+        kelime
+        for kelime in parser.normalize(text or "").split()
+        if kelime not in parser.CURRENCY_UNITS
+    )
+    value = parser.parse_turkish_number(temiz)
+    if value is None or value <= 0:
+        return None
+    return value
+
+
+async def _handle_running_amount_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, pending: dict, text: str
+) -> None:
+    """Tutar cevabı: çözülemezse HİÇBİR ŞEY kaydedilmez, soru tekrarlanır
+    (bekleyen kayıt yerinde kalır) — yanlış bir tutar yazmaktansa sormak."""
+    amount = parse_amount_reply(text)
+    if amount is None:
+        await update.message.reply_text("Tutarı anlayamadım. Sadece rakamla yazar mısın? (örn. 5000)")
+        return
+
+    context.chat_data.pop("running_amount", None)
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, pending["person_id"])
+        if person is None:
+            await update.message.reply_text("Kişi bulunamadı.")
+            await _advance_queue(context, update.message)
+            return
+        product = await session.get(Product, pending["product_id"]) if pending["product_id"] else None
+
+        resolved = ResolvedIntent(
+            status=ResolutionStatus.READY,
+            kind=pending["kind"],
+            person=person,
+            qty=pending["qty"],
+            unit=pending["unit"],
+            product=product,
+            amount=amount,
+        )
+        raw = await session.get(RawMessage, pending["raw_message_id"])
+        result = await message_processor.handle_resolved(
+            session, raw, resolved, pending["raw_text"], source="rule"
+        )
+        await session.commit()
+
+    msg = _format_record_confirmation(resolved, result.balance_before, result.balance)
+    context.chat_data["undo"] = {"tx_id": result.transaction_id, "at": time.monotonic()}
+    await update.message.reply_text(msg, reply_markup=_undo_keyboard(result.transaction_id))
+    await _advance_queue(context, update.message)
+
+
+async def _handle_running_fix(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """"Fark N olsun": orta sayı |ilk - son|'a eşitlenmiş metin NORMAL
+    akıştan yeniden geçirilir (bkz. _handle_delete_ambiguous_payment'taki
+    aynı desen) — kişi/ürün/tutar çözümü ikinci kez YAZILMAZ."""
+    pending = context.chat_data.pop("running_fix", None)
+    if not pending:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    duzeltilmis = parser.correct_running_text(pending["raw_text"])
+    if duzeltilmis is None:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        await _advance_queue(context, query.message)
+        return
+
+    async with SessionLocal() as session:
+        raw = await session.get(RawMessage, pending["raw_message_id"])
+        result = await message_processor.process_raw_message(session, raw, duzeltilmis)
+        await session.commit()
+        await query.edit_message_reply_markup(reply_markup=None)
+        await _reply_outcome(session, context, result, raw, duzeltilmis, query.message)
+
+    if result.outcome in _COMPLETES_WITHOUT_INPUT:
+        await _advance_queue(context, query.message)
+
 
 
 def _is_admin(chat_id: int | None) -> bool:
@@ -1088,6 +1262,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     edit_field_flow = context.chat_data.get("edit_field_flow")
     if edit_field_flow is not None and "field" in edit_field_flow:
         await _handle_edit_field_value_text(update, context, edit_field_flow, text)
+        return
+
+    # Koşan formatta tutar sorulmuşsa ("70-20-50" yalnızca adedi söyler),
+    # gelen metin o tutarın cevabıdır (CLAUDE.md > "Koşan format").
+    running_amount = context.chat_data.get("running_amount")
+    if running_amount is not None:
+        await _handle_running_amount_text(update, context, running_amount, text)
         return
 
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
@@ -1410,6 +1591,16 @@ async def _reply_outcome(
         await message.reply_text(_format_product_query_unsupported(resolved))
         return
 
+    if result.outcome == ProcessOutcome.RUNNING_MISMATCH:
+        # Koşan üçlünün matematiği tutmuyor: hiçbir şey kaydedilmedi.
+        await _prompt_running_fix(message.reply_text, context, resolved, raw.id, text)
+        return
+
+    if result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
+        # Adet net, TL söylenmemiş: tutar uydurulmaz, yazarak sorulur.
+        await _prompt_running_amount(message.reply_text, context, resolved, raw.id, text)
+        return
+
     if result.outcome == ProcessOutcome.PERSON_NOT_FOUND:
         isim = _title_tr(resolved.person_name_raw or "")
         if resolved.kind in _QUERY_ONLY_KINDS:
@@ -1582,6 +1773,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "delete:cancel":
         context.chat_data.pop("delete_ambiguous", None)
         await query.edit_message_text("Tamam, iptal ettim.")
+        await _advance_queue(context, query.message)
+        return
+    if data == "running:fix":
+        await _handle_running_fix(query, context)
+        return
+    if data == "running:cancel":
+        context.chat_data.pop("running_fix", None)
+        await query.edit_message_text("Tamam, iptal ettim. Doğru sayılarla tekrar yazar mısın?")
         await _advance_queue(context, query.message)
         return
     if data == "product:yes":
@@ -1863,6 +2062,7 @@ async def _resolve_and_process(
         amount=pending["amount"],
         field_name=pending.get("field"),
         new_value=pending.get("new_value"),
+        running=pending.get("running", False),
     )
     if pending["product_name"] and pending["kind"] != "balance_query":
         product, suggestion = await catalog.resolve_product_or_suggest(
@@ -1937,6 +2137,12 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
     elif result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION:
         await _prompt_product_confirm(
             query.edit_message_text, context, resolved, pending["raw_message_id"], pending["raw_text"]
+        )
+
+    elif result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
+        await _prompt_running_amount(
+            query.edit_message_text, context, resolved,
+            pending["raw_message_id"], pending["raw_text"],
         )
 
     elif result.outcome == ProcessOutcome.CREATE_PERSON:
@@ -2024,6 +2230,9 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     elif result.outcome == ProcessOutcome.PRODUCT_NEEDS_CONFIRMATION:
         await _prompt_product_confirm(msg.reply_text, context, resolved, pending["raw_message_id"], pending["raw_text"])
+
+    elif result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
+        await _prompt_running_amount(msg.reply_text, context, resolved, pending["raw_message_id"], pending["raw_text"])
 
     elif result.outcome == ProcessOutcome.CREATE_PERSON:
         # Bu akışta `person` az önce oluşturuldu (yukarıda) — burada her

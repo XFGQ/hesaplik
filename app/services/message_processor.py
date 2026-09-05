@@ -73,6 +73,11 @@ class ProcessOutcome(str, enum.Enum):
     PRODUCT_NEEDS_CONFIRMATION = "product_needs_confirmation"
     PRODUCT_QUERY_UNSUPPORTED = "product_query_unsupported"
     CLOSE_DEBT_CONFIRM = "close_debt_confirm"
+    # Koşan format (CLAUDE.md > "Koşan format"):
+    #   RUNNING_MISMATCH      -> üçlünün matematiği tutmuyor, kaydedilmez, sorulur
+    #   RUNNING_AMOUNT_NEEDED -> adet net, TL söylenmemiş; tutar uydurulmaz, sorulur
+    RUNNING_MISMATCH = "running_mismatch"
+    RUNNING_AMOUNT_NEEDED = "running_amount_needed"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -309,6 +314,14 @@ async def _dispatch(
         # yanlış bir cevap üretmekten iyidir.
         return ProcessResult(outcome=ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED, resolved=resolved)
 
+    if resolved.kind == "running_mismatch":
+        # Koşan üçlünün İÇ tutarlılığı bozuk ("70-25-50"): hiçbir şey
+        # kaydedilmez, kişi bile çözülmez — sorulan şey saf aritmetik
+        # (CLAUDE.md > "Koşan format" > matematik kontrolü). Kullanıcı "fark
+        # N olsun" derse cümle parser.correct_running_text ile düzeltilip
+        # NORMAL akıştan yeniden geçirilir.
+        return ProcessResult(outcome=ProcessOutcome.RUNNING_MISMATCH, resolved=resolved)
+
     if resolved.kind == "total_balance":
         # Defterin TAMAMININ özeti (CLAUDE.md > "Toplam bakiye niyeti") —
         # kişi gerektirmez, salt okunur.
@@ -409,6 +422,13 @@ async def _dispatch(
         return ProcessResult(
             outcome=ProcessOutcome.CLOSE_DEBT_CONFIRM, resolved=resolved, balance=bal
         )
+
+    if resolved.running and resolved.amount is None:
+        # Koşan format YALNIZCA mal adedini söyler ("70-20-50" = 20 balya);
+        # TL ayrı girilir (CLAUDE.md > "Koşan format"). Tutar söylenmemişse
+        # UYDURULMAZ ve fiyat listesinden de türetilmez (kural 4: "tutarı
+        # kullanıcı yazar") — kişi/ürün çözülmüş hâlde bekletilip sorulur.
+        return ProcessResult(outcome=ProcessOutcome.RUNNING_AMOUNT_NEEDED, resolved=resolved)
 
     if source == "llm":
         # Kayıt (borç/tahsilat) niyeti LLM'den geldi: kişi/ürün/tutar net
