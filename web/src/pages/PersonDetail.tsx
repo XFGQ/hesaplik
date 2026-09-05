@@ -93,15 +93,21 @@ export default function PersonDetail() {
         <h1 style={{ cursor: "pointer" }} onClick={() => setModal("edit")}>
           {p?.full_name ?? "Kişi"}
         </h1>
-        <button className="link" onClick={() => setModal("edit")}>
-          Düzenle
-        </button>
-        <button
-          className="link"
-          onClick={() => api.openPersonReport(personId).catch(() => toast("Rapor alınamadı", "info"))}
-        >
-          <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Ekstre (PDF)
-        </button>
+        {/* Sağ üstte tek sütun: Düzenle üstte, Ekstre (PDF) altında. Yan yana
+            dururken ikisi de kısa metinli bağlantıydı ve parmak birini
+            isterken diğerine deniyordu; alt alta her biri kendi satırında
+            tam boy (--tap) hedef oluyor. */}
+        <div className="bar-actions">
+          <button className="link" onClick={() => setModal("edit")}>
+            Düzenle
+          </button>
+          <button
+            className="link"
+            onClick={() => api.openPersonReport(personId).catch(() => toast("Rapor alınamadı", "info"))}
+          >
+            <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Ekstre (PDF)
+          </button>
+        </div>
       </div>
 
       <div className="balance">
