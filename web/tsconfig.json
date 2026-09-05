@@ -12,6 +12,10 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "isolatedModules": true,
+    /* goods.ts, node --test tarafından da doğrudan çalıştırılır (DOM'suz
+       mantık); Node açık ".ts" uzantısı ister. Bundler + noEmit olduğu için
+       zararsız. */
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "types": ["vite/client"]
   },

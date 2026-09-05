@@ -882,6 +882,78 @@ tbody tr:hover {
   gap: 8px;
 }
 
+/* --- akıllı ürün alanı (DebtModal / PaymentModal)
+   Ürün + adet + birim TEK alanda yazılır ("20 kg arpa", "70-20-50"); altında
+   ne kaydedileceğinin yankısı durur. Yankı 60 yaş için ipuçlarından büyük ve
+   ink renginde: kullanıcı kaydetmeden önce okuyacağı satır burasıdır. */
+
+.goods-echo {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 8px 0 0;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.goods-echo b {
+  font-weight: 600;
+}
+
+.goods-echo.bad {
+  color: var(--borc);
+}
+
+/* Birim dropdown'u yedektir: ana yol yazıdan algılama. Katlanmış durur,
+   "Birimi seç" ile açılır. */
+.goods-unit {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.goods-unit select {
+  min-height: 44px;
+}
+
+/* Onay kutusu: input'un genel width:100% / min-height kuralından muaf,
+   dokunma alanı satırın kendisi (--tap). */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: var(--tap);
+  margin-bottom: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.check input[type="checkbox"] {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  flex: none;
+  padding: 0;
+  accent-color: var(--tahsilat);
+}
+
+.check.off {
+  color: var(--ink-faint);
+  cursor: default;
+}
+
+/* Alan altındaki kısa hata: .error'ın sayfa geneli blok kutusu değil,
+   tek satırlık uyarı. */
+.field .error,
+.panel > .error {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
 input,
 select,
 textarea {

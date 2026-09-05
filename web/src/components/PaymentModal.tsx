@@ -3,11 +3,16 @@ import { useState } from "react";
 
 import { api } from "../api/client";
 import { money, parseNumber, toLocalInput } from "../lib/format";
-import { parseRunning, runningDirectionWarning, runningError, runningHint } from "../lib/running";
+import {
+  BIRIMLER,
+  autoAmount,
+  checkForm,
+  goodsSummary,
+  resolveGoods,
+} from "../lib/goods";
+import { runningDirectionWarning } from "../lib/running";
 import { useToast } from "../lib/toast";
 import Modal from "./Modal";
-
-const BIRIMLER = ["balya", "kilo", "adet", "ton", "çuval", "litre"];
 
 type Props = {
   personId: number;
@@ -20,67 +25,63 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
   const toast = useToast();
 
   const [when, setWhen] = useState(() => toLocalInput(new Date()));
-  const [product, setProduct] = useState("");
-  const [qty, setQty] = useState("");
-  const [unit, setUnit] = useState("balya");
+  // Borçtaki ile AYNI akıllı alan; tek farkı boş bırakılabilmesi (düz para).
+  const [entry, setEntry] = useState("");
+  const [unitFallback, setUnitFallback] = useState<string | null>(null);
+  const [unitOpen, setUnitOpen] = useState(false);
   const [amount, setAmount] = useState("");
+  const [amountHint, setAmountHint] = useState<number | null>(null);
+  // Tik varsayılan olarak KAPALI (CLAUDE.md kural 4: fiyat listesi bağlamaz).
+  const [autoPrice, setAutoPrice] = useState(false);
 
   const products = useQuery({ queryKey: ["products"], queryFn: api.products });
 
-  function onProductChange(value: string) {
-    setProduct(value);
-    const key = value.trim().toLocaleLowerCase("tr");
-    const hit = products.data?.find((p) => p.name.toLocaleLowerCase("tr") === key);
-    if (hit) setUnit(hit.base_unit);
+  const goods = resolveGoods(entry, products.data, unitFallback);
+  const otomatik = autoAmount(goods);
+  const otomatikAcik = autoPrice && otomatik !== null;
+
+  function onEntryChange(value: string) {
+    setEntry(value);
+    const next = resolveGoods(value, products.data, unitFallback);
+    if (next.unit) setUnitFallback(null);
+    if (next.amountHint !== null && next.amountHint !== amountHint) {
+      const oncekiOneri = amountHint === null ? null : String(amountHint).replace(".", ",");
+      if (!amount.trim() || amount === oncekiOneri) {
+        setAmount(String(next.amountHint).replace(".", ","));
+        setAutoPrice(false);
+      }
+    }
+    setAmountHint(next.amountHint);
   }
 
-  // Koşan format (CLAUDE.md > "Koşan format"): adet alanına "70-30-100"
-  // yazılabilir — kaydedilen sayı üçlünün FARKIDIR.
-  const running = parseRunning(qty);
-  const runningHata = running ? runningError(running) : null;
-  const runningUyari = running ? runningDirectionWarning(running, "payment") : null;
-
-  const tutar = Number(parseNumber(amount)) || 0;
-  const adet = running
-    ? running.consistent
-      ? running.qty
-      : 0
-    : Number(parseNumber(qty)) || 0;
-  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
+  const tutar = otomatikAcik ? otomatik : Number(parseNumber(amount)) || 0;
+  const birimFiyat = goods.qty && goods.qty > 0 && tutar > 0 ? tutar / goods.qty : null;
+  const yonUyari = goods.running ? runningDirectionWarning(goods.running, "payment") : null;
+  const check = checkForm(goods, otomatikAcik ? String(otomatik) : amount, {
+    goodsRequired: false,
+  });
 
   const save = useMutation({
-    mutationFn: () => {
-      const hasItem = product.trim() && qty.trim();
-      return api.addPayment({
+    mutationFn: () =>
+      api.addPayment({
         person_id: personId,
-        amount: parseNumber(amount),
-        product_name: hasItem ? product.trim() : null,
-        qty: hasItem ? (running ? String(running.qty) : parseNumber(qty)) : null,
-        unit: hasItem ? unit.trim() : null,
+        amount: tutar.toFixed(2),
+        // Alan boşsa kalem yok: düz para tahsilatı.
+        product_name: goods.empty ? null : goods.productName,
+        qty: goods.empty ? null : String(goods.qty),
+        unit: goods.empty ? null : goods.unitName,
         occurred_at: new Date(when).toISOString(),
-      });
-    },
+      }),
     onSuccess: () => {
       ["balance", "transactions"].forEach((k) =>
         qc.invalidateQueries({ queryKey: [k, personId] }),
       );
       qc.invalidateQueries({ queryKey: ["persons"] });
       qc.invalidateQueries({ queryKey: ["products"] });
-      toast(`${personName}'ndan ${money(amount)} tahsilat eklendi`, "success");
+      toast(`${personName}'ndan ${money(tutar)} tahsilat eklendi`, "success");
       onClose();
     },
   });
-
-  const showQtyUnit = product.trim().length > 0;
-
-  const yeniUrun =
-    product.trim().length > 1 &&
-    products.data !== undefined &&
-    !products.data.some(
-      (p) => p.name.toLocaleLowerCase("tr") === product.trim().toLocaleLowerCase("tr"),
-    );
-
-  const valid = tutar > 0 && (product.trim().length === 0 || adet > 0);
 
   return (
     <Modal title="Tahsilat ekle" onClose={onClose}>
@@ -93,62 +94,96 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
         <p className="panel-title">Ürün (isteğe bağlı)</p>
 
         <label className="field">
-          <span>Ürün</span>
+          <span>Ürün ve adet</span>
           <input
-            list="urunler-tahsilat"
-            value={product}
-            onChange={(e) => onProductChange(e.target.value)}
-            placeholder="boş bırakırsan düz para sayılır"
+            value={entry}
+            onChange={(e) => onEntryChange(e.target.value)}
+            placeholder="boş bırakırsan düz para — örn: 20 kg arpa · 70-30-100"
           />
-          <datalist id="urunler-tahsilat">
-            {products.data?.map((p) => (
-              <option key={p.id} value={p.name} />
-            ))}
-          </datalist>
-          {yeniUrun && <p className="hint">Yeni ürün açılacak: {product.trim()}</p>}
         </label>
 
-        {showQtyUnit && (
-          <label className="field">
-            <span>Adet ve birim</span>
-            <div className="qty-unit">
-              <input
-                inputMode="decimal"
-                value={qty}
-                onChange={(e) => setQty(e.target.value)}
-                placeholder="20"
-              />
-              <select value={unit} onChange={(e) => setUnit(e.target.value)}>
-                {BIRIMLER.map((b) => (
+        {goods.error ? (
+          <p className="error">{goods.error}</p>
+        ) : (
+          goods.qty !== null && (
+            <p className="goods-echo">
+              <span aria-hidden>→</span>
+              <b>{goodsSummary(goods)}</b>
+            </p>
+          )
+        )}
+        {goods.empty && products.data && products.data.length > 0 && (
+          // Datalist yerine düz ipucu: kullanıcı serbest yazıyor, açılır liste
+          // "20 kg ar" gibi yarım cümlede zaten eşleşmiyordu.
+          <p className="hint">
+            Kayıtlı ürünler: {products.data.map((p) => p.name.toLocaleLowerCase("tr")).join(", ")}
+          </p>
+        )}
+        {!goods.error && goods.isNewProduct && (
+          <p className="hint">Yeni ürün açılacak: {goods.productName}</p>
+        )}
+        {!goods.error && yonUyari && <p className="hint">{yonUyari}</p>}
+
+        {!goods.empty &&
+          (unitOpen ? (
+            <div className="goods-unit">
+              <select
+                value={goods.unitName}
+                onChange={(e) => setUnitFallback(e.target.value)}
+                aria-label="Birim"
+              >
+                {[...new Set([goods.unitName, ...BIRIMLER])].map((b) => (
                   <option key={b} value={b}>
                     {b}
                   </option>
                 ))}
               </select>
+              <button className="link" type="button" onClick={() => setUnitOpen(false)}>
+                Kapat
+              </button>
             </div>
-            {runningHata && <p className="error">{runningHata}</p>}
-            {running && !runningHata && <p className="hint">{runningHint(running, unit)}</p>}
-            {runningUyari && !runningHata && <p className="hint">{runningUyari}</p>}
-          </label>
-        )}
+          ) : (
+            <button className="link" type="button" onClick={() => setUnitOpen(true)}>
+              Birim: {goods.unitName} — değiştir
+            </button>
+          ))}
       </div>
 
       <div className="panel">
         <p className="panel-title">Alınan para</p>
+
+        {!goods.empty && (
+          <label className={otomatik === null ? "check off" : "check"}>
+            <input
+              type="checkbox"
+              checked={otomatikAcik}
+              disabled={otomatik === null}
+              onChange={(e) => setAutoPrice(e.target.checked)}
+            />
+            <span>
+              {goods.catalogPrice !== null
+                ? `Kayıtlı fiyattan hesapla (${money(goods.catalogPrice)}/${goods.unitName})`
+                : goods.priceUnit
+                  ? `Kayıtlı fiyat ${goods.priceUnit} için — ${goods.unitName} fiyatı elle girilir`
+                  : "Kayıtlı fiyat yok — tutarı elle girin"}
+            </span>
+          </label>
+        )}
+
         <label className="field">
           <span>Tutar (TL)</span>
           <input
             className="amount"
             inputMode="decimal"
-            value={amount}
+            value={otomatikAcik ? String(otomatik).replace(".", ",") : amount}
+            readOnly={otomatikAcik}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="2000"
             autoFocus
           />
           {birimFiyat !== null && (
             <p className="hint">
-              Birim fiyat {money(birimFiyat)}
-              {unit.trim() ? ` / ${unit.trim()}` : ""}
+              Birim fiyat {money(birimFiyat)} / {goods.unitName}
             </p>
           )}
         </label>
@@ -167,10 +202,10 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
 
       <button
         className="primary"
-        disabled={!valid || save.isPending}
+        disabled={!check.ok || save.isPending}
         onClick={() => save.mutate()}
       >
-        {save.isPending ? "Kaydediliyor" : "Kaydet"}
+        {save.isPending ? "Kaydediliyor" : check.ok ? "Kaydet" : (check.reason ?? "Kaydet")}
       </button>
     </Modal>
   );

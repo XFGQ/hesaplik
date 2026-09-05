@@ -842,6 +842,108 @@ yanlış cevap vermez. Gerçek ürün/stok raporlaması sonraki iş.
 soğuk model süresinden yenir. Yeni bir kalıp önce regex'e eklenmeye
 çalışılır — regex'in çözdüğü cümle LLM'e hiç gitmez.
 
+## Koşan format — hızlı adet girişi (2026-09-05)
+
+Kullanıcının hızlı giriş biçimi. **Yalnızca MAL adedi hakkındadır, TL değil.**
+
+    "70-20-50"  =  70 vardı, 20 değişti, 50 oldu
+
+**Ayraç salt görseldir.** `-`, `+`, `*` aynı şeyi anlatır ("70-20-50",
+"70+20+50", "70*20*50", "70 - 20 - 50"). Matematik işareti DEĞİL; parser
+tokenlaştırmadan önce hepsini tek kanonik biçime toplar (`_collapse_running`).
+
+**Yön ilk-son karşılaştırmasından çıkar.** İlk > son (azalış) = mal kişiye
+gitti = BORÇ. İlk < son (artış) = mal geri geldi = TAHSİLAT. Cümledeki bağlam
+kelimesi ("tahsilat"/"aldı"/"borç") yalnızca TEYİT eder; çeliştiğinde sayılar
+kazanır — kullanıcı üç sayıyı bilerek yazmıştır.
+
+**Kaydedilen sayı DEĞİŞİMDİR (fark).** "70-20-50" -> 20 balya. İlk ve son
+sayı kullanıcının kendi doğrulaması içindir, deftere yazılmaz. Ürün
+söylenmezse varsayılan "saman".
+
+**Matematik kontrolü (yalnızca İÇ tutarlılık).** Orta sayı |ilk − son|'a EŞİT
+olmalı. Değilse HİÇBİR ŞEY kaydedilmez, sorulur: "Sayılar tutmuyor: 70 → 50
+için fark 20 olmalı ama 25 yazdınız." + [Fark 20 olsun] [İptal]. "Fark 20
+olsun" denince cümle `parser.correct_running_text` ile düzeltilip NORMAL
+akıştan yeniden geçirilir — ikinci bir kayıt mantığı yazılmaz (aynı desen:
+"Tahsilat gir" seçeneği). "25 olsun" diye bir seçenek YOK: orta sayı doğruysa
+hangi ucun yanlış olduğu bilinemez, kullanıcı yeniden yazar.
+**Sistemdeki mevcut saman bakiyesiyle karşılaştırma KASTEN yapılmaz** (sonraki
+iş) — yalnızca cümlenin kendi içindeki tutarlılık bakılır.
+
+**TL ayrı girilir.** Aynı cümlede varsa kullanılır ("... saman 5000 tl");
+yoksa tutar UYDURULMAZ ve fiyat listesinden de türetilmez (kural 4) —
+`ProcessOutcome.RUNNING_AMOUNT_NEEDED` ile yazarak sorulur ("70 → 50 · 20
+balya saman borç / Tutar kaç TL?"). Cevap Türkçe sayı olarak çözülür
+("5000", "5 bin", "5000 tl"); çözülemezse kayıt yapılmaz, soru tekrarlanır.
+Kişi belirsizse önce her zamanki "hangisi?" sorulur, tutar sorusu ondan
+sonra gelir (`running` bayrağı bekleyen kayıtlarda taşınır).
+
+**Yanlış tetiklenmeye karşı altı katman** (parser.py > "koşan format"):
+tam üç parça (dördüncü sayı gelirse kalıp hiç eşleşmez — telefon elenir),
+baştaki sıfır yasak, parça başına en çok 6 hane, tarih biçimleri (gg-aa-yyyy /
+yyyy-aa-gg) iç tutarlılık sağlanmıyorsa elenir, mesajda tam olarak BİR üçlü,
+kişi adı zorunlu. Ayrıca `parse()` içinde bu kontrol TÜM sorgu/komut
+kalıplarından SONRA gelir: "sil", "düzenle", "rapor", "listele" her zaman
+kazanır. Çıplak "70-20-50" artık bir kişi ARAMASI da sayılmaz — harf
+içermeyen kelime isim/ilçe olamaz (`_try_single_word_search`).
+
+**Nerede çalışır:** parser (regex + aritmetik, LLM'e GİTMEDEN), Telegram
+botu, web sohbeti ve borç/tahsilat ekleme FORMU. Formda adet alanına
+"70-20-50" yazılır; `web/src/lib/running.ts` (parser.py'nin ikizi — kural
+değişirse İKİSİ birden değişir) farkı çözer, ilk → son özetini gösterir,
+matematik tutmuyorsa Kaydet'i kilitler, yön modalla çelişiyorsa uyarır
+(engellemez: modalı kullanıcı seçti).
+
+Testler: `tests/test_parser.py` > "koşan format", `tests/test_chat_api.py`,
+`tests/test_bot_running_format.py`, `web/src/lib/running.test.ts`.
+
+## Borç/tahsilat formu — tek akıllı ürün alanı (2026-09-05)
+
+Ayrı ürün / adet / birim alanları KALDIRILDI. DebtModal ve PaymentModal'da
+tek bir alan var ("Ürün ve adet"); ayrıştırma `web/src/lib/goods.ts`'te,
+DOM'suz ve testli (`web/src/lib/goods.test.ts`).
+
+    "20"                     -> 20 balya saman   (ürün yazılmazsa saman)
+    "20 kg arpa"             -> 20 kilo arpa
+    "500 balya saman"        -> 500 balya saman
+    "arpa 20 kilo"           -> sıra serbest
+    "20kg arpa"              -> bitişik yazım ayrılır
+    "70-20-50"               -> koşan format (running.ts) — 20 balya saman
+    "20 balya saman 5000 tl" -> tutar alanına 5000 ÖNERİLİR
+
+**Birim yazıdan algılanır**, dropdown'la uğraştırılmaz: kg/kilo/kilogram →
+kilo, gr → gram, lt → litre, cuval → çuval... (parser.py'deki UNITS
+kümesinin form karşılığı). Birimler AYRI tutulur: 20 balya ≠ 20 kilo.
+Öncelik **yazı > dropdown yedeği > ürünün base_unit'i > balya**. Dropdown
+silinmedi ama katlandı: alanın altında "Birim: balya — değiştir" bağlantısı,
+tıklanınca açılır. Yazıda birim geçtiği anda yedek düşer — yazı kazanır.
+
+**Alanın altında ne kaydedileceğinin yankısı durur** (`.goods-echo`,
+ipuçlarından büyük): "→ 20 balya saman", koşan formatta "→ 70 → 50 · 20
+balya saman (borç)". Yeni ürün açılacaksa ve yön modalla çelişiyorsa ayrıca
+uyarılır (çelişki engellemez, modalı kullanıcı seçti).
+
+**Tutar HER ZAMAN zorunlu.** `checkForm` tek karar noktasıdır; Kaydet pasifse
+butonun üstünde sebebi yazar ("Tutar girin", "Adet anlaşılmadı", koşan format
+matematik hatası). Boş/sıfır tutarla kayıt yok.
+
+**Otomatik fiyat tiki.** Ürünün kayıtlı birim fiyatı varsa (products →
+PriceHistory, `unit_price`) "Kayıtlı fiyattan hesapla (75,00 ₺/balya)"
+kutusu çıkar; işaretlenince tutar = adet × birim fiyat (koşan formatta FARK
+üzerinden), alan salt okunur olur. **Tik varsayılan olarak KAPALIDIR** —
+fiyat listesi tutarı bağlamaz (kural 4), kullanıcı isterse hesaplatır.
+Birim ürünün kendi birimiyle tutmuyorsa ("20 kg saman", fiyat balya başına)
+tik PASİF: yanlış birimle çarpım yapılmaz, sebebi yazılır.
+
+**Belirsizlik sessizce yutulmaz.** İkinci bir çıplak sayı ürün adına
+karışmaz ("20 saman 15" → "Anlaşılmadı: 15"), adet yazılmamışsa uydurulmaz,
+"... 5000 tl" önerisi kullanıcının ELLE yazdığı tutarı ezmez.
+
+Tahsilat formunda alan boş bırakılabilir (düz para); doluysa borçla birebir
+aynı mantık. EditTxModal ve AddEntry sayfası şimdilik eski ayrı alanlarda
+kaldı (sonraki iş).
+
 ## Web chat durdurma ve mesaj düzenleme (2026-09-02)
 
 Web sohbeti normal AI arayüzleri gibi davranır: süren/bekleyen işi durdurma
