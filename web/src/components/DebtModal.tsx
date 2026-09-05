@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { api } from "../api/client";
 import { money, parseNumber, toLocalInput } from "../lib/format";
+import { parseRunning, runningDirectionWarning, runningError, runningHint } from "../lib/running";
 import { useToast } from "../lib/toast";
 import Modal from "./Modal";
 
@@ -33,12 +34,27 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
     if (hit) setUnit(hit.base_unit);
   }
 
+  // Koşan format (CLAUDE.md > "Koşan format"): adet alanına "70-20-50"
+  // yazılabilir — 70 vardı, 20 değişti, 50 oldu. Deftere yazılan sayı
+  // DEĞİŞİMDİR (fark); ilk ve son yalnızca kullanıcının doğrulaması.
+  const running = parseRunning(qty);
+  const runningHata = running ? runningError(running) : null;
+  const runningUyari = running ? runningDirectionWarning(running, "debt") : null;
+
+  const tutar = Number(parseNumber(amount)) || 0;
+  const adet = running
+    ? running.consistent
+      ? running.qty
+      : 0
+    : Number(parseNumber(qty)) || 0;
+  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
+
   const save = useMutation({
     mutationFn: () =>
       api.addDebt({
         person_id: personId,
         product_name: product.trim(),
-        qty: parseNumber(qty),
+        qty: running ? String(running.qty) : parseNumber(qty),
         unit: unit.trim() || null,
         amount: parseNumber(amount),
         occurred_at: new Date(when).toISOString(),
@@ -49,14 +65,10 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
       );
       qc.invalidateQueries({ queryKey: ["persons"] });
       qc.invalidateQueries({ queryKey: ["products"] });
-      toast(`${personName}'na ${qty.trim()} ${unit.trim()} ${product.trim()} borç eklendi`, "success");
+      toast(`${personName}'na ${adet} ${unit.trim()} ${product.trim()} borç eklendi`, "success");
       onClose();
     },
   });
-
-  const tutar = Number(parseNumber(amount)) || 0;
-  const adet = Number(parseNumber(qty)) || 0;
-  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
 
   const yeniUrun =
     product.trim().length > 1 &&
@@ -111,6 +123,9 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
               ))}
             </select>
           </div>
+          {runningHata && <p className="error">{runningHata}</p>}
+          {running && !runningHata && <p className="hint">{runningHint(running, unit)}</p>}
+          {runningUyari && !runningHata && <p className="hint">{runningUyari}</p>}
         </label>
       </div>
 

@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import { api } from "../api/client";
 import { money, parseNumber, toLocalInput } from "../lib/format";
+import { parseRunning, runningDirectionWarning, runningError, runningHint } from "../lib/running";
 import { useToast } from "../lib/toast";
 import Modal from "./Modal";
 
@@ -33,6 +34,20 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
     if (hit) setUnit(hit.base_unit);
   }
 
+  // Koşan format (CLAUDE.md > "Koşan format"): adet alanına "70-30-100"
+  // yazılabilir — kaydedilen sayı üçlünün FARKIDIR.
+  const running = parseRunning(qty);
+  const runningHata = running ? runningError(running) : null;
+  const runningUyari = running ? runningDirectionWarning(running, "payment") : null;
+
+  const tutar = Number(parseNumber(amount)) || 0;
+  const adet = running
+    ? running.consistent
+      ? running.qty
+      : 0
+    : Number(parseNumber(qty)) || 0;
+  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
+
   const save = useMutation({
     mutationFn: () => {
       const hasItem = product.trim() && qty.trim();
@@ -40,7 +55,7 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
         person_id: personId,
         amount: parseNumber(amount),
         product_name: hasItem ? product.trim() : null,
-        qty: hasItem ? parseNumber(qty) : null,
+        qty: hasItem ? (running ? String(running.qty) : parseNumber(qty)) : null,
         unit: hasItem ? unit.trim() : null,
         occurred_at: new Date(when).toISOString(),
       });
@@ -55,10 +70,6 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
       onClose();
     },
   });
-
-  const tutar = Number(parseNumber(amount)) || 0;
-  const adet = Number(parseNumber(qty)) || 0;
-  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
 
   const showQtyUnit = product.trim().length > 0;
 
@@ -115,6 +126,9 @@ export default function PaymentModal({ personId, personName, onClose }: Props) {
                 ))}
               </select>
             </div>
+            {runningHata && <p className="error">{runningHata}</p>}
+            {running && !runningHata && <p className="hint">{runningHint(running, unit)}</p>}
+            {runningUyari && !runningHata && <p className="hint">{runningUyari}</p>}
           </label>
         )}
       </div>
