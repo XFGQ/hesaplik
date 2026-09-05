@@ -47,6 +47,8 @@ from app.bot.main import (
     _format_product_query_unsupported,
     _format_product_suggestion,
     _format_record_confirmation,
+    _format_running_amount_prompt,
+    _format_running_mismatch,
     _format_search_messages,
     _format_total_balance,
     _llm_pending_from_resolved,
@@ -54,6 +56,8 @@ from app.bot.main import (
     _new_person_set_field_and_next,
     _pending_from_resolved,
     _QUERY_ONLY_KINDS,
+    _running_ok_label,
+    parse_amount_reply,
     _title_tr,
     _turkce_buyuk,
 )
@@ -111,6 +115,17 @@ def _candidates_buttons(candidates: list[Person]) -> list[ChatButton]:
     buttons = [ChatButton(label=p.full_name, action=f"person:pick:{p.id}") for p in candidates]
     buttons.append(ChatButton(label="+ Yeni kişi ekle", action="person:new"))
     return buttons
+
+
+def _running_fix_buttons(resolved: ResolvedIntent) -> list[ChatButton]:
+    """Koşan formatın matematiği tutmuyor (CLAUDE.md > "Koşan format"):
+    tek düzeltme önerisi + iptal. Ortadaki sayı doğruysa hangi ucun yanlış
+    olduğunu BİLEMEYİZ, o yüzden "25 olsun" diye bir seçenek YOK —
+    kullanıcı iptal edip doğru sayılarla yeniden yazar."""
+    return [
+        ChatButton(label=_running_ok_label(resolved), action="running:fix"),
+        ChatButton(label="İptal", action="running:cancel"),
+    ]
 
 
 def _report_menu_buttons() -> list[ChatButton]:
@@ -307,10 +322,26 @@ async def _apply_result(
                 "amount": resolved.amount,
                 "raw_message_id": raw_message_id,
                 "raw_text": raw_text,
+                "running": resolved.running,
             }),
         )
         txt = _format_product_suggestion(resolved.product_name_raw, resolved.product_suggestion.name)
         return ChatMessage(reply=txt, outcome=outcome.value, buttons=_product_confirm_buttons()), True
+
+    if outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
+        # Koşan format YALNIZCA adedi söyler; TL ayrı girilir (CLAUDE.md >
+        # "Koşan format"). Kişi/ürün çözülmüş hâlde bekletilir, tutar
+        # yazarak sorulur — uydurulmaz.
+        payload = _jsonable(_llm_pending_from_resolved(resolved, raw_message_id, raw_text))
+        await web_chat_state.set_pending(session, chat_id, "running_amount", payload)
+        return (
+            ChatMessage(
+                reply=_format_running_amount_prompt(resolved),
+                outcome=outcome.value,
+                awaits_text=True,
+            ),
+            True,
+        )
 
     if outcome == ProcessOutcome.REPORT_PERSON:
         assert result.balance is not None
@@ -403,6 +434,23 @@ async def _build_fresh_reply(
             True,
         )
 
+    if outcome == ProcessOutcome.RUNNING_MISMATCH:
+        # Koşan üçlünün matematiği tutmuyor: hiçbir şey kaydedilmedi, kişi
+        # bile çözülmedi. "Fark N olsun" denirse cümle düzeltilip NORMAL
+        # akıştan yeniden geçirilir (bkz. _handle_running_fix).
+        await web_chat_state.set_pending(
+            session, chat_id, "running_fix",
+            {"raw_message_id": raw.id, "raw_text": text},
+        )
+        return (
+            ChatMessage(
+                reply=_format_running_mismatch(resolved),
+                outcome=outcome.value,
+                buttons=_running_fix_buttons(resolved),
+            ),
+            True,
+        )
+
     if outcome == ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED:
         return ChatMessage(reply=_format_product_query_unsupported(resolved), outcome=outcome.value), False
 
@@ -462,6 +510,7 @@ async def _resolve_and_process(
         amount=_decimal(pending_data.get("amount")),
         field_name=pending_data.get("field"),
         new_value=pending_data.get("new_value"),
+        running=pending_data.get("running", False),
     )
     if pending_data.get("product_name") and pending_data["kind"] != "balance_query":
         product, suggestion = await catalog.resolve_product_or_suggest(
@@ -615,6 +664,75 @@ async def _handle_product_confirm(session: AsyncSession, chat_id: str, pending, 
         product_name_raw=payload.get("product_name_raw"),
         product=product,
         amount=_decimal(payload.get("amount")),
+        running=payload.get("running", False),
+    )
+    raw = await session.get(RawMessage, payload["raw_message_id"])
+    result = await handle_resolved(session, raw, resolved, payload["raw_text"], source="rule")
+
+    msg, needs_followup = await _apply_result(
+        session, chat_id, result, raw_message_id=payload["raw_message_id"], raw_text=payload["raw_text"]
+    )
+    return await _conclude(session, chat_id, msg, needs_followup)
+
+
+# --------------------------------------------------------------- koşan format
+#
+# Botun _handle_running_fix / _handle_running_amount_text karşılığı; mantık
+# aynı, yalnızca durum chat_data yerine web_chat_pending'de (CLAUDE.md >
+# "Koşan format").
+
+
+async def _handle_running_fix(session: AsyncSession, chat_id: str, pending) -> list[ChatMessage]:
+    """"Fark N olsun": orta sayı |ilk - son|'a eşitlenmiş metin NORMAL
+    akıştan yeniden geçirilir — ikinci bir kayıt mantığı yazılmaz."""
+    if pending.kind != "running_fix" or not pending.payload:
+        return [ChatMessage(reply="Bu istek artık geçerli değil.", outcome=OUTCOME_EXPIRED)]
+    payload = dict(pending.payload)
+    await web_chat_state.clear_pending(session, chat_id)
+
+    duzeltilmis = parser.correct_running_text(payload["raw_text"])
+    if duzeltilmis is None:
+        msg = ChatMessage(reply="Bu istek artık geçerli değil.", outcome=OUTCOME_EXPIRED)
+        return await _conclude(session, chat_id, msg, False)
+
+    raw = await session.get(RawMessage, payload["raw_message_id"])
+    result = await process_raw_message(session, raw, duzeltilmis)
+    msg, needs_followup = await _build_fresh_reply(
+        session, chat_id, result, raw, duzeltilmis, is_multi=False
+    )
+    return await _conclude(session, chat_id, msg, needs_followup)
+
+
+async def _running_amount_text(session: AsyncSession, chat_id: str, pending, text: str) -> list[ChatMessage]:
+    """Tutar cevabı. Çözülemezse HİÇBİR ŞEY kaydedilmez ve bekleyen kayıt
+    yerinde kalır — soru tekrarlanır."""
+    amount = parse_amount_reply(text)
+    if amount is None:
+        return [
+            ChatMessage(
+                reply="Tutarı anlayamadım. Sadece rakamla yazar mısın? (örn. 5000)",
+                outcome=ProcessOutcome.RUNNING_AMOUNT_NEEDED.value,
+                awaits_text=True,
+            )
+        ]
+
+    payload = dict(pending.payload or {})
+    await web_chat_state.clear_pending(session, chat_id)
+
+    person = await session.get(Person, payload["person_id"])
+    if person is None:
+        msg = ChatMessage(reply="Kişi bulunamadı.", outcome=OUTCOME_EXPIRED)
+        return await _conclude(session, chat_id, msg, False)
+    product = await session.get(Product, payload["product_id"]) if payload.get("product_id") else None
+
+    resolved = ResolvedIntent(
+        status=ResolutionStatus.READY,
+        kind=payload["kind"],
+        person=person,
+        qty=_decimal(payload.get("qty")),
+        unit=payload.get("unit"),
+        product=product,
+        amount=amount,
     )
     raw = await session.get(RawMessage, payload["raw_message_id"])
     result = await handle_resolved(session, raw, resolved, payload["raw_text"], source="rule")
@@ -858,6 +976,8 @@ async def handle_text(session: AsyncSession, chat_id: str, text: str) -> ChatRes
         return ChatResponse(messages=await _archive_confirm_text(session, chat_id, pending, text))
     if pending.kind == "edit_field_flow" and (pending.payload or {}).get("field"):
         return ChatResponse(messages=await _edit_field_value_text(session, chat_id, pending, text))
+    if pending.kind == "running_amount" and pending.payload:
+        return ChatResponse(messages=await _running_amount_text(session, chat_id, pending, text))
 
     raw = await web_intake.save_web_message(session, chat_id, text)
     pieces = message_splitter.split_into_requests(text)
@@ -947,6 +1067,13 @@ async def handle_action(session: AsyncSession, chat_id: str, action: str, text: 
     if action == "delete:cancel":
         await web_chat_state.clear_pending(session, chat_id)
         msg = ChatMessage(reply="Tamam, iptal ettim.", outcome=OUTCOME_CANCELLED)
+        return ChatResponse(messages=await _conclude(session, chat_id, msg, False, durum=request_queue.IPTAL))
+
+    if action == "running:fix":
+        return ChatResponse(messages=await _handle_running_fix(session, chat_id, pending))
+    if action == "running:cancel":
+        await web_chat_state.clear_pending(session, chat_id)
+        msg = ChatMessage(reply="Tamam, iptal ettim. Doğru sayılarla tekrar yazar mısın?", outcome=OUTCOME_CANCELLED)
         return ChatResponse(messages=await _conclude(session, chat_id, msg, False, durum=request_queue.IPTAL))
 
     if action == "product:yes":

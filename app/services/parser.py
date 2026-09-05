@@ -639,6 +639,8 @@ _TR_SCALES = {"yüz": 100, "bin": 1000, "milyon": 1_000_000}
 _NUMBER_WORDS = set(_TR_ONES) | set(_TR_TENS) | set(_TR_SCALES) | {"buçuk"}
 
 _NUMBER_TOKEN = re.compile(r"\d[\d.,]*")
+# normalize() sonrası Türkçe küçük harfler dahil "en az bir harf" testi.
+_HAS_LETTER = re.compile(r"[a-zçğıöşü]")
 
 
 def _segment_number_word(word: str, _cache: dict[str, list[str] | None] = {}) -> list[str] | None:
@@ -675,6 +677,8 @@ class ParsedIntent:
                # "edit_person" |
                # "product_query" (ürün/stok/fiyat sorgusu — HENÜZ DESTEKLENMİYOR,
                #   tanınır ki bot sessizce yanlış bir şey yapmasın)
+               # "running_mismatch" (koşan format matematiği tutmuyor —
+               #   "70-25-50": kaydedilmez, kullanıcıya sorulur)
     person_name: str | None = None
     qty: Decimal | None = None
     unit: str | None = None
@@ -688,6 +692,14 @@ class ParsedIntent:
     # SÖYLENMEMİŞ. Tutar uydurulmaz; kişi çözülünce güncel bakiye teklif
     # edilir ve kullanıcıya onaylatılır (bkz. intent_resolver + message_processor).
     close_debt: bool = False
+    # Koşan format ("70-20-50" — bkz. _try_running_format): qty ARTIK üç
+    # sayının farkıdır, ilk/değişim/son yalnızca gösterim ve doğrulama
+    # içindir. running=True olan bir kayıt niyetinde tutar (amount) boş
+    # kalabilir — uydurulmaz, sonradan sorulur.
+    running: bool = False
+    running_before: Decimal | None = None
+    running_change: Decimal | None = None
+    running_after: Decimal | None = None
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -784,6 +796,15 @@ def parse_turkish_number(text: str) -> Decimal | None:
     return value
 
 
+def _collapse_running(norm: str) -> str:
+    """Koşan üçlünün yazım varyantlarını TEK bir kanonik token'a indirger:
+    "70 - 20 - 50", "70+20+50", "70*20*50" -> "70-20-50". Ayraç ve boşluk
+    salt görsel olduğu için (bkz. "koşan format" bölümü) tokenlaştırmadan
+    ÖNCE burada normalize edilir; böylece parse()'ın geri kalanı her zaman
+    tek bir token görür."""
+    return _RUNNING_RE.sub(lambda m: "-".join(m.group(1, 2, 3)), norm)
+
+
 def _split_tokens(norm: str) -> list[str]:
     norm = re.sub(r"[.,!?;:]+(?=\s|$)", "", norm)          # cümle sonu noktalama
     # "15000tl" -> "15000 tl", "3bin" -> "3 bin", "3buçuk" -> "3 buçuk": rakama
@@ -854,6 +875,211 @@ def _detect_kind(tokens: list[str]) -> str | None:
     if "borç" in token_set or "borc" in token_set:
         return "debt"
     return None
+
+
+# --------------------------------------------------------------- koşan format
+#
+# CLAUDE.md > "Koşan format": kullanıcının hızlı giriş biçimi.
+#   "70-20-50"  =  70 vardı, 20 değişti, 50 oldu.
+#
+# Ayraç SALT GÖRSELDİR, matematik işareti DEĞİL: "70-20-50", "70+20+50" ve
+# "70*20*50" aynı şeyi anlatır. Format YALNIZCA mal adedi hakkındadır — TL
+# değil; tutar ya aynı cümlede ayrıca söylenir ("... 5000 tl") ya da sonradan
+# sorulur (bkz. message_processor > RUNNING_AMOUNT_NEEDED).
+#
+# Yön (borç mu tahsilat mı) İLK ile SON sayının karşılaştırmasından çıkar:
+#   ilk > son (azalış):  mal kişiye gitti -> BORÇ     ("70-20-50"  -> 20 borç)
+#   ilk < son (artış):   mal geri geldi   -> TAHSİLAT ("70-30-100" -> 30 tahsilat)
+# Cümledeki bağlam kelimesi ("tahsilat"/"aldı"/"borç") yönü yalnızca TEYİT
+# eder; çeliştiğinde sayılar kazanır — kullanıcı üç sayıyı bilerek yazmıştır.
+#
+# İç tutarlılık: orta sayı (değişim) |ilk - son|'a EŞİT olmalı. Değilse
+# HİÇBİR ŞEY kaydedilmez, kullanıcıya sorulur (kind="running_mismatch").
+# Sistemdeki mevcut mal bakiyesiyle karşılaştırma KASTEN yapılmaz (kapsam
+# dışı, sonraki iş) — yalnızca cümlenin kendi içindeki tutarlılık bakılır.
+#
+# Yanlış tetiklenmeye (false positive) karşı altı katman vardır; hepsi
+# birbirini tamamlar, tek başına hiçbiri yeterli değildir:
+#   1. Tam ÜÇ parça: dördüncü bir sayı gelirse kalıp hiç eşleşmez — telefon
+#      ("0532-456-78-90") ve sıra numaraları elenir.
+#   2. Baştaki sıfır yasak: "0532-456-789" bir adet olamaz.
+#      Parça başına en çok 6 hane.
+#   3. Tarih biçimleri (gg-aa-yyyy / yyyy-aa-gg / gg-aa-yy) iç tutarlılık
+#      SAĞLANMIYORSA elenir (bkz. _looks_like_date) — "12-05-2026" bir kayıt
+#      ya da "matematik yanlış" uyarısı üretmez, sessizce normal akışa düşer.
+#   4. Mesajda tam olarak BİR üçlü olmalı.
+#   5. Kişi adı zorunlu: çıplak "70-20-50" bir kayda dönüşmez.
+#   6. parse() içinde bu kontrol TÜM sorgu/komut kalıplarından SONRA gelir —
+#      "sil", "düzenle", "rapor", "listele" gibi net komutlar her zaman önce
+#      kazanır.
+# Ayrıca "70-20-50" artık bir kişi ARAMASI da sayılmaz (bkz.
+# _try_single_word_search): harf içermeyen bir kelime isim/ilçe olamaz.
+
+RUNNING_DEFAULT_PRODUCT = "saman"
+
+# Parça: baştaki sıfır yok, en çok 6 hane, isteğe bağlı ondalık (TR virgülü).
+_RUNNING_PART = r"(?!0\d)\d{1,6}(?:,\d{1,2})?"
+_RUNNING_SEP = r"[-+*]"
+# Metin içindeki üçlüyü bulur. Sondaki ileri-bakış dördüncü bir parçayı
+# (telefon/seri numarası) tümden reddeder; baştaki geri-bakış üçlünün daha
+# uzun bir dizinin ortasından kesilmesini engeller.
+_RUNNING_RE = re.compile(
+    rf"(?<![\w.,+*-])({_RUNNING_PART})\s*{_RUNNING_SEP}\s*"
+    rf"({_RUNNING_PART})\s*{_RUNNING_SEP}\s*"
+    rf"({_RUNNING_PART})(?![\w.,]|\s*{_RUNNING_SEP}\s*\d)"
+)
+# Boşlukları toplanmış ("70 - 20 - 50" -> "70-20-50") tek token biçimi.
+_RUNNING_TOKEN_RE = re.compile(
+    rf"({_RUNNING_PART})-({_RUNNING_PART})-({_RUNNING_PART})"
+)
+
+# İsme/ürüne karışmaması gereken bağlam kelimeleri. STOPWORDS zaten yön
+# fiillerini ve "borç"u kapsıyor; buradakiler koşan formatta sık geçen
+# ekstra kelimeler.
+_RUNNING_NOISE = STOPWORDS | CURRENCY_UNITS | {
+    "tahsilat", "tahsilatı", "tahsilati", "alım", "alim", "kaldı", "kaldi",
+    "oldu", "vardı", "vardi", "koşan", "kosan",
+}
+
+
+@dataclass(slots=True)
+class RunningFormat:
+    """Çözülmüş koşan üçlü. `qty` deftere yazılacak DEĞİŞİM (fark) —
+    ilk ve son sayı yalnızca kullanıcının kendi doğrulaması içindir."""
+    before: Decimal
+    change: Decimal
+    after: Decimal
+    qty: Decimal
+    kind: str  # "debt" (azalış) | "payment" (artış)
+    consistent: bool  # change == |before - after| ?
+
+
+def _looks_like_date(before: Decimal, change: Decimal, after: Decimal) -> bool:
+    """gg-aa-yyyy / gg-aa-yy / yyyy-aa-gg biçimlerini tanır. Yalnızca iç
+    tutarlılık SAĞLANMADIĞINDA kullanılır: tutarlı bir üçlü ("10-5-5") zaten
+    geçerli bir koşan formattır, tarihe benzemesi onu bozmaz."""
+    if any(v != v.to_integral_value() for v in (before, change, after)):
+        return False
+    g, a, y = int(before), int(change), int(after)
+    if 1 <= g <= 31 and 1 <= a <= 12 and (y <= 99 or 1900 <= y <= 2199):
+        return True  # gg-aa-yy(yy)
+    if 1900 <= g <= 2199 and 1 <= a <= 12 and 1 <= y <= 31:
+        return True  # yyyy-aa-gg
+    return False
+
+
+def _running_from_parts(raw_parts: tuple[str, str, str]) -> RunningFormat | None:
+    values = [_parse_amount(p) for p in raw_parts]
+    if any(v is None for v in values):
+        return None
+    before, change, after = values
+    expected = abs(before - after)
+    if expected == 0:
+        # "70-0-70": bir hareket yok. Uydurulacak bir kayıt da yok.
+        return None
+    consistent = change == expected
+    if not consistent and _looks_like_date(before, change, after):
+        return None
+    kind = "debt" if before > after else "payment"
+    return RunningFormat(
+        before=before, change=change, after=after, qty=expected, kind=kind, consistent=consistent
+    )
+
+
+def parse_running(text: str) -> RunningFormat | None:
+    """Metindeki TEK koşan üçlüyü çözer. Üçlü yoksa, birden çoksa, tarih
+    biçimindeyse ya da hareket sıfırsa None döner."""
+    matches = list(_RUNNING_RE.finditer(normalize(text or "")))
+    if len(matches) != 1:
+        return None
+    return _running_from_parts(matches[0].group(1, 2, 3))
+
+
+def _running_number_text(value: Decimal) -> str:
+    """Decimal'i kullanıcıya gösterilecek/metne geri yazılacak sade biçime
+    çevirir: 20 -> "20", 20.5 -> "20,5" (gereksiz sıfır kuyruğu olmadan)."""
+    text = format(value.normalize(), "f")
+    return text.replace(".", ",")
+
+
+def correct_running_text(raw_text: str) -> str | None:
+    """Matematiği tutmayan bir koşan üçlünün ORTA sayısını |ilk - son|'a
+    eşitleyip cümleyi olduğu gibi geri yazar ("ahmet 70-25-50 saman" ->
+    "ahmet 70-20-50 saman").
+
+    Kullanıcı "fark N olsun" dediğinde bot/web düzeltilmiş bu metni NORMAL
+    akıştan yeniden geçirir (bkz. app/bot/main.py > _handle_running_fix) —
+    ikinci bir kayıt mantığı yazılmaz, kişi/ürün/tutar çözümü aynen çalışır.
+    Üçlü bulunamazsa None."""
+    matches = list(_RUNNING_RE.finditer(raw_text or ""))
+    if len(matches) != 1:
+        return None
+    running = _running_from_parts(matches[0].group(1, 2, 3))
+    if running is None:
+        return None
+    m = matches[0]
+    duzeltilmis = "-".join(
+        _running_number_text(v) for v in (running.before, running.qty, running.after)
+    )
+    return raw_text[: m.start()] + duzeltilmis + raw_text[m.end() :]
+
+
+def _try_running_format(tokens: list[str]) -> ParsedIntent | None:
+    """"ahmet 70-20-50 saman" -> 20 saman BORÇ (ahmet).
+    "ahmet 70-30-100 saman tahsilat" -> 30 saman TAHSİLAT.
+    "ahmet 70-25-50 saman" -> matematik tutmuyor, kind="running_mismatch"
+    (hiçbir şey kaydedilmez, kullanıcıya sorulur).
+
+    Tutar (TL) aynı cümlede varsa ayıklanır; yoksa amount None kalır ve
+    sonradan sorulur — koşan format tutar UYDURMAZ."""
+    hits = [i for i, t in enumerate(tokens) if _RUNNING_TOKEN_RE.fullmatch(t)]
+    if len(hits) != 1:
+        return None
+    running_token = tokens[hits[0]]
+    running = _running_from_parts(_RUNNING_TOKEN_RE.fullmatch(running_token).group(1, 2, 3))
+    if running is None:
+        return None
+
+    # Tutar üçlüden önce de sonra da gelebildiği için önce TÜM cümleden
+    # ayıklanır ("ahmet 70-20-50 saman 5000 tl" / "ahmet 5000 tl 70-20-50").
+    amount, rest = _extract_amount(tokens)
+    idx = rest.index(running_token)
+
+    def _temizle(parca: list[str]) -> tuple[list[str], str | None]:
+        birim: str | None = None
+        kalan: list[str] = []
+        for tok in parca:
+            if tok in _RUNNING_NOISE:
+                continue
+            if birim is None and tok in UNITS:
+                birim = tok
+                continue
+            kalan.append(tok)
+        return kalan, birim
+
+    person_tokens, unit_before = _temizle(rest[:idx])
+    product_tokens, unit_after = _temizle(rest[idx + 1 :])
+
+    person = " ".join(person_tokens).strip()
+    if not person:
+        # Çıplak "70-20-50": kime yazılacağı belli değil, uydurulmaz.
+        return None
+
+    product = " ".join(product_tokens).strip() or RUNNING_DEFAULT_PRODUCT
+
+    return ParsedIntent(
+        # Matematik tutmuyorsa niyet bir KAYIT değil, bir SORUDUR.
+        kind="running_mismatch" if not running.consistent else running.kind,
+        person_name=person,
+        qty=running.qty,
+        unit=unit_after or unit_before,
+        product=product,
+        amount=amount,
+        running=True,
+        running_before=running.before,
+        running_change=running.change,
+        running_after=running.after,
+    )
 
 
 def _try_short_record(tokens: list[str]) -> ParsedIntent | None:
@@ -1453,6 +1679,12 @@ def _try_single_word_search(word: str) -> ParsedIntent | None:
         return None
     if _NUMBER_TOKEN.fullmatch(word):
         return None
+    # Harf içermeyen bir kelime isim/soyad/ilçe olamaz: "70-20-50" (kime
+    # yazılacağı söylenmemiş koşan format), "12-05-2026" (tarih), "0532-456"
+    # gibi girdiler bir kişi ARAMASINA dönüşmemeli — eskiden dönüyordu ve
+    # "kimse bulunamadı" cevabı veriliyordu.
+    if not _HAS_LETTER.search(word):
+        return None
     return ParsedIntent(kind="search", query=word)
 
 
@@ -1461,7 +1693,7 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if not text:
         return None
 
-    norm = normalize(text)
+    norm = _collapse_running(normalize(text))
     tokens = _split_tokens(norm)
     if not tokens:
         return None
@@ -1563,6 +1795,15 @@ def parse(raw_text: str) -> ParsedIntent | None:
     info_menu = _try_info_menu_query(tokens)
     if info_menu is not None:
         return info_menu
+
+    # Koşan format ("ahmet 70-20-50 saman"). Tüm sorgu/komut kalıplarından
+    # SONRA denenir: "sil", "düzenle", "rapor", "listele" gibi net bir komut
+    # varsa o her zaman kazanır (yanlış tetiklenme koruması, katman 6).
+    # Kayıt kalıplarından (_detect_kind / _try_short_record) ise ÖNCE gelir:
+    # üçlü bir sayı hiçbir zaman tek bir adet/tutar gibi okunmamalı.
+    running_intent = _try_running_format(tokens)
+    if running_intent is not None:
+        return running_intent
 
     # Bug (2026-07-26): "ahmet yılmaz 20 balya borcunu 15000 tl ödedi" gibi
     # bir TAHSİLAT cümlesi "borcunu" (bakiye anahtar kelimesi) içerdiği

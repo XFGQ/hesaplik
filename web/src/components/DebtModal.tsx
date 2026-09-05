@@ -3,10 +3,16 @@ import { useState } from "react";
 
 import { api } from "../api/client";
 import { money, parseNumber, toLocalInput } from "../lib/format";
+import {
+  BIRIMLER,
+  autoAmount,
+  checkForm,
+  goodsSummary,
+  resolveGoods,
+} from "../lib/goods";
+import { runningDirectionWarning } from "../lib/running";
 import { useToast } from "../lib/toast";
 import Modal from "./Modal";
-
-const BIRIMLER = ["balya", "kilo", "adet", "ton", "çuval", "litre"];
 
 type Props = {
   personId: number;
@@ -19,28 +25,55 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
   const toast = useToast();
 
   const [when, setWhen] = useState(() => toLocalInput(new Date()));
-  const [product, setProduct] = useState("");
-  const [qty, setQty] = useState("");
-  const [unit, setUnit] = useState("balya");
+  // Ürün + adet + birim TEK alanda ("20", "20 kg arpa", "70-20-50").
+  // Ayrıştırma web/src/lib/goods.ts'te, DOM'suz test edilir.
+  const [entry, setEntry] = useState("");
+  const [unitFallback, setUnitFallback] = useState<string | null>(null);
+  const [unitOpen, setUnitOpen] = useState(false);
   const [amount, setAmount] = useState("");
+  const [amountHint, setAmountHint] = useState<number | null>(null);
+  // Tik VARSAYILAN OLARAK KAPALI: fiyat listesi tutarı bağlamaz
+  // (CLAUDE.md kural 4), kullanıcı isterse hesaplatır.
+  const [autoPrice, setAutoPrice] = useState(false);
 
   const products = useQuery({ queryKey: ["products"], queryFn: api.products });
 
-  function onProductChange(value: string) {
-    setProduct(value);
-    const key = value.trim().toLocaleLowerCase("tr");
-    const hit = products.data?.find((p) => p.name.toLocaleLowerCase("tr") === key);
-    if (hit) setUnit(hit.base_unit);
+  const goods = resolveGoods(entry, products.data, unitFallback);
+  const otomatik = autoAmount(goods);
+  const otomatikAcik = autoPrice && otomatik !== null;
+
+  function onEntryChange(value: string) {
+    setEntry(value);
+    const next = resolveGoods(value, products.data, unitFallback);
+    // Yazıda birim varsa dropdown yedeği düşer: yazı her zaman kazanır.
+    if (next.unit) setUnitFallback(null);
+    // "... 5000 tl" aynı satıra yazıldıysa tutarı doldur — ama kullanıcının
+    // elle yazdığı tutarı EZMEZ (sessiz para değişikliği olmaz).
+    if (next.amountHint !== null && next.amountHint !== amountHint) {
+      const oncekiOneri = amountHint === null ? null : String(amountHint).replace(".", ",");
+      if (!amount.trim() || amount === oncekiOneri) {
+        setAmount(String(next.amountHint).replace(".", ","));
+        setAutoPrice(false);
+      }
+    }
+    setAmountHint(next.amountHint);
   }
+
+  const tutar = otomatikAcik ? otomatik : Number(parseNumber(amount)) || 0;
+  const birimFiyat = goods.qty && goods.qty > 0 && tutar > 0 ? tutar / goods.qty : null;
+  const yonUyari = goods.running ? runningDirectionWarning(goods.running, "debt") : null;
+  const check = checkForm(goods, otomatikAcik ? String(otomatik) : amount, {
+    goodsRequired: true,
+  });
 
   const save = useMutation({
     mutationFn: () =>
       api.addDebt({
         person_id: personId,
-        product_name: product.trim(),
-        qty: parseNumber(qty),
-        unit: unit.trim() || null,
-        amount: parseNumber(amount),
+        product_name: goods.productName,
+        qty: String(goods.qty),
+        unit: goods.unitName,
+        amount: tutar.toFixed(2),
         occurred_at: new Date(when).toISOString(),
       }),
     onSuccess: () => {
@@ -49,23 +82,13 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
       );
       qc.invalidateQueries({ queryKey: ["persons"] });
       qc.invalidateQueries({ queryKey: ["products"] });
-      toast(`${personName}'na ${qty.trim()} ${unit.trim()} ${product.trim()} borç eklendi`, "success");
+      toast(
+        `${personName}'na ${goods.qty} ${goods.unitName} ${goods.productName} borç eklendi`,
+        "success",
+      );
       onClose();
     },
   });
-
-  const tutar = Number(parseNumber(amount)) || 0;
-  const adet = Number(parseNumber(qty)) || 0;
-  const birimFiyat = adet > 0 && tutar > 0 ? tutar / adet : null;
-
-  const yeniUrun =
-    product.trim().length > 1 &&
-    products.data !== undefined &&
-    !products.data.some(
-      (p) => p.name.toLocaleLowerCase("tr") === product.trim().toLocaleLowerCase("tr"),
-    );
-
-  const valid = tutar > 0 && product.trim().length > 0 && adet > 0;
 
   return (
     <Modal title="Borç ekle" onClose={onClose}>
@@ -78,57 +101,96 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
         <p className="panel-title">Ne verildi</p>
 
         <label className="field">
-          <span>Ürün</span>
+          <span>Ürün ve adet</span>
           <input
-            list="urunler-borc"
-            value={product}
-            onChange={(e) => onProductChange(e.target.value)}
-            placeholder="saman"
+            value={entry}
+            onChange={(e) => onEntryChange(e.target.value)}
+            placeholder="örn: 20 · 20 kg arpa · 70-20-50"
             autoFocus
           />
-          <datalist id="urunler-borc">
-            {products.data?.map((p) => (
-              <option key={p.id} value={p.name} />
-            ))}
-          </datalist>
-          {yeniUrun && <p className="hint">Yeni ürün açılacak: {product.trim()}</p>}
         </label>
 
-        <label className="field">
-          <span>Adet ve birim</span>
-          <div className="qty-unit">
-            <input
-              inputMode="decimal"
-              value={qty}
-              onChange={(e) => setQty(e.target.value)}
-              placeholder="20"
-            />
-            <select value={unit} onChange={(e) => setUnit(e.target.value)}>
-              {BIRIMLER.map((b) => (
+        {goods.error ? (
+          <p className="error">{goods.error}</p>
+        ) : (
+          goods.qty !== null && (
+            <p className="goods-echo">
+              <span aria-hidden>→</span>
+              <b>{goodsSummary(goods)}</b>
+            </p>
+          )
+        )}
+        {goods.empty && products.data && products.data.length > 0 && (
+          // Datalist yerine düz ipucu: kullanıcı serbest yazıyor, açılır liste
+          // "20 kg ar" gibi yarım cümlede zaten eşleşmiyordu.
+          <p className="hint">
+            Kayıtlı ürünler: {products.data.map((p) => p.name.toLocaleLowerCase("tr")).join(", ")}
+          </p>
+        )}
+        {!goods.error && goods.isNewProduct && (
+          <p className="hint">Yeni ürün açılacak: {goods.productName}</p>
+        )}
+        {!goods.error && yonUyari && <p className="hint">{yonUyari}</p>}
+
+        {unitOpen ? (
+          <div className="goods-unit">
+            <select
+              value={goods.unitName}
+              onChange={(e) => setUnitFallback(e.target.value)}
+              aria-label="Birim"
+            >
+              {[...new Set([goods.unitName, ...BIRIMLER])].map((b) => (
                 <option key={b} value={b}>
                   {b}
                 </option>
               ))}
             </select>
+            <button className="link" type="button" onClick={() => setUnitOpen(false)}>
+              Kapat
+            </button>
           </div>
-        </label>
+        ) : (
+          <button className="link" type="button" onClick={() => setUnitOpen(true)}>
+            Birim: {goods.unitName} — değiştir
+          </button>
+        )}
       </div>
 
       <div className="panel">
         <p className="panel-title">Borç tutarı</p>
+
+        {/* Fiyat zorunlu; kayıtlı birim fiyat varsa tek tıkla hesaplanır.
+            Fiyat yoksa ya da birim ürünün birimiyle tutmuyorsa tik pasif —
+            balya fiyatı kilo adediyle çarpılmaz. */}
+        <label className={otomatik === null ? "check off" : "check"}>
+          <input
+            type="checkbox"
+            checked={otomatikAcik}
+            disabled={otomatik === null}
+            onChange={(e) => setAutoPrice(e.target.checked)}
+          />
+          <span>
+            {goods.catalogPrice !== null
+              ? `Kayıtlı fiyattan hesapla (${money(goods.catalogPrice)}/${goods.unitName})`
+              : goods.priceUnit
+                ? `Kayıtlı fiyat ${goods.priceUnit} için — ${goods.unitName} fiyatı elle girilir`
+                : "Kayıtlı fiyat yok — tutarı elle girin"}
+          </span>
+        </label>
+
         <label className="field">
           <span>Tutar (TL)</span>
           <input
             className="amount"
             inputMode="decimal"
-            value={amount}
+            value={otomatikAcik ? String(otomatik).replace(".", ",") : amount}
+            readOnly={otomatikAcik}
             onChange={(e) => setAmount(e.target.value)}
             placeholder="1500"
           />
           {birimFiyat !== null && (
             <p className="hint">
-              Birim fiyat {money(birimFiyat)}
-              {unit.trim() ? ` / ${unit.trim()}` : ""}
+              Birim fiyat {money(birimFiyat)} / {goods.unitName}
             </p>
           )}
         </label>
@@ -147,10 +209,10 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
 
       <button
         className="primary"
-        disabled={!valid || save.isPending}
+        disabled={!check.ok || save.isPending}
         onClick={() => save.mutate()}
       >
-        {save.isPending ? "Kaydediliyor" : "Kaydet"}
+        {save.isPending ? "Kaydediliyor" : check.ok ? "Kaydet" : (check.reason ?? "Kaydet")}
       </button>
     </Modal>
   );

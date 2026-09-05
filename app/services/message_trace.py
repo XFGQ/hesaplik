@@ -64,6 +64,10 @@ _KIND_BY_INTENT = {
     "edit_person": KIND_EDIT,
     "archive_person": KIND_ARCHIVE,
     "archive_and_recreate": KIND_ARCHIVE,
+    # Koşan format matematiği tutmuyor: henüz borç mu tahsilat mı olacağı
+    # kullanıcının cevabına bağlı, deftere hiçbir şey yazılmadı — bu yüzden
+    # debt/payment değil, "sorgu" rozetiyle görünür.
+    "running_mismatch": KIND_QUERY,
 }
 
 # parse_source: mesajı kim çözdü. message_processor içinde kural motoru
@@ -102,6 +106,10 @@ _OUTCOME_MAP: dict[str, tuple[str, str]] = {
     "archive_confirm": (OUTCOME_ASKED, "silme onayı (yazarak)"),
     "edit_person_confirm": (OUTCOME_ASKED, "düzenleme onayı"),
     "edit_person_menu": (OUTCOME_ASKED, "hangi alan? sorusu"),
+    # Koşan format (CLAUDE.md > "Koşan format"): ikisi de bir SORUDUR,
+    # hiçbir şey kaydedilmemiştir.
+    "running_mismatch": (OUTCOME_ASKED, "koşan format matematiği sorusu"),
+    "running_amount_needed": (OUTCOME_ASKED, "koşan format tutar sorusu"),
     "unrecognized": (OUTCOME_IGNORED, "anlaşılamadı"),
 }
 
