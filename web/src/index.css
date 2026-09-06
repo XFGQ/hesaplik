@@ -1276,6 +1276,18 @@ input.amount {
   margin-top: 2px;
 }
 
+/* Saat: dikey tarihin üçüncü ve en sessiz satırı. Mono + tabular-nums ki
+   kartlar alt alta dizildiğinde iki nokta aynı hizada dursun. */
+.tx-time {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+  color: var(--ink-soft);
+  opacity: 0.8;
+  white-space: nowrap;
+  margin-top: 1px;
+}
+
 .tx-body {
   flex: 1;
   min-width: 0;
@@ -1362,6 +1374,10 @@ input.amount {
 
   .tx-date {
     min-width: 50px;
+  }
+
+  .tx-time {
+    font-size: 11px;
   }
 
   .tx-title,
@@ -3152,6 +3168,13 @@ input.amount {
 
   .tx-date {
     min-width: 38px;
+  }
+
+  /* 60 yaş okunabilirliği: saat masaüstündeki 10px'te bırakılmaz.
+     11px mono "16:07" ≈ 33px — sütun 38px'te kalabiliyor, daraltma
+     kararı (başlığa yer) bozulmuyor. */
+  .tx-time {
+    font-size: 11px;
   }
 
   .tx-card {

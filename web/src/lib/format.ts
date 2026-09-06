@@ -98,10 +98,13 @@ export function toLocalInput(d: Date): string {
 const dayFmt = new Intl.DateTimeFormat("tr-TR", { day: "numeric" });
 const monthYearFmt = new Intl.DateTimeFormat("tr-TR", { month: "short", year: "2-digit" });
 
-/** Kartın sol ucundaki dikey tarih: gün büyük ("28"), altında ay-yıl ("Tem 25"). */
-export function dateParts(iso: string): { day: string; monthYear: string } {
+/** Kartın sol ucundaki dikey tarih: gün büyük ("28"), altında ay-yıl
+ *  ("Tem 25"), en altta saat ("16:07"). Saat hhmm ile YEREL saatten çıkar —
+ *  backend UTC saklar, defterde okunması gereken kullanıcının saatidir.
+ *  Sıfır dolgulu (09:05), "9:5" gibi bir şey asla çıkmaz. */
+export function dateParts(iso: string): { day: string; monthYear: string; time: string } {
   const d = new Date(iso);
-  return { day: dayFmt.format(d), monthYear: monthYearFmt.format(d) };
+  return { day: dayFmt.format(d), monthYear: monthYearFmt.format(d), time: hhmm(d) };
 }
 
 type TxLike = {
