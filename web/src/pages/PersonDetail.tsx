@@ -163,11 +163,15 @@ export default function PersonDetail() {
                     t.is_reversed || t.reverses_id ? " tx-card-iptal" : ""
                   }`}
                 >
-                  {/* Dikey tarih: gün büyük, ay-yıl küçük. Defterde gözün ilk
-                      aradığı şey "ne zaman" — o yüzden en solda, tek başına. */}
+                  {/* Dikey tarih: gün büyük, ay-yıl küçük, saat en altta ve
+                      en soluk. Defterde gözün ilk aradığı şey "ne zaman" — o
+                      yüzden en solda, tek başına. Saat ikincil bilgi: aynı gün
+                      birden çok kayıt varsa sırayı ayırt eder, gün/ay okumayı
+                      zorlaştırmaz. */}
                   <div className="tx-date">
                     <span className="tx-day">{gun.day}</span>
                     <span className="tx-month">{gun.monthYear}</span>
+                    <span className="tx-time">{gun.time}</span>
                   </div>
 
                   <div className="tx-body">

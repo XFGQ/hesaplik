@@ -37,7 +37,53 @@ const nakitTahsilat = {
 
 describe("dateParts", () => {
   it("günü ve ay-yılı ayırır (dikey tarih)", () => {
-    assert.deepEqual(dateParts("2025-07-28T09:30:00Z"), { day: "28", monthYear: "Tem 25" });
+    const p = dateParts("2025-07-28T09:30:00Z");
+    assert.equal(p.day, "28");
+    assert.equal(p.monthYear, "Tem 25");
+  });
+
+  // Saat YEREL okunur; aşağıdaki metinlerde bilerek "Z"/offset yok, JS bunları
+  // yerel saat sayar — böylece test makinenin saat diliminden bağımsız kalır.
+  it("saati sıfır dolgulu verir (09:05, '9:5' değil)", () => {
+    assert.equal(dateParts("2025-07-28T09:05:00").time, "09:05");
+  });
+
+  it("gece yarısı ve öğleden sonra doğru biçimlenir (24 saat)", () => {
+    assert.equal(dateParts("2025-07-28T00:00:00").time, "00:00");
+    assert.equal(dateParts("2025-07-28T16:07:00").time, "16:07");
+    assert.equal(dateParts("2025-07-28T23:59:00").time, "23:59");
+  });
+
+  it("her zaman HH:mm kalıbında", () => {
+    assert.match(dateParts("2025-07-28T09:30:00Z").time, /^\d{2}:\d{2}$/);
+  });
+});
+
+describe("hareket kartı — saat satırı", () => {
+  const personDetail = readFileSync(new URL("../pages/PersonDetail.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../index.css", import.meta.url), "utf8");
+
+  it("saat dikey tarihin EN ALTINDA, gün ve ay-yıldan sonra", () => {
+    const blok = personDetail.slice(
+      personDetail.indexOf('className="tx-date"'),
+      personDetail.indexOf('className="tx-body"'),
+    );
+    assert.ok(blok.includes("tx-time"), "tx-date bloğunda saat yok");
+    assert.ok(
+      blok.indexOf("tx-day") < blok.indexOf("tx-month") &&
+        blok.indexOf("tx-month") < blok.indexOf("tx-time"),
+      "sıra gün → ay-yıl → saat olmalı",
+    );
+  });
+
+  it("saat en küçük punto ve soluk renkte", () => {
+    const kural = css.slice(css.indexOf(".tx-time {"), css.indexOf("}", css.indexOf(".tx-time {")));
+    const punto = Number(/font-size: (\d+)px/.exec(kural)?.[1]);
+    const ayYil = css.slice(css.indexOf(".tx-month {"), css.indexOf("}", css.indexOf(".tx-month {")));
+    const ayYilPunto = Number(/font-size: (\d+)px/.exec(ayYil)?.[1]);
+    assert.ok(punto < ayYilPunto, "saat ay-yıldan küçük olmalı");
+    assert.match(kural, /color: var\(--ink-soft\)/);
+    assert.match(kural, /font-variant-numeric: tabular-nums/);
   });
 });
 
