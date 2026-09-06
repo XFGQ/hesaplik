@@ -7,9 +7,17 @@ Telegram sesli mesajı (.ogg) doğrudan Groq'un OpenAI-uyumlu
 intent_resolver) sanki kullanıcı yazmış gibi verilir — STT yalnızca metne
 çeviren bir ön adımdır, kendi parse mantığı yoktur.
 
+Aynı sağlayıcı web sohbetindeki mikrofon kaydı için de kullanılır
+(POST /api/chat/voice — bkz. app/services/web_chat.py > handle_voice).
+Oradaki ses tarayıcının MediaRecorder'ından gelir: Chrome/Firefox webm/opus,
+iOS Safari mp4/aac üretir. Groq her ikisini de kabul eder, ayırt etmek için
+DOSYA ADININ UZANTISI yeter — bu yüzden `filename` çağıran tarafından
+gerçek biçime göre verilir, içerik tipi de uzantıdan türetilir.
+
 Groq erişilemezse/429 ise ya da yanıt beklenen şemada değilse `transcribe`
-None döner, sistemi ÇÖKERTMEZ — bot kullanıcıya yazarak göndermesini ister
-(bkz. app/bot/main.py > on_voice).
+None döner, sistemi ÇÖKERTMEZ — bot/web kullanıcıya yazarak göndermesini
+ister (bkz. app/bot/main.py > on_voice, app/services/web_chat.py >
+handle_voice).
 """
 
 from __future__ import annotations
@@ -22,6 +30,27 @@ logger = logging.getLogger(__name__)
 
 # Türkçe ipucu: Whisper dil algılamayı atlar, doğruluk artar.
 LANGUAGE = "tr"
+
+# Groq'un kabul ettiği biçimlerden bizim ürettiklerimiz. Sunucu asıl olarak
+# dosya adının UZANTISINA bakar; içerik tipi yine de doğru gönderilir ki
+# vekil/proxy katmanları da doğru yorumlasın. Bilinmeyen uzantı olduğu gibi
+# gönderilmez — çağıran taraf zaten allowlist uygular (bkz. app/api/chat.py).
+CONTENT_TYPES = {
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg",
+    "webm": "audio/webm",
+    "mp4": "audio/mp4",
+    "m4a": "audio/mp4",
+    "mp3": "audio/mpeg",
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+}
+DEFAULT_CONTENT_TYPE = "audio/ogg"
+
+
+def content_type_for(filename: str) -> str:
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    return CONTENT_TYPES.get(ext, DEFAULT_CONTENT_TYPE)
 
 
 class GroqSTTProvider:
@@ -47,7 +76,7 @@ class GroqSTTProvider:
         url = f"{self.base_url}/audio/transcriptions"
         headers = {"Authorization": f"Bearer {self.api_key}"}
         data = {"model": self.model, "language": LANGUAGE}
-        files = {"file": (filename, audio, "audio/ogg")}
+        files = {"file": (filename, audio, content_type_for(filename))}
         try:
             if self._client is not None:
                 resp = await self._client.post(url, headers=headers, data=data, files=files)

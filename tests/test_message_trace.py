@@ -57,6 +57,21 @@ def test_payload_text_ses_kaydi():
     assert message_trace.payload_text(payload) == "(ses kaydı)"
 
 
+def test_payload_text_web_ses_kaydi():
+    """Web mikrofon kaydı: payload'da metin yok, ham ses de saklanmaz —
+    çeviri başarısızsa panelde boş satır değil "(ses kaydı)" görünsün."""
+    payload = {"voice": True, "filename": "voice.webm", "size": 33904}
+    assert message_trace.payload_text(payload) == "(ses kaydı)"
+
+
+def test_display_text_web_sesinde_ceviriyi_tercih_eder():
+    raw = RawMessage(
+        payload={"voice": True, "filename": "voice.webm", "size": 100},
+        voice_transcript="ahmet 500 tl borç",
+    )
+    assert message_trace.display_text(raw) == "ahmet 500 tl borç"
+
+
 def test_payload_text_bilinmeyen_bicim_none():
     assert message_trace.payload_text({"update_id": 5}) is None
     assert message_trace.payload_text(None) is None

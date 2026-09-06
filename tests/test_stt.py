@@ -5,7 +5,7 @@ tests/test_llm_provider.py'deki aynı desen)."""
 import httpx
 
 from app.config import settings
-from app.services.stt import GroqSTTProvider, get_stt_provider
+from app.services.stt import GroqSTTProvider, content_type_for, get_stt_provider
 
 
 def _client_for(handler) -> httpx.AsyncClient:
@@ -80,6 +80,32 @@ async def test_baglanti_hatasi_none_doner_cokmez():
 
     provider = GroqSTTProvider("https://groq.test", "key", "model", client=_client_for(handler))
     assert await provider.transcribe(b"x") is None
+
+
+# --------------------------------------------------------------- biçim
+
+async def test_dosya_adi_ve_icerik_tipi_bicime_gore_gonderilir():
+    """Groq biçimi uzantıdan anlar: tarayıcı webm/mp4, Telegram ogg üretir —
+    hepsi aynı sağlayıcıdan geçer, içerik tipi uydurulmaz."""
+    gorulen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        gorulen["body"] = request.content
+        return httpx.Response(200, json={"text": "tamam"})
+
+    provider = GroqSTTProvider("https://groq.test", "key", "model", client=_client_for(handler))
+    await provider.transcribe(b"x", filename="voice.webm")
+    assert b'filename="voice.webm"' in gorulen["body"]
+    assert b"audio/webm" in gorulen["body"]
+
+
+def test_icerik_tipi_uzantidan_turer():
+    assert content_type_for("voice.webm") == "audio/webm"
+    assert content_type_for("voice.ogg") == "audio/ogg"
+    assert content_type_for("voice.MP4") == "audio/mp4"
+    assert content_type_for("voice.m4a") == "audio/mp4"
+    # Telegram'ın varsayılanı değişmez; tanınmayan uzantı da ona düşer.
+    assert content_type_for("voice") == "audio/ogg"
 
 
 # --------------------------------------------------------------- get_stt_provider

@@ -214,3 +214,13 @@ class ChatMessage(BaseModel):
 
 class ChatResponse(BaseModel):
     messages: list[ChatMessage]
+
+
+class ChatVoiceResponse(ChatResponse):
+    """POST /api/chat/voice — metin akışıyla aynı `messages`, ek olarak sesin
+    ne diye anlaşıldığı. Arayüz `transcript`i kullanıcı balonu olarak yazar
+    (Telegram'daki "🎤 Anladım: ..." satırının karşılığı); yanlış anlaşıldıysa
+    kullanıcı o balonu kalemle düzeltip yeniden gönderebilir. Ses hiç
+    çevrilemediyse None kalır, `messages` sebebi anlatır."""
+
+    transcript: str | None = None
