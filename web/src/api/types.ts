@@ -132,3 +132,8 @@ export type ChatMessage = {
 };
 
 export type ChatResponse = { messages: ChatMessage[] };
+
+/* Sesli mesaj: `messages` yazılı akışla aynı; `transcript` sesin ne diye
+ * anlaşıldığı — kullanıcı balonu olarak yazılır, yanlışsa kalemle düzeltilip
+ * yeniden gönderilebilir. Ses hiç çevrilemediyse null. */
+export type ChatVoiceResponse = ChatResponse & { transcript: string | null };

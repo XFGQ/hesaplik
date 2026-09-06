@@ -2928,6 +2928,115 @@ input.amount {
   color: var(--stamp);
 }
 
+/* ------------------------------------------------------- sesli mesaj kaydı
+   WhatsApp'ın kayıt çubuğu, defterin kendi temasıyla: çöp (iptal) · kırmızı
+   nokta + süre · canlı dalga · yeşil gönder. Yazı satırının YERİNE geçer,
+   bu yüzden yüksekliği onunla aynı tutulur (48px + aynı iç boşluk) — kayda
+   basınca panel zıplamaz. */
+.chat-record-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--rule);
+  background: var(--panel);
+}
+
+.chat-record-cancel {
+  flex: 0 0 auto;
+  width: 48px;
+  height: 48px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-record-cancel:hover {
+  background: var(--borc-bg);
+  color: var(--borc);
+}
+
+.chat-record-time {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 15px;
+  color: var(--ink);
+}
+
+/* Kayıt sürüyor işareti: yanıp sönen kırmızı nokta. Renk borç kırmızısı
+   DEĞİL (--borc para anlamı taşır); kayıt için ayrı, canlı bir kırmızı. */
+.chat-record-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e5484d;
+  animation: chat-record-blink 1.2s ease-in-out infinite;
+}
+
+@keyframes chat-record-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Dalga: sabit sayıda çubuk, yükseklikleri mikrofon seviyesinden gelir
+   (lib/voiceWave.ts). Sola kayar — konuşulan az önce görünür kalır.
+   `transition` yumuşatır ki 60fps'lik zıplama yerine akıcı bir dalga olsun. */
+.chat-wave {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.chat-wave-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: 4px;
+  border-radius: 2px;
+  background: var(--stamp);
+  opacity: 0.85;
+  transition: height 90ms linear;
+}
+
+/* Gönder yeşil: "kaydı bitir ve yolla" olumlu ve geri dönüşsüz bir adım,
+   nötr siyah gönderden ayrılsın. --success iki temada da okunur. */
+.chat-record-send {
+  background: var(--success);
+  color: var(--paper);
+}
+
+:root[data-theme="light"] .chat-record-send {
+  color: #fff;
+}
+
+/* Mikrofon, boş alanda gönderin yerini alır: aynı boyut, ama "asıl eylem"
+   olmadığı için ters kontrast — yazmak hâlâ birincil yol. */
+.chat-mic {
+  background: var(--card);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink);
+}
+
+.chat-mic:hover:not(:disabled) {
+  border-color: var(--stamp);
+  color: var(--stamp);
+}
+
 .chat-edit-bar {
   display: flex;
   align-items: center;
@@ -3018,6 +3127,21 @@ input.amount {
   .chat-edit {
     width: 48px;
     height: 48px;
+  }
+
+  /* Sesli mesaj telefonda ASIL kullanım (masaüstünde kolaylık): süre biraz
+     büyür, dalgaya daha çok yer kalsın diye boşluklar sıkışır. Dokunma
+     hedefleri (çöp, gönder) 48px'te sabit — bunlar zaten alt sınırda. */
+  .chat-record-row {
+    gap: 6px;
+  }
+
+  .chat-record-time {
+    font-size: 16px;
+  }
+
+  .chat-wave {
+    height: 36px;
   }
 
   /* 60 yaş okunabilirliği: karttaki yardımcı satır 13px'te kalmaz. Tarih

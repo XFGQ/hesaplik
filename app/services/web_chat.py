@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.main import (
     ANLASILAMADI_METNI,
     UNDO_WINDOW_SECONDS,
+    VOICE_ANLASILAMADI_METNI,
+    VOICE_KAPALI_METNI,
     _archive_onay_kelimesi,
     _edit_display_value,
     _FIELD_TITLE_NAMES,
@@ -62,8 +64,8 @@ from app.bot.main import (
     _turkce_buyuk,
 )
 from app.models import Person, PendingRequest, Product, RawMessage
-from app.schemas import ChatButton, ChatMessage, ChatResponse
-from app.services import catalog, message_splitter, parser, person_archive, person_edit, report, request_queue, web_chat_state, web_intake
+from app.schemas import ChatButton, ChatMessage, ChatResponse, ChatVoiceResponse
+from app.services import catalog, message_splitter, parser, person_archive, person_edit, report, request_queue, stt, web_chat_state, web_intake
 from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
 from app.services.ledger import LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
@@ -86,6 +88,8 @@ OUTCOME_NEW_PERSON_STEP = "new_person_step"
 OUTCOME_EDIT_FIELD_PROMPT = "edit_field_prompt"
 OUTCOME_UNDONE = "undone"
 OUTCOME_UNKNOWN_ACTION = "unknown_action"
+OUTCOME_VOICE_DISABLED = "voice_disabled"
+OUTCOME_VOICE_FAILED = "voice_failed"
 
 _EDIT_FIELD_ORDER = ["full_name", "phone", "city", "district", "address"]
 
@@ -966,8 +970,14 @@ async def _handle_info_report(session: AsyncSession, chat_id: str, pending) -> l
 
 # --------------------------------------------------------------- genel giriş noktaları
 
-async def handle_text(session: AsyncSession, chat_id: str, text: str) -> ChatResponse:
-    """POST /api/chat — botun on_text'inin web karşılığı."""
+async def handle_text(
+    session: AsyncSession, chat_id: str, text: str, raw: RawMessage | None = None
+) -> ChatResponse:
+    """POST /api/chat — botun on_text'inin web karşılığı.
+
+    `raw` normalde burada açılır. Sesli mesajda ise satır Groq'a gitmeden
+    ÖNCE açılmıştır (bkz. handle_voice) ve hazır verilir — böylece tek bir
+    ham kayıt hem "kullanıcı konuştu" hem "şunu dedi" izini taşır."""
     pending = await web_chat_state.load(session, chat_id)
 
     if pending.kind == "new_person_flow" and pending.payload:
@@ -979,7 +989,8 @@ async def handle_text(session: AsyncSession, chat_id: str, text: str) -> ChatRes
     if pending.kind == "running_amount" and pending.payload:
         return ChatResponse(messages=await _running_amount_text(session, chat_id, pending, text))
 
-    raw = await web_intake.save_web_message(session, chat_id, text)
+    if raw is None:
+        raw = await web_intake.save_web_message(session, chat_id, text)
     pieces = message_splitter.split_into_requests(text)
     is_multi = len(pieces) > 1
     await request_queue.create_batch(session, chat_id, pieces, raw_message_id=raw.id)
@@ -988,6 +999,39 @@ async def handle_text(session: AsyncSession, chat_id: str, text: str) -> ChatRes
         intro = ChatMessage(reply=f"{len(pieces)} işlem algılandı, sırayla işliyorum:", outcome=OUTCOME_INFO)
         messages = [intro, *messages]
     return ChatResponse(messages=messages)
+
+
+async def handle_voice(
+    session: AsyncSession, chat_id: str, audio: bytes, filename: str
+) -> ChatVoiceResponse:
+    """POST /api/chat/voice — botun on_voice'unun web karşılığı.
+
+    Ses yalnızca metne çeviren bir ÖN ADIMDIR: çıkan metin, kullanıcı yazmış
+    gibi doğrudan handle_text'e verilir (aynı parser -> LLM -> intent_resolver
+    akışı, ara onay yok). İkinci bir "sesli mesaj mantığı" yoktur.
+
+    Mesaj asla kaybolmaz: ham kayıt Groq'a gitmeden önce açılır ve COMMIT
+    edilir — çeviri başarısız olsa ya da istek yarıda kalsa bile "kullanıcı
+    burada bir şey söyledi" izi defterde durur. Ham ses saklanmaz.
+    """
+    raw = await web_intake.save_web_voice_message(session, chat_id, filename, len(audio))
+    await session.commit()
+
+    provider = stt.get_stt_provider()
+    if provider is None:
+        return ChatVoiceResponse(
+            messages=[ChatMessage(reply=VOICE_KAPALI_METNI, outcome=OUTCOME_VOICE_DISABLED)]
+        )
+
+    text = await provider.transcribe(audio, filename=filename)
+    if not text:
+        return ChatVoiceResponse(
+            messages=[ChatMessage(reply=VOICE_ANLASILAMADI_METNI, outcome=OUTCOME_VOICE_FAILED)]
+        )
+
+    raw.voice_transcript = text
+    res = await handle_text(session, chat_id, text, raw=raw)
+    return ChatVoiceResponse(transcript=text, messages=res.messages)
 
 
 async def handle_action(session: AsyncSession, chat_id: str, action: str, text: str | None = None) -> ChatResponse:

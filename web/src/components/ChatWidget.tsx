@@ -7,6 +7,8 @@ import { ActionBarSide } from "../lib/actionBar";
 import type { NudgeKind } from "../lib/chatNudge";
 import { isOutsideClick, startNudgeCycle } from "../lib/chatNudge";
 import { useToast } from "../lib/toast";
+import { useVoiceRecorder } from "../lib/useVoiceRecorder";
+import { MAX_RECORD_SECONDS, MIN_RECORD_SECONDS, formatDuration } from "../lib/voiceWave";
 
 type Bubble = {
   id: number;
@@ -36,6 +38,25 @@ function StopIcon() {
   return (
     <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
       <rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+function MicIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="21" height="21" aria-hidden="true" focusable="false">
+      <rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor" />
+      <path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" strokeWidth="2.2"
+        strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" focusable="false">
+      <path d="M4 7h16M10 4h4M9 7v12M15 7v12M6 7l1 13h10l1-13" fill="none" stroke="currentColor"
+        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -85,6 +106,10 @@ export default function ChatWidget() {
   const panelRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /* Mikrofon: izin + kayıt + canlı seviye hook'ta (lib/useVoiceRecorder.ts),
+   * burada yalnızca "kayıt çubuğu mu, yazı satırı mı" kararı var. */
+  const rec = useVoiceRecorder();
+  const recording = rec.state !== "idle";
 
   useEffect(() => {
     if (open) listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -102,6 +127,15 @@ export default function ChatWidget() {
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open]);
+
+  /* Panel küçülürse (✕, boşluğa tıklama, Esc) kayıt İPTAL edilir: görünmeyen
+   * bir mikrofon açık kalamaz — telefonda kayıt ışığı yanar durur ve kullanıcı
+   * neyin kaydedildiğini göremez. Kayıt bir "bekleyen soru" değil, o yüzden
+   * sunucuya bir şey söylemeye gerek yok. */
+  useEffect(() => {
+    if (!open && recording) rec.cancel();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, recording]);
 
   /* Hatırlatma yalnızca panel KAPALIYKEN döner; açılınca durur ve sıfırlanır
    * (açık panelin yanında kıpırdayan bir buton rahatsız eder). */
@@ -200,6 +234,60 @@ export default function ChatWidget() {
     }
     appendNote("İptal edildi.");
   }
+
+  /* Mikrofon → kayıt modu. İzin ilk seferde sorulur; reddedilirse kullanıcıya
+   * ne yapacağı söylenir (tarayıcı ayarı) ve yazı satırına dönülür — sesli
+   * mesaj bir kolaylıktır, tek yol değildir. */
+  async function startRecording() {
+    if (sending || recording) return;
+    const err = await rec.start();
+    if (err === "denied") {
+      appendNote("Mikrofon izni verilmedi. Tarayıcı ayarlarından izin verip tekrar deneyebilirsin.");
+    } else if (err === "unavailable") {
+      appendNote("Bu cihazda mikrofon kullanılamıyor, yazarak gönderebilirsin.");
+    }
+  }
+
+  /* Yeşil gönder: kaydı bitir → sunucuya yolla → çıkan METİN kullanıcı balonu
+   * olur, botun cevabı arkasından gelir. Yazılı mesajla aynı akış; ara onay
+   * yok (Telegram'daki gibi). Ses hiç anlaşılmazsa sunucu bunu bir hata değil
+   * bir cevap olarak döner ("yazarak gönderir misin?"), balon olarak görünür. */
+  async function finishRecording() {
+    const short = rec.seconds < MIN_RECORD_SECONDS;
+    const taken = await rec.stop();
+    if (!taken || short) {
+      /* Kazara dokunuş: bir saniyeden kısa kayıt gönderilmez, sessizce
+       * yazı satırına dönülür. */
+      if (short) appendNote("Kayıt çok kısa, gönderilmedi.");
+      return;
+    }
+
+    setSending(true);
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+    try {
+      const res = await api.chatVoice(taken.blob, taken.filename, ctrl.signal);
+      if (res.transcript) {
+        setBubbles((prev) => [
+          ...prev,
+          { id: nextId++, from: "user", text: res.transcript as string, buttons: [], reportPath: null },
+        ]);
+      }
+      appendAssistant(res.messages);
+    } catch {
+      if (!ctrl.signal.aborted) toast("Ses gönderilemedi, tekrar dener misin?", "info");
+    } finally {
+      if (abortRef.current === ctrl) abortRef.current = null;
+      setSending(false);
+    }
+  }
+
+  /* Kayıt üst sınırı: cepte unutulan mikrofon kendiliğinden durup gönderir
+   * (WhatsApp gibi). Sınır ve sayaç aynı yerden gelir (lib/voiceWave.ts). */
+  useEffect(() => {
+    if (rec.state === "recording" && rec.seconds >= MAX_RECORD_SECONDS) finishRecording();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rec.state, rec.seconds]);
 
   function startEdit(b: Bubble) {
     if (sending) return;
@@ -328,6 +416,46 @@ export default function ChatWidget() {
         </div>
       )}
 
+      {recording ? (
+        /* WhatsApp tarzı kayıt çubuğu: solda çöp (iptal), yanında kırmızı
+         * yanıp sönen nokta + süre, ortada canlı ses dalgası, sağda yeşil
+         * gönder. Yazı satırının YERİNE geçer — kayıttayken yazmak zaten
+         * anlamsız, iki iş aynı anda yapılmaz. */
+        <div className="chat-record-row" role="group" aria-label="Sesli mesaj kaydı">
+          <button
+            type="button"
+            className="chat-record-cancel"
+            onClick={rec.cancel}
+            aria-label="Kaydı iptal et"
+            title="İptal"
+          >
+            <TrashIcon />
+          </button>
+
+          <span className="chat-record-time">
+            <span className="chat-record-dot" aria-hidden="true" />
+            <span aria-live="off">{formatDuration(rec.seconds)}</span>
+          </span>
+
+          {/* Dalga bilgi taşımaz, "seni duyuyorum" der — ekran okuyucudan
+              gizlenir, süre zaten metin olarak var. */}
+          <div className="chat-wave" aria-hidden="true">
+            {rec.bars.map((h, i) => (
+              <span key={i} className="chat-wave-bar" style={{ height: `${h}%` }} />
+            ))}
+          </div>
+
+          <button
+            type="button"
+            className="chat-send chat-record-send"
+            onClick={finishRecording}
+            aria-label="Sesli mesajı gönder"
+            title="Gönder"
+          >
+            <SendIcon />
+          </button>
+        </div>
+      ) : (
       <form className="chat-input-row" onSubmit={onSubmit}>
         <input
           ref={inputRef}
@@ -363,18 +491,36 @@ export default function ChatWidget() {
                 <StopIcon />
               </button>
             )}
-            <button
-              type="submit"
-              className="chat-send"
-              disabled={!input.trim()}
-              aria-label={editingId !== null ? "Kaydet ve gönder" : "Gönder"}
-              title={editingId !== null ? "Kaydet ve gönder" : "Gönder"}
-            >
-              <SendIcon />
-            </button>
+            {/* Mikrofon, yazacak bir şey YOKKEN gönderin YERİNİ alır (WhatsApp
+                gibi): tek satırda iki "asıl eylem" olmaz, boş alanda pasif bir
+                gönder oku durmaz. Düzenleme modunda mikrofon çıkmaz —
+                düzeltilen şey bir metindir. */}
+            {input.trim() || editingId !== null ? (
+              <button
+                type="submit"
+                className="chat-send"
+                disabled={!input.trim()}
+                aria-label={editingId !== null ? "Kaydet ve gönder" : "Gönder"}
+                title={editingId !== null ? "Kaydet ve gönder" : "Gönder"}
+              >
+                <SendIcon />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="chat-send chat-mic"
+                onClick={startRecording}
+                disabled={rec.state === "requesting"}
+                aria-label="Sesli mesaj kaydet"
+                title="Sesli mesaj"
+              >
+                <MicIcon />
+              </button>
+            )}
           </>
         )}
       </form>
+      )}
     </div>
   );
 }

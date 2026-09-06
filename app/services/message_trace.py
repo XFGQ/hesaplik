@@ -130,6 +130,13 @@ def payload_text(payload: dict | None) -> str | None:
     if isinstance(direct, str):
         return direct
 
+    # Web sesli mesajı (bkz. web_intake.save_web_voice_message): payload'da
+    # metin YOKTUR, ses de saklanmaz. Çeviri başarılıysa display_text zaten
+    # voice_transcript'i gösterir; başarısızsa panelde boş satır değil,
+    # "burada bir ses vardı ama çevrilemedi" görünsün.
+    if payload.get("voice") is True:
+        return "(ses kaydı)"
+
     for key in ("message", "edited_message", "channel_post", "edited_channel_post"):
         node = payload.get(key)
         if isinstance(node, dict):

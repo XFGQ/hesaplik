@@ -23,7 +23,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RawMessage, Transaction, TxSource
-from app.services import llm_provider, message_trace, parser, report
+from app.services import llm_provider, message_trace, parser, report, web_intake
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
 from app.services.queries import (
@@ -454,17 +454,23 @@ def _actor_for(raw: RawMessage) -> str:
     """Kaydı kim yaptı: web sohbetinde JWT kullanıcı adı (save_web_message
     raw.chat_id'ye yazar — bkz. app/services/web_intake.py), Telegram'da
     her zaman sabit bot aktörü. Yeni parametre eklemek yerine (dosyanın
-    geri kalanındaki gibi) raw'dan türetilir."""
-    if raw.channel == "web" and raw.chat_id:
+    geri kalanındaki gibi) raw'dan türetilir. Mikrofonla söylenen web
+    mesajı da (web_voice) aynı kullanıcıya aittir."""
+    if raw.channel in web_intake.WEB_CHANNELS and raw.chat_id:
         return raw.chat_id
     return TELEGRAM_ACTOR
 
 
 def _tx_source_for(raw: RawMessage) -> TxSource:
+    """Kanal önce bakılır: web sesli mesajında hem `channel == "web_voice"`
+    hem `voice_transcript` doludur, sıra ters olsa kayıt TELEGRAM_VOICE
+    görünürdü."""
+    if raw.channel == web_intake.CHANNEL_WEB_VOICE:
+        return TxSource.WEB_VOICE
+    if raw.channel == web_intake.CHANNEL_WEB:
+        return TxSource.WEB
     if raw.voice_transcript:
         return TxSource.TELEGRAM_VOICE
-    if raw.channel == "web":
-        return TxSource.WEB
     return TxSource.TELEGRAM_TEXT
 
 

@@ -6,7 +6,7 @@ CREATE EXTENSION IF NOT EXISTS unaccent;
 
 CREATE TYPE tx_kind   AS ENUM ('DEBIT', 'CREDIT');
 CREATE TYPE tx_status AS ENUM ('PENDING', 'CONFIRMED', 'REJECTED');
-CREATE TYPE tx_source AS ENUM ('WEB', 'TELEGRAM_TEXT', 'TELEGRAM_VOICE', 'SYSTEM');
+CREATE TYPE tx_source AS ENUM ('WEB', 'WEB_VOICE', 'TELEGRAM_TEXT', 'TELEGRAM_VOICE', 'SYSTEM');
 
 -- ---------------------------------------------------------------- kişiler
 

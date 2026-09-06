@@ -41,6 +41,7 @@ class TxStatus(str, enum.Enum):
 
 class TxSource(str, enum.Enum):
     WEB = "WEB"
+    WEB_VOICE = "WEB_VOICE"      # web sohbetinde mikrofonla söylendi (Groq whisper)
     TELEGRAM_TEXT = "TELEGRAM_TEXT"
     TELEGRAM_VOICE = "TELEGRAM_VOICE"
     SYSTEM = "SYSTEM"

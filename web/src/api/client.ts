@@ -6,6 +6,7 @@ import type {
   BackupRunResult,
   BackupSnapshot,
   ChatResponse,
+  ChatVoiceResponse,
   EntryInput,
   EntryResult,
   Person,
@@ -21,10 +22,14 @@ const BASE = import.meta.env.VITE_API_URL ?? "";
 export class ApiError extends Error {}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
+  /* FormData gövdesinde (sesli mesaj) Content-Type ELLE yazılmaz: tarayıcı
+     multipart boundary'sini kendisi üretmeli, "application/json" demek
+     yüklemeyi sunucuda ayrıştırılamaz hâle getirir. */
+  const isForm = typeof FormData !== "undefined" && init?.body instanceof FormData;
   const res = await fetch(`${BASE}/api${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
       ...authHeader(),
       ...(init?.headers as Record<string, string> | undefined),
     },
@@ -153,6 +158,13 @@ export const api = {
   /* Bekleyen soruyu (ve kuyrukta kalanları) sunucuda iptal eder. Gövde yok:
    * iptal edilecek durum zaten oturumun kendisine ait. */
   chatCancel: () => req<ChatResponse>("/chat/cancel", { method: "POST" }),
+  /* Ses multipart gider (bkz. req'teki FormData istisnası); dosya adının
+     UZANTISI sunucuda biçim ipucudur, uydurulmaz. */
+  chatVoice: (blob: Blob, filename: string, signal?: AbortSignal) => {
+    const form = new FormData();
+    form.append("file", blob, filename);
+    return req<ChatVoiceResponse>("/chat/voice", { method: "POST", body: form, signal });
+  },
 
   adminLlmStatus: () => req<AdminLLMStatus>("/admin/llm"),
   adminSetLlmPrimary: (llmPrimary: string) =>
