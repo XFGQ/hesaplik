@@ -76,3 +76,56 @@ restore-test: db
 # Telegram bot (yerelde uzun yoklama)
 bot: db
     .venv/bin/python -m app.bot.main
+
+# Hepsi idempotent (IF NOT EXISTS / ON CONFLICT), taze kurulumda da guvenli:
+# schema.sql kanoniktir, migration'lar MEVCUT veritabanini yeni surume tasir.
+# db/migrations/*.sql dosyalarini sirayla uygula
+migrate: db
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -f .env ] || { echo ".env yok — once: cp .env.example .env"; exit 1; }
+    # .env source EDILMEZ: AUTH_PASSWORD_HASH bcrypt hash'i `$2b$12$...`
+    # icerir, kabuk onu degisken sanip patlar. Gereken iki deger okunur.
+    envdegeri() { grep -E "^$1=" .env | tail -1 | cut -d= -f2- || true; }
+    pguser="$(envdegeri POSTGRES_USER)"; pguser="${pguser:-hesaplik}"
+    pgdb="$(envdegeri POSTGRES_DB)";     pgdb="${pgdb:-hesaplik}"
+    for i in $(seq 1 60); do
+      docker compose exec -T db pg_isready -U "$pguser" >/dev/null 2>&1 && break
+      [ "$i" = 60 ] && { echo "veritabani hazir olmadi"; exit 1; }
+      sleep 1
+    done
+    for f in db/migrations/*.sql; do
+      echo "[migrate] $f"
+      docker compose exec -T db psql -q -v ON_ERROR_STOP=1 \
+        -U "$pguser" -d "$pgdb" < "$f"
+    done
+    echo "[migrate] tamam"
+
+# Sonrasinda tek is kalir: .env'i doldurup `just dev`.
+# Yeni makinede sifirdan kurulum (.env + venv + npm + db + migration)
+quickstart:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -f .env ]; then
+      echo "[quickstart] .env zaten var, dokunulmadi"
+    else
+      cp .env.example .env
+      echo "[quickstart] .env olusturuldu (.env.example kopyasi)"
+    fi
+    just setup
+    just migrate
+    echo
+    echo "======================================================================"
+    echo " Kurulum tamam."
+    echo
+    echo " SIRADAKI ADIM: .env dosyasini doldur —"
+    echo "   POSTGRES_PASSWORD / DATABASE_URL   (yerelde ornek deger yeterli)"
+    echo "   AUTH_USERNAME, AUTH_PASSWORD_HASH, JWT_SECRET"
+    echo "     hash:   .venv/bin/python -c \"import bcrypt; print(bcrypt.hashpw(b'sifreniz', bcrypt.gensalt()).decode())\""
+    echo "     secret: .venv/bin/python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+    echo "   (ucu de BOSSA sistem fail-closed: giris reddedilir, uclar 401 doner)"
+    echo "   Opsiyonel: TELEGRAM_BOT_TOKEN, NVIDIA_API_KEY, GROQ_API_KEY"
+    echo
+    echo " Sonra:  just dev      # api :8000 + web :5173"
+    echo "         just seed     # ornek urunler (saman, arpa)"
+    echo "======================================================================"
