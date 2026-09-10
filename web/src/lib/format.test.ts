@@ -190,4 +190,14 @@ describe("hareket kartı yapısı", () => {
     assert.ok(page.includes('className="back"'), "← Defter butonu kayboldu");
     assert.ok(page.includes("Ekstre (PDF)"));
   });
+
+  it("Ekstre (PDF) solda, ← Defter'in altında; Düzenle sağda", () => {
+    const back = page.indexOf('className="back"');
+    const ekstre = page.indexOf("Ekstre (PDF)", back);
+    const h1 = page.indexOf("<h1");
+    const duzenle = page.indexOf("Düzenle", h1);
+    assert.ok(page.includes('className="bar-nav"'), "sol sütun kayboldu");
+    assert.ok(back < ekstre && ekstre < h1, "Ekstre sol sütunda değil");
+    assert.ok(h1 < duzenle, "Düzenle sağda değil");
+  });
 });
