@@ -154,12 +154,21 @@ button {
   text-overflow: ellipsis;
 }
 
-/* Sağ üstteki eylemler tek SÜTUN: [Düzenle] üstte, [Ekstre (PDF)] altında.
-   Yan yanayken iki kısa bağlantı birbirine yapışıyordu; alt alta her biri
-   kendi satırında tam boy (--tap) dokunma hedefi oluyor. `margin-left: auto`
-   grubu sağa yaslar — dar ekranda alt satıra taştığında da sağda kalsın.
-   `align-items: stretch` + butonların sağa yaslı içeriği: ikisi de aynı
-   genişlikte (en genişi "Ekstre (PDF)") ve metinleri sağda hizalı. */
+/* Kişi defteri başlığının SOL sütunu: [← Defter] üstte, [Ekstre (PDF)]
+   altında. Yan yanayken kısa hedefler birbirine yapışıyordu; alt alta her
+   biri kendi satırında tam boy (--tap) dokunma hedefi. `align-items:
+   stretch`: ikisi aynı genişlikte (en genişi "Ekstre (PDF)"), metinleri
+   solda hizalı — kişi adı sütunun sağında dikey ortada durur. */
+.bar-nav {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+/* Sağ üstteki eylemler ([Düzenle]). `margin-left: auto` grubu sağa yaslar —
+   dar ekranda alt satıra taştığında da sağda kalsın. */
 .bar-actions {
   flex: 0 0 auto;
   margin-left: auto;
@@ -202,6 +211,13 @@ button {
 .back-arrow {
   font-size: 19px;
   line-height: 1;
+}
+
+/* Sütunda geri tuşunun sağ boşluğu gereksiz: Ekstre ile aynı genişlikte
+   olsun. Temel `.back` kuralından SONRA — actionBar.test.ts `.back {`in
+   ilk geçtiği bloğu temel kural sayar. */
+.bar-nav .back {
+  margin: 0;
 }
 
 .pad {
@@ -757,9 +773,8 @@ tbody tr:hover {
     font-size: 15px;
   }
 
-  /* Kişi defterinin başlığı dar ekranda: [← Defter] [kişi adı] solda, sağda
-     [Düzenle] / [Ekstre (PDF)] sütunu. Sığmazsa isim kırpılmaktansa sütun
-     alt satıra taşar ve `margin-left: auto` sayesinde yine sağda durur. */
+  /* Dar ekranda başlık sığmazsa isim kırpılmaktansa taşar. `margin-left:
+     auto` sayesinde sağdaki eylemler alt satıra düşse de sağda kalır. */
   .bar {
     flex-wrap: wrap;
     gap: 6px 14px;
@@ -770,8 +785,20 @@ tbody tr:hover {
     font-size: 18px;
   }
 
+  /* Kişi defteri: üst satırda solda [← Defter]/[Ekstre (PDF)] sütunu, sağda
+     [Düzenle]; kişi adı altta kendi tam genişlik satırında. Telefonda
+     ~134px'lik sütun + Düzenle arasında isme ~80px kalıyordu — kırpılır ya
+     da harf harf bölünürdü. Adı uzunsa satır kırılır, kırpılmaz. */
+  .bar-person h1 {
+    order: 3;
+    flex: 1 1 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
   /* Butonlar arası boşluk mobilde biraz daha açık: iki hedef arasında
      parmak payı kalsın. */
+  .bar-nav,
   .bar-actions {
     gap: 10px;
   }
@@ -1095,9 +1122,14 @@ input.amount {
   background: var(--card);
 }
 
-/* Kişi defteri başlığındaki sütun (bkz. .bar-actions): metinler sağa yaslı,
-   ikisi de aynı genişlikte. Temel `.link` kuralından SONRA gelmeli —
+/* Kişi defteri başlığındaki sütunlar (bkz. .bar-nav, .bar-actions): solda
+   metin sola, sağda sağa yaslı. Temel `.link` kuralından SONRA gelmeli —
    aynı özgüllükte değil ama okurken de sıra doğru olsun. */
+.bar-nav .link {
+  justify-content: flex-start;
+  padding: 0 10px;
+}
+
 .bar-actions .link {
   justify-content: flex-end;
   padding: 0 10px;

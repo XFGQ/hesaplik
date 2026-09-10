@@ -80,32 +80,33 @@ export default function PersonDetail() {
 
   return (
     <div className="page">
-      <div className="bar">
-        {/* Geri: barın SOL ucunda, çerçeveli ve büyük (min 52px dokunma
-            alanı). Eskiden kenarlıksız küçük bir yazıydı ve hemen yanındaki
-            tıklanabilir kişi adına/PDF butonuna yanlışlıkla basılıyordu. */}
-        <button className="back" onClick={() => nav("/")} aria-label="Deftere dön">
-          <span className="back-arrow" aria-hidden="true">
-            ←
-          </span>
-          Defter
-        </button>
-        <h1 style={{ cursor: "pointer" }} onClick={() => setModal("edit")}>
-          {p?.full_name ?? "Kişi"}
-        </h1>
-        {/* Sağ üstte tek sütun: Düzenle üstte, Ekstre (PDF) altında. Yan yana
-            dururken ikisi de kısa metinli bağlantıydı ve parmak birini
-            isterken diğerine deniyordu; alt alta her biri kendi satırında
-            tam boy (--tap) hedef oluyor. */}
-        <div className="bar-actions">
-          <button className="link" onClick={() => setModal("edit")}>
-            Düzenle
+      <div className="bar bar-person">
+        {/* Sol sütun: [← Defter] üstte, [Ekstre (PDF)] altında. Geri tuşu
+            çerçeveli ve büyük (min 52px dokunma alanı) — eskiden kenarlıksız
+            küçük bir yazıydı ve hemen yanındaki tıklanabilir kişi adına
+            yanlışlıkla basılıyordu. Ekstre alt satırda kendi tam boy (--tap)
+            hedefi; ikisi aynı genişlikte, aralarında parmak payı var. */}
+        <div className="bar-nav">
+          <button className="back" onClick={() => nav("/")} aria-label="Deftere dön">
+            <span className="back-arrow" aria-hidden="true">
+              ←
+            </span>
+            Defter
           </button>
           <button
             className="link"
             onClick={() => api.openPersonReport(personId).catch(() => toast("Rapor alınamadı", "info"))}
           >
             <img className="report-icon" src="/icons/pdf_logo.svg" alt="" /> Ekstre (PDF)
+          </button>
+        </div>
+        <h1 style={{ cursor: "pointer" }} onClick={() => setModal("edit")}>
+          {p?.full_name ?? "Kişi"}
+        </h1>
+        {/* Sağ üstte yalnızca Düzenle. */}
+        <div className="bar-actions">
+          <button className="link" onClick={() => setModal("edit")}>
+            Düzenle
           </button>
         </div>
       </div>
