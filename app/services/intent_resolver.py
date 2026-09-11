@@ -37,7 +37,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Person, Product
-from app.services import catalog, llm_provider
+from app.services import catalog, llm_provider, saman_fiyat
 from app.services.name_utils import strip_turkish_suffix
 from app.services.parser import ParsedIntent
 
@@ -146,6 +146,13 @@ class ResolvedIntent:
     running_before: Decimal | None = None
     running_change: Decimal | None = None
     running_after: Decimal | None = None
+    # Varsayılan saman fiyatı (CLAUDE.md > "Varsayılan saman fiyatı"):
+    # assumed_* parser'dan gelir (bkz. ParsedIntent); default_unit_price
+    # tutar varsayılan fiyattan hesaplandıysa message_processor doldurur —
+    # önizleme ve kayıt onayı kullanılan fiyatı gösterir.
+    assumed_product: bool = False
+    assumed_kind: bool = False
+    default_unit_price: Decimal | None = None
 
 
 async def find_person_match(
@@ -266,11 +273,25 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
     # Koşan format (CLAUDE.md > "Koşan format") da tutarsız gelebilir:
     # "70-20-50" yalnızca MAL adedini söyler, TL ayrıca girilir. Tutar
     # uydurulmaz — kişi/ürün çözüldükten sonra message_processor sorar.
+    # Saman da tutarsız gelebilir ("furkan 20 saman aldı"): tutar varsayılan
+    # saman fiyatından hesaplanacak (CLAUDE.md > "Varsayılan saman fiyatı").
+    # Fiyat okunamıyorsa (bozuk ayar) eski davranış aynen sürer. Birim
+    # yazılmadıysa balya sayılır — fiyat balya başına, ve saman kataloğda
+    # yoksa "adet" birimiyle açılmasın.
+    unit = intent.unit
+    saman_default = saman_fiyat.is_candidate(intent)
+    if saman_default:
+        if await saman_fiyat.get_saman_price(session) is None:
+            saman_default = False
+        else:
+            unit = unit or saman_fiyat.SAMAN_BIRIM
+
     if (
         intent.kind not in NO_AMOUNT_KINDS
         and intent.amount is None
         and not intent.close_debt
         and not intent.running
+        and not saman_default
     ):
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)
 
@@ -288,7 +309,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 person_candidates=candidates,
                 person_name_raw=intent.person_name,
                 qty=intent.qty,
-                unit=intent.unit,
+                unit=unit,
                 product_name_raw=intent.product,
                 amount=intent.amount,
                 field_name=intent.field,
@@ -298,13 +319,15 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 running_before=intent.running_before,
                 running_change=intent.running_change,
                 running_after=intent.running_after,
+                assumed_product=intent.assumed_product,
+                assumed_kind=intent.assumed_kind,
             )
         return ResolvedIntent(
             status=ResolutionStatus.PERSON_NOT_FOUND,
             kind=intent.kind,
             person_name_raw=intent.person_name,
             qty=intent.qty,
-            unit=intent.unit,
+            unit=unit,
             product_name_raw=intent.product,
             amount=intent.amount,
             field_name=intent.field,
@@ -314,11 +337,13 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
             running_before=intent.running_before,
             running_change=intent.running_change,
             running_after=intent.running_after,
+            assumed_product=intent.assumed_product,
+            assumed_kind=intent.assumed_kind,
         )
 
     product = None
     if intent.product and intent.kind not in NO_AMOUNT_KINDS:
-        product, suggestion = await catalog.resolve_product_or_suggest(session, intent.product, intent.unit)
+        product, suggestion = await catalog.resolve_product_or_suggest(session, intent.product, unit)
         if suggestion is not None:
             # Ürün adı bulanık ("samaan" gibi) — otomatik bağlanmaz/oluşturulmaz,
             # kullanıcıya sorulmalı (CLAUDE.md > "Ürün yazım düzeltme (fuzzy)").
@@ -327,7 +352,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 kind=intent.kind,
                 person=person,
                 qty=intent.qty,
-                unit=intent.unit,
+                unit=unit,
                 product_name_raw=intent.product,
                 product_suggestion=suggestion,
                 amount=intent.amount,
@@ -338,6 +363,8 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
                 running_before=intent.running_before,
                 running_change=intent.running_change,
                 running_after=intent.running_after,
+                assumed_product=intent.assumed_product,
+                assumed_kind=intent.assumed_kind,
             )
 
     return ResolvedIntent(
@@ -345,7 +372,7 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         kind=intent.kind,
         person=person,
         qty=intent.qty,
-        unit=intent.unit,
+        unit=unit,
         product_name_raw=intent.product,
         product=product,
         amount=intent.amount,
@@ -356,4 +383,6 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
         running_before=intent.running_before,
         running_change=intent.running_change,
         running_after=intent.running_after,
+        assumed_product=intent.assumed_product,
+        assumed_kind=intent.assumed_kind,
     )

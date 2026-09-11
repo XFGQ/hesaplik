@@ -135,6 +135,17 @@ class SettingOut(BaseModel):
     value: str
 
 
+class SamanFiyatIn(BaseModel):
+    unit_price: Decimal = Field(gt=0, le=Decimal("1000000"), decimal_places=2)
+
+
+class SamanFiyatOut(BaseModel):
+    """unit_price None: ayar bozuk, tutar varsayılan fiyattan hesaplanmıyor."""
+    unit_price: Decimal | None
+    unit: str
+    product: str
+
+
 class BackupSnapshotOut(BaseModel):
     id: str
     time: datetime

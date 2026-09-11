@@ -13,6 +13,7 @@ import type {
   PersonInput,
   PersonRow,
   Product,
+  SamanFiyat,
   Settings,
   TxDetail,
 } from "./types";
@@ -136,6 +137,15 @@ export const api = {
     req<{ key: string; value: string }>(`/settings/${encodeURIComponent(key)}`, {
       method: "PUT",
       body: JSON.stringify({ value }),
+    }),
+
+  /* Varsayılan saman balya fiyatı — tutarı yazılmamış saman kaydı bu fiyattan
+   * hesaplanır. Değişiklik sunucuda doğrulanır ve audit_log'a yazılır. */
+  samanFiyat: () => req<SamanFiyat>("/settings/saman-fiyat"),
+  setSamanFiyat: (unit_price: string) =>
+    req<SamanFiyat>("/settings/saman-fiyat", {
+      method: "POST",
+      body: JSON.stringify({ unit_price }),
     }),
 
   getBackups: () => req<BackupSnapshot[]>("/backups"),

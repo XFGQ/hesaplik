@@ -7,6 +7,7 @@ import {
   BIRIMLER,
   autoAmount,
   checkForm,
+  defaultAutoPrice,
   goodsSummary,
   resolveGoods,
 } from "../lib/goods";
@@ -32,19 +33,26 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
   const [unitOpen, setUnitOpen] = useState(false);
   const [amount, setAmount] = useState("");
   const [amountHint, setAmountHint] = useState<number | null>(null);
-  // Tik VARSAYILAN OLARAK KAPALI: fiyat listesi tutarı bağlamaz
-  // (CLAUDE.md kural 4), kullanıcı isterse hesaplatır.
-  const [autoPrice, setAutoPrice] = useState(false);
+  // null = kullanıcı tike dokunmadı. O zaman tik yalnızca varsayılan saman
+  // fiyatında AÇIK başlar (tutar yazılmadıysa saman bu fiyattan hesaplanır —
+  // CLAUDE.md > "Varsayılan saman fiyatı"); diğer ürünlerde kayıtlı fiyat
+  // tutarı bağlamaz (kural 4), kapalı başlar.
+  const [autoPrice, setAutoPrice] = useState<boolean | null>(null);
 
   const products = useQuery({ queryKey: ["products"], queryFn: api.products });
+  const samanFiyat = useQuery({ queryKey: ["saman-fiyat"], queryFn: api.samanFiyat });
+  const samanPrice =
+    samanFiyat.data?.unit_price != null ? Number(samanFiyat.data.unit_price) : null;
 
-  const goods = resolveGoods(entry, products.data, unitFallback);
+  const goods = resolveGoods(entry, products.data, unitFallback, samanPrice);
   const otomatik = autoAmount(goods);
-  const otomatikAcik = autoPrice && otomatik !== null;
+  // Kullanıcı tutarı elle yazdıysa varsayılan fiyat onu ezmez.
+  const tikAcik = autoPrice ?? (defaultAutoPrice(goods) && !amount.trim());
+  const otomatikAcik = tikAcik && otomatik !== null;
 
   function onEntryChange(value: string) {
     setEntry(value);
-    const next = resolveGoods(value, products.data, unitFallback);
+    const next = resolveGoods(value, products.data, unitFallback, samanPrice);
     // Yazıda birim varsa dropdown yedeği düşer: yazı her zaman kazanır.
     if (next.unit) setUnitFallback(null);
     // "... 5000 tl" aynı satıra yazıldıysa tutarı doldur — ama kullanıcının
@@ -170,7 +178,9 @@ export default function DebtModal({ personId, personName, onClose }: Props) {
             onChange={(e) => setAutoPrice(e.target.checked)}
           />
           <span>
-            {goods.catalogPrice !== null
+            {goods.priceSource === "saman" && goods.catalogPrice !== null
+              ? `Varsayılan saman fiyatından hesapla (${money(goods.catalogPrice)}/${goods.unitName})`
+              : goods.catalogPrice !== null
               ? `Kayıtlı fiyattan hesapla (${money(goods.catalogPrice)}/${goods.unitName})`
               : goods.priceUnit
                 ? `Kayıtlı fiyat ${goods.priceUnit} için — ${goods.unitName} fiyatı elle girilir`

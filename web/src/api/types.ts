@@ -82,6 +82,9 @@ export type EntryResult = {
 
 export type Settings = Record<string, string>;
 
+/** unit_price null: sunucudaki ayar bozuk, varsayılan fiyattan hesap yapılmıyor. */
+export type SamanFiyat = { unit_price: string | null; unit: string; product: string };
+
 export type AdminLLMSource = {
   ok: boolean;
   url: string;

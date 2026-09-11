@@ -40,6 +40,8 @@ from app.schemas import (
     ProductIn,
     ProductOut,
     ReverseIn,
+    SamanFiyatIn,
+    SamanFiyatOut,
     SettingIn,
     SettingOut,
     TxDetailOut,
@@ -48,7 +50,17 @@ from app.schemas import (
     TxWithProductOut,
     VllmDesiredOut,
 )
-from app.services import auth, backup, catalog, ledger, llm_provider, queries, report, vllm_control
+from app.services import (
+    auth,
+    backup,
+    catalog,
+    ledger,
+    llm_provider,
+    queries,
+    report,
+    saman_fiyat,
+    vllm_control,
+)
 from app.services.ledger import LedgerError, LineInput, TxMeta
 
 router = APIRouter(prefix="/api")
@@ -395,13 +407,54 @@ async def list_settings(session: AsyncSession = Depends(get_session)):
     return {s.key: s.value for s in rows}
 
 
-@router.put(
-    "/settings/{key}", response_model=SettingOut, dependencies=[auth.AuthRequired]
+def _saman_fiyat_out(price) -> SamanFiyatOut:
+    return SamanFiyatOut(
+        unit_price=price, unit=saman_fiyat.SAMAN_BIRIM, product=saman_fiyat.SAMAN_URUN
+    )
+
+
+@router.get(
+    "/settings/saman-fiyat", response_model=SamanFiyatOut, dependencies=[auth.AuthRequired]
 )
-async def update_setting(
-    key: str, body: SettingIn, session: AsyncSession = Depends(get_session)
+async def get_saman_fiyat(session: AsyncSession = Depends(get_session)):
+    """Varsayılan saman balya fiyatı (CLAUDE.md > "Varsayılan saman fiyatı")."""
+    return _saman_fiyat_out(await saman_fiyat.get_saman_price(session))
+
+
+@router.post("/settings/saman-fiyat", response_model=SamanFiyatOut)
+async def set_saman_fiyat(
+    body: SamanFiyatIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
 ):
-    """Yoksa oluşturur, varsa günceller."""
+    """Değişiklik audit_log'a eski → yeni olarak yazılır."""
+    try:
+        price = await saman_fiyat.set_saman_price(session, body.unit_price, actor=actor)
+    except saman_fiyat.SamanFiyatError as e:
+        raise HTTPException(422, str(e)) from e
+    return _saman_fiyat_out(price)
+
+
+@router.put("/settings/{key}", response_model=SettingOut)
+async def update_setting(
+    key: str,
+    body: SettingIn,
+    session: AsyncSession = Depends(get_session),
+    actor: str = Depends(auth.require_auth),
+):
+    """Yoksa oluşturur, varsa günceller. Saman fiyatı bu genel uçtan da
+    değiştirilebilir ama aynı doğrulama + audit yolundan geçer — tutar
+    hesaplayan bir değer denetimsiz yazılamaz."""
+    if key == saman_fiyat.SAMAN_FIYAT_KEY:
+        price = saman_fiyat.parse_price(body.value)
+        if price is None:
+            raise HTTPException(422, "Saman fiyatı geçerli bir tutar olmalı")
+        try:
+            price = await saman_fiyat.set_saman_price(session, price, actor=actor)
+        except saman_fiyat.SamanFiyatError as e:
+            raise HTTPException(422, str(e)) from e
+        return SettingOut(key=key, value=str(price))
+
     setting = await session.get(Setting, key)
     if setting is None:
         setting = Setting(key=key, value=body.value)

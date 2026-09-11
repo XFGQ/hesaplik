@@ -1921,3 +1921,86 @@ def test_kosan_parse_running_dogrudan():
     assert parser.parse_running("10-5-5").qty == Decimal("5")
     # İki üçlü varsa hangisi olduğu belirsiz: hiçbiri.
     assert parser.parse_running("70-20-50 ve 30-10-20") is None
+
+
+# ---------------------------------------------------------------- varsayılan saman fiyatı
+#
+# CLAUDE.md > "Varsayılan saman fiyatı". Tutarı söylenmemiş saman kaydı
+# varsayılan fiyattan hesaplanır; kullanıcının söylemediği bir şey daha
+# varsayıldıysa (ürün/yön) parser bunu işaretler ve kayıt önce sorulur.
+
+
+@pytest.mark.parametrize(
+    "metin,kisi,urun_varsayildi",
+    [
+        ("furkan 20", "furkan", True),
+        ("furkan 20 balya", "furkan", True),
+        ("furkan 20 saman", "furkan", False),
+        ("furkan 20 balya saman", "furkan", False),
+        ("alper altınpınar 20 saman", "alper altınpınar", False),
+    ],
+)
+def test_fiilsiz_saman_kaydi_varsayim_isaretli(metin, kisi, urun_varsayildi):
+    p = parse(metin)
+    assert p.kind == "debt"
+    assert p.person_name == kisi
+    assert p.qty == Decimal("20")
+    assert p.unit == "balya"
+    assert p.product == "saman"
+    assert p.amount is None
+    assert p.assumed_kind is True
+    assert p.assumed_product is urun_varsayildi
+
+
+@pytest.mark.parametrize(
+    "metin,kisi",
+    [
+        ("furkan 20 saman aldı", "furkan"),
+        ("furkan 20 saman borç", "furkan"),
+        ("alper altınpınar 20 saman aldı", "alper altınpınar"),
+        ("alper 30 saman borç", "alper"),
+    ],
+)
+def test_net_saman_kaydi_varsayimsiz(metin, kisi):
+    p = parse(metin)
+    assert p.kind == "debt"
+    assert p.person_name == kisi
+    assert p.product == "saman"
+    assert p.amount is None
+    assert p.assumed_kind is False
+    assert p.assumed_product is False
+
+
+def test_fiilli_urunsuz_balya_saman_varsayilir():
+    p = parse("furkan 20 balya aldı")
+    assert (p.kind, p.product, p.unit) == ("debt", "saman", "balya")
+    assert p.assumed_product is True
+    assert p.assumed_kind is False
+
+
+def test_fiyat_yazildiysa_tutar_kullanicinin():
+    p = parse("furkan 20 saman 4000 tl")
+    assert p.amount == Decimal("4000")
+    assert not p.assumed_kind and not p.assumed_product
+
+
+@pytest.mark.parametrize(
+    "metin",
+    [
+        "furkan 20 arpa",          # arpanın varsayılan fiyatı yok -> eskisi gibi
+        "furkan 20 kilo saman",    # fiyat balya başına
+        "furkan 0532",             # baştaki sıfır: telefon, adet değil
+        "furkan 20 saman 15",      # ikinci çıplak sayı belirsiz
+        "rapor 20",                # komut kelimesi isim sayılmaz
+        "20 saman",                # kişi yok
+    ],
+)
+def test_fiilsiz_saman_kalibi_dar(metin):
+    assert parse(metin) is None
+
+
+def test_fiilli_ciplak_sayi_hala_tutar():
+    """'Para vs adet': birim/ürün yoksa sayı TL'dir — saman varsayılmaz."""
+    p = parse("furkana 3000 verdim")
+    assert p.amount == Decimal("3000")
+    assert p.qty is None and p.product is None

@@ -212,7 +212,7 @@ async def test_sesle_verilen_cevap_bekleyen_soruyu_yanitlar(
     """Bekleyen bir soru varken gelen ses de yazılı cevapla aynı yere düşer
     (koşan formatın tutar sorusu — bkz. tests/test_chat_api.py)."""
     await _login(client)
-    stt_provider.text = "ahmet yılmaz 70-20-50 saman"
+    stt_provider.text = "ahmet yılmaz 70-20-50 arpa"
     r = await client.post("/api/chat/voice", files=_voice_file())
     assert r.json()["messages"][0]["outcome"] == "running_amount_needed"
 

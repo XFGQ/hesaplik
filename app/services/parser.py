@@ -108,6 +108,12 @@ UNITS = {
     "metre", "m", "düzine", "kutu", "torba", "top", "dolap", "çift",
 }
 
+# Kullanıcının asıl ürünü ve onun birimi. Ürün söylenmediğinde varsayılan
+# (koşan format, borç formu) ve varsayılan fiyatı olan TEK ürün (CLAUDE.md >
+# "Varsayılan saman fiyatı", bkz. app/services/saman_fiyat.py).
+SAMAN_URUN = "saman"
+SAMAN_BIRIM = "balya"
+
 # Yön ayrımı (CLAUDE.md > "LLM son çare, regex birincil"): kişi eki değil,
 # FİİL ÇEKİMİ zaten yönü kodluyor — "aldı" (3. şahıs, o aldı) = BORÇ ama
 # "aldım/aldık" (1. şahıs, ben aldım) = TAHSİLAT. Bu ayrım kelime bazında
@@ -700,6 +706,13 @@ class ParsedIntent:
     running_before: Decimal | None = None
     running_change: Decimal | None = None
     running_after: Decimal | None = None
+    # Tutarı söylenmemiş saman kaydı varsayılan saman fiyatından hesaplanır
+    # (CLAUDE.md > "Varsayılan saman fiyatı"). Kullanıcının SÖYLEMEDİĞİ bir
+    # şey daha varsayıldıysa kayıt doğrudan yazılmaz, önce sorulur:
+    #   assumed_product -> ürün yazılmadı, saman varsayıldı   ("furkan 20")
+    #   assumed_kind    -> yön fiili yok, borç varsayıldı     ("furkan 20 saman")
+    assumed_product: bool = False
+    assumed_kind: bool = False
 
 
 def _parse_amount(raw: str) -> Decimal | None:
@@ -915,7 +928,7 @@ def _detect_kind(tokens: list[str]) -> str | None:
 # Ayrıca "70-20-50" artık bir kişi ARAMASI da sayılmaz (bkz.
 # _try_single_word_search): harf içermeyen bir kelime isim/ilçe olamaz.
 
-RUNNING_DEFAULT_PRODUCT = "saman"
+RUNNING_DEFAULT_PRODUCT = SAMAN_URUN
 
 # Parça: baştaki sıfır yok, en çok 6 hane, isteğe bağlı ondalık (TR virgülü).
 _RUNNING_PART = r"(?!0\d)\d{1,6}(?:,\d{1,2})?"
@@ -1688,6 +1701,50 @@ def _try_single_word_search(word: str) -> ParsedIntent | None:
     return ParsedIntent(kind="search", query=word)
 
 
+# Fiilsiz, tutarsız saman kaydı (CLAUDE.md > "Varsayılan saman fiyatı"):
+#   "furkan 20"                  -> 20 balya saman borç mu? (ürün + yön varsayıldı)
+#   "furkan 20 saman"            -> 20 balya saman borç mu? (yön varsayıldı)
+#   "alper altınpınar 20 balya saman"
+# Tutar varsayılan saman fiyatından gelir, ama yön (ve kimi zaman ürün)
+# kullanıcıdan gelmediği için bu kalıp ASLA doğrudan kaydedilmez — kayıttan
+# önce sorulur (assumed_*). Kalıp kasten DAR: isim + TEK sayı + isteğe bağlı
+# "balya" + isteğe bağlı "saman", başka hiçbir kelime yok. "furkan 20 arpa"
+# eşleşmez (arpanın varsayılan fiyatı yok), "furkan 0532..." eşleşmez (baştaki
+# sıfır: telefon), "furkan 20 kilo saman" eşleşmez (fiyat balya başına).
+_BARE_SAMAN_QTY_RE = re.compile(r"(?!0\d)\d{1,6}(?:,\d{1,2})?")
+
+
+def _try_bare_saman_record(tokens: list[str]) -> ParsedIntent | None:
+    idx = next((i for i, t in enumerate(tokens) if _BARE_SAMAN_QTY_RE.fullmatch(t)), None)
+    if not idx:  # sayı yok ya da isimden önce geliyor
+        return None
+    person_tokens, tail = tokens[:idx], tokens[idx + 1:]
+    if any(t in _SINGLE_WORD_RESERVED or not _HAS_LETTER.search(t) for t in person_tokens):
+        return None
+
+    if tail[:1] == [SAMAN_BIRIM]:
+        tail = tail[1:]
+    if tail == [SAMAN_URUN]:
+        assumed_product = False
+    elif not tail:
+        assumed_product = True
+    else:
+        return None
+
+    qty = _parse_amount(tokens[idx])
+    if qty is None or qty <= 0:
+        return None
+    return ParsedIntent(
+        kind="debt",
+        person_name=" ".join(person_tokens),
+        qty=qty,
+        unit=SAMAN_BIRIM,
+        product=SAMAN_URUN,
+        assumed_product=assumed_product,
+        assumed_kind=True,
+    )
+
+
 def parse(raw_text: str) -> ParsedIntent | None:
     text = " ".join((raw_text or "").split())
     if not text:
@@ -1862,6 +1919,12 @@ def parse(raw_text: str) -> ParsedIntent | None:
         if short_record is not None:
             return short_record
 
+        # "furkan 20" / "furkan 20 saman": fiil de tutar da yok — saman
+        # borcu varsayılır ama kayıttan önce SORULUR (bkz. fonksiyon notu).
+        bare_saman = _try_bare_saman_record(tokens)
+        if bare_saman is not None:
+            return bare_saman
+
         # Tek kelime = arama (madde 5): hiçbir komut/fiil/anahtar kelime
         # eşleşmediyse ve mesaj tek bir kelimeyse, Telegram arama gibi
         # davranılır (bkz. _try_single_word_search). "furkan bakiye" gibi
@@ -1891,6 +1954,14 @@ def parse(raw_text: str) -> ParsedIntent | None:
     if not person_name:
         return None
 
+    # "furkan 20 balya aldı": adet ve birim var, ürün de tutar da yok. Balya
+    # ile en olası ürün samandır — varsayılan fiyattan hesaplanır ama ürün
+    # kullanıcıdan gelmediği için kayıttan önce SORULUR.
+    assumed_product = False
+    if amount is None and qty is not None and product is None and unit == SAMAN_BIRIM:
+        product = SAMAN_URUN
+        assumed_product = True
+
     return ParsedIntent(
         kind=kind,
         person_name=person_name,
@@ -1901,4 +1972,5 @@ def parse(raw_text: str) -> ParsedIntent | None:
         # Tutar SÖYLENMEMİŞ bir borç kapanışı ("ali borcunu ödedi"): tutar
         # uydurulmaz, kişi çözülünce güncel bakiye teklif edilip onaylatılır.
         close_debt=close_debt and amount is None,
+        assumed_product=assumed_product,
     )

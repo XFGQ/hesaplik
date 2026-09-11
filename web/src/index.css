@@ -481,6 +481,45 @@ tbody tr:hover {
   white-space: nowrap;
 }
 
+/* Güncel saman fiyatı (sol panel): metrik kartıyla aynı görünüm ama
+   kartın tamamı tek dokunma hedefi (≥48px) — "Değiştir" ayrı küçük bir
+   bağlantı değil, yanlış yere basma riski yok. */
+.price-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  min-height: 48px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.price-card:hover,
+.price-card:focus-visible {
+  border-color: var(--stamp);
+}
+
+.price-card-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.price-card-edit {
+  font-size: 13px;
+  color: var(--stamp);
+}
+
 .side-reports {
   display: flex;
   flex-direction: column;

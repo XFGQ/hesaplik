@@ -1,7 +1,9 @@
 """Telegram botunda koşan format (CLAUDE.md > "Koşan format").
 
 "ahmet 70-20-50 saman" = 70 vardı, 20 değişti, 50 oldu -> 20 balya saman
-BORÇ. Üçlü YALNIZCA mal adedini söyler; TL ayrı girilir, uydurulmaz.
+BORÇ. Üçlü YALNIZCA mal adedini söyler; TL ayrı girilir, uydurulmaz — tek
+istisna saman: tutar varsayılan saman fiyatından gelir (CLAUDE.md >
+"Varsayılan saman fiyatı"). Tutar sorusu bu yüzden arpa ile test edilir.
 
 Web ikizinin aynı senaryoları: tests/test_chat_api.py > "koşan format".
 Ayrıştırmanın kendisi tests/test_parser.py'de test edilir; burada botun
@@ -92,7 +94,7 @@ async def test_tutar_soylenmemisse_sorar_ve_cevaptan_sonra_kaydeder(
     session, patch_session_local, ahmet_ve_saman
 ):
     context = FakeContext()
-    update = FakeUpdate(FakeMessage(text="ahmet yılmaz 70-20-50 saman"))
+    update = FakeUpdate(FakeMessage(text="ahmet yılmaz 70-20-50 arpa"))
     await bot_main.on_text(update, context)
 
     soru = _reply_texts(update)[-1]
@@ -144,7 +146,7 @@ async def test_anlasilmayan_tutar_kaydetmez_tekrar_sorar(
     session, patch_session_local, ahmet_ve_saman
 ):
     context = FakeContext()
-    await bot_main.on_text(FakeUpdate(FakeMessage(text="ahmet yılmaz 70-20-50 saman")), context)
+    await bot_main.on_text(FakeUpdate(FakeMessage(text="ahmet yılmaz 70-20-50 arpa")), context)
 
     hatali = FakeUpdate(FakeMessage(text="bilmiyorum"))
     await bot_main.on_text(hatali, context)
@@ -213,7 +215,7 @@ async def test_coklu_kisi_once_hangisi_sonra_tutar_sorar(session, patch_session_
     await session.commit()
 
     context = FakeContext()
-    update = FakeUpdate(FakeMessage(text="furkan 70-20-50 saman"))
+    update = FakeUpdate(FakeMessage(text="furkan 70-20-50 arpa"))
     await bot_main.on_text(update, context)
     assert "Hangisini demek istedin?" in _reply_texts(update)[-1]
 
@@ -239,3 +241,19 @@ async def test_tarih_kosan_format_sanilmaz(session, patch_session_local, ahmet_v
     assert "running_fix" not in context.chat_data
     assert "running_amount" not in context.chat_data
     assert await _tx_count(session) == 0
+
+
+async def test_samanda_tutar_sorulmaz_varsayilan_fiyattan_kaydeder(
+    session, patch_session_local, ahmet_ve_saman
+):
+    context = FakeContext()
+    update = FakeUpdate(FakeMessage(text="ahmet yılmaz 70-20-50 saman"))
+    await bot_main.on_text(update, context)
+
+    assert "running_amount" not in context.chat_data
+    assert "varsayılan saman fiyatı" in _reply_texts(update)[-1]
+    tx = (
+        await session.execute(select(Transaction).where(Transaction.person_id == ahmet_ve_saman.id))
+    ).scalar_one()
+    assert tx.lines[0].qty == Decimal("20.000")
+    assert tx.amount_try == Decimal("3600.00")
