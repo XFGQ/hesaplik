@@ -89,11 +89,87 @@ tail -f data/vllm-control.log
 journalctl -u vllm-control.service -n 50
 ```
 
+## Telegram'a yedek (telegram-yedek) — restic'e EK
+
+`scripts/telegram-yedek.sh` günde iki kez (04:00 ve 06:00, Türkiye saati)
+tüm veritabanını düz SQL olarak döker, gzip'ler ve admin'in kişisel
+Telegram'ına dosya olarak gönderir (`hesaplik_2026-09-11_0600.sql.gz`,
+başlık "Hesaplık yedek 11.09.2026 06:00 · 1,2 MB"). Sunucu/disk tamamen
+giderse son yedek Telegram'da durur. Restic disk yedeğinin yerine geçmez,
+yanında çalışır.
+
+`.env`'de gerekenler:
+
+- `TELEGRAM_BOT_TOKEN` — botun kullandığı token (aynısı).
+- `TELEGRAM_ADMIN_CHAT_ID` — kişisel chat id. Telegram'da `@userinfobot`'a
+  bir mesaj yazın, cevaptaki `Id:` sayısını girin. Ayrıca kendi botunuza bir
+  kez `/start` yazın — bot, kendisiyle hiç konuşmamış birine mesaj atamaz
+  (Telegram "chat not found" der, script bunu log'a yazar).
+
+```
+# Önce elle deneyin (HEMEN bir yedek gönderir):
+cd /opt/hesaplik
+COMPOSE_FILE=docker-compose.prod.yml ./scripts/telegram-yedek.sh
+
+# Telegram'a göndermeden yalnızca dök + sıkıştır + doğrula:
+COMPOSE_FILE=docker-compose.prod.yml ./scripts/telegram-yedek.sh --gonderme
+
+sudo cp deployment/hesaplik-telegram-yedek.service /etc/systemd/system/
+sudo cp deployment/hesaplik-telegram-yedek.timer   /etc/systemd/system/
+# User=, WorkingDirectory=, ExecStart= yollarını gerçek kuruluma göre düzeltin.
+sudo systemctl daemon-reload
+sudo systemctl enable --now hesaplik-telegram-yedek.timer
+systemctl list-timers | grep telegram-yedek   # sıradaki: 04:00 / 06:00
+```
+
+Timer saatleri `Europe/Istanbul` diye yazıldı; sunucu UTC'de olsa da
+çalışma Türkiye saatiyle 04:00 ve 06:00'dadır. Sunucu o saatte kapalıysa
+açılışta bir kez telafi edilir (`Persistent=true`).
+
+**Alternatif: crontab** (systemd yerine, `hesaplik` kullanıcısının
+`crontab -e`'si):
+
+```
+CRON_TZ=Europe/Istanbul
+0 4,6 * * * cd /opt/hesaplik && COMPOSE_FILE=docker-compose.prod.yml ./scripts/telegram-yedek.sh >/dev/null 2>&1
+```
+
+`CRON_TZ` yalnızca cronie'de (Fedora/RHEL) çalışır; Debian/Ubuntu cron'u onu
+tanımaz, orada sunucu saat dilimi Türkiye olmalı
+(`timedatectl set-timezone Europe/Istanbul`). Çıktının atılması sorun değil:
+script her şeyi `data/telegram-yedek.log`'a yazar, hatayı Telegram'dan
+bildirir.
+
+**Sınır ve hatalar.** Telegram bot API'si 50 MB üstü dosya kabul etmez.
+Sıkıştırılmış yedek 45 MB'ı geçerse GÖNDERİLMEZ, admin'e "Yedek 50MB'ı aştı,
+alternatif gerekli" mesajı gider. Döküm, bütünlük kontrolü (`gzip -t` +
+pg_dump'ın bitiş satırı) ya da gönderim başarısız olursa da sebebiyle
+birlikte admin'e mesaj gider, servis `failed` görünür. Geçici dosya her
+durumda silinir, sunucuda döküm kopyası kalmaz.
+
+**Telegram'daki yedekten geri dönme.** Dosya `--clean --if-exists` ile
+alınır: mevcut tabloları düşürüp yeniden kurar. Önce mevcut hâli yedekleyin:
+
+```
+./scripts/backup.sh
+gunzip -c hesaplik_2026-09-11_0600.sql.gz \
+  | docker compose -f docker-compose.prod.yml exec -T db \
+      psql -v ON_ERROR_STOP=1 -U hesaplik -d hesaplik
+```
+
+İzleme:
+
+```
+tail -f data/telegram-yedek.log
+journalctl -u hesaplik-telegram-yedek.service -n 50
+```
+
 ## Manuel çalıştırma / test
 
 ```
 sudo systemctl start hesaplik-backup.service
 sudo systemctl start hesaplik-restore-test.service
+sudo systemctl start hesaplik-telegram-yedek.service   # hemen Telegram'a yedek
 ```
 
 ## Canlıya alırken mutlaka değiştirilecekler
