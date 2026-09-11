@@ -292,9 +292,19 @@ def _format_record_confirmation(
         durum = "alacaklı"
     else:
         durum = "sıfır"
+    # Tutar varsayılan saman fiyatından geldiyse kullanılan fiyat açıkça
+    # yazılır (CLAUDE.md > "Varsayılan saman fiyatı"): yanlışsa kullanıcı
+    # "Geri al" ile düzeltir.
+    fiyat = ""
+    if resolved.default_unit_price is not None:
+        fiyat = (
+            f"Birim fiyat: {_fmt_try(resolved.default_unit_price)} TL/"
+            f"{resolved.unit or parser.SAMAN_BIRIM} (varsayılan saman fiyatı)\n"
+        )
     return (
         f"✅ {resolved.person.full_name}\n"
         f"{_format_record_summary(resolved)} {kind_word} eklendi\n"
+        f"{fiyat}"
         f"Önceki bakiye: {_fmt_try(abs(balance_before.balance_try))} TL\n"
         f"Güncel bakiye: {_fmt_try(abs(balance_after.balance_try))} TL {durum}"
     )
@@ -888,6 +898,13 @@ async def _handle_product_confirm(query, context: ContextTypes.DEFAULT_TYPE, use
         )
         await session.commit()
 
+    if result.outcome == ProcessOutcome.SAMAN_PRICE_CONFIRM:
+        await _prompt_saman_price_confirm(
+            query.edit_message_text, context, resolved,
+            pending["raw_message_id"], pending["raw_text"],
+        )
+        return
+
     if result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
         # Koşan formatta ürün de netleşti ama tutar hâlâ söylenmemiş: kayıt
         # yapılmadan tutar sorulur (kuyruk İLERLETİLMEZ, parça hâlâ açık).
@@ -976,6 +993,11 @@ def _pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, raw_te
         # (bkz. _resolve_and_process) — bayrak taşınmazsa adedi belli ama
         # tutarı belli olmayan bir kayıt sessizce fiyat listesine düşerdi.
         "running": resolved.running,
+        # Varsayılan saman fiyatı: "furkan 20" iki Furkan'a uyuyorsa kişi
+        # seçildikten SONRA da "saman borç mu?" sorusu sorulmalı — bayraklar
+        # taşınmazsa varsayılan ürün/yön sessizce kaydedilirdi.
+        "assumed_product": resolved.assumed_product,
+        "assumed_kind": resolved.assumed_kind,
     }
 
 
@@ -1034,7 +1056,36 @@ def _llm_pending_from_resolved(resolved: ResolvedIntent, raw_message_id: int, ra
         "amount": resolved.amount,
         "raw_message_id": raw_message_id,
         "raw_text": raw_text,
+        # Onaylanınca kayıt mesajı kullanılan varsayılan fiyatı göstersin.
+        "default_unit_price": resolved.default_unit_price,
     }
+
+
+def _format_saman_price_preview(resolved: ResolvedIntent) -> str:
+    """Tutar varsayılan saman fiyatından hesaplandı ama kayıttan önce
+    soruluyor (CLAUDE.md > "Varsayılan saman fiyatı"). Fiyat ve tutar
+    görünür; yanlışsa kullanıcı Düzelt'e basıp tutarıyla yeniden yazar.
+    Ürün hiç yazılmadıysa ("furkan 20") soru "... mu demek istediniz?"."""
+    kind_word = "borç" if resolved.kind == "debt" else "tahsilat"
+    fiyat = (
+        f"{_fmt_try(resolved.default_unit_price)} TL/{resolved.unit or parser.SAMAN_BIRIM} = "
+        f"{_fmt_try(resolved.amount)} TL"
+    )
+    kime = _dative(resolved.person.full_name)
+    kalem = _format_item_summary(resolved)
+    if resolved.assumed_product:
+        soru = "mu" if resolved.kind == "debt" else "mı"
+        return f"{kime} {kalem} {kind_word} {soru} demek istediniz?\n({fiyat})"
+    return f"{kime} {kalem} ({fiyat}) {kind_word} ekleyeyim mi?"
+
+
+async def _prompt_saman_price_confirm(
+    reply, context: ContextTypes.DEFAULT_TYPE, resolved: ResolvedIntent, raw_message_id: int, raw_text: str
+) -> None:
+    """Onay makinesi LLM önizlemesiyle AYNI (chat_data["llm_confirm"],
+    Evet/Düzelt/İptal) — yalnızca sorulan cümle farklı."""
+    context.chat_data["llm_confirm"] = _llm_pending_from_resolved(resolved, raw_message_id, raw_text)
+    await reply(_format_saman_price_preview(resolved), reply_markup=_llm_confirm_keyboard())
 
 # --------------------------------------------------------------- koşan format
 #
@@ -1587,6 +1638,12 @@ async def _reply_outcome(
         )
         return
 
+    if result.outcome == ProcessOutcome.SAMAN_PRICE_CONFIRM:
+        # Tutar varsayılan saman fiyatından geldi, ürün/yön varsayıldı:
+        # kayıttan önce sorulur.
+        await _prompt_saman_price_confirm(message.reply_text, context, resolved, raw.id, text)
+        return
+
     if result.outcome == ProcessOutcome.PRODUCT_QUERY_UNSUPPORTED:
         await message.reply_text(_format_product_query_unsupported(resolved))
         return
@@ -2063,6 +2120,8 @@ async def _resolve_and_process(
         field_name=pending.get("field"),
         new_value=pending.get("new_value"),
         running=pending.get("running", False),
+        assumed_product=pending.get("assumed_product", False),
+        assumed_kind=pending.get("assumed_kind", False),
     )
     if pending["product_name"] and pending["kind"] != "balance_query":
         product, suggestion = await catalog.resolve_product_or_suggest(
@@ -2141,6 +2200,12 @@ async def _finish_pending(session, query, context, person: Person, pending: dict
 
     elif result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
         await _prompt_running_amount(
+            query.edit_message_text, context, resolved,
+            pending["raw_message_id"], pending["raw_text"],
+        )
+
+    elif result.outcome == ProcessOutcome.SAMAN_PRICE_CONFIRM:
+        await _prompt_saman_price_confirm(
             query.edit_message_text, context, resolved,
             pending["raw_message_id"], pending["raw_text"],
         )
@@ -2234,6 +2299,11 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif result.outcome == ProcessOutcome.RUNNING_AMOUNT_NEEDED:
         await _prompt_running_amount(msg.reply_text, context, resolved, pending["raw_message_id"], pending["raw_text"])
 
+    elif result.outcome == ProcessOutcome.SAMAN_PRICE_CONFIRM:
+        await _prompt_saman_price_confirm(
+            msg.reply_text, context, resolved, pending["raw_message_id"], pending["raw_text"]
+        )
+
     elif result.outcome == ProcessOutcome.CREATE_PERSON:
         # Bu akışta `person` az önce oluşturuldu (yukarıda) — burada her
         # zaman "yeni eklendi" anlamına gelir (bkz. _reply_result'taki
@@ -2277,6 +2347,7 @@ async def _handle_llm_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) -> 
             unit=pending["unit"],
             product=product,
             amount=pending["amount"],
+            default_unit_price=pending.get("default_unit_price"),
         )
 
         raw = await session.get(RawMessage, pending["raw_message_id"])

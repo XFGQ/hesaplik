@@ -700,11 +700,12 @@ async def test_cancel_kaydedilmis_islemi_silmez_undo_penceresini_bozmaz(client, 
 
 
 async def test_kosan_format_tutar_sorulur_ve_kaydedilir(client, auth_account, session, ahmet, saman):
-    """"ahmet yılmaz 70-20-50 saman" -> 20 balya borç. Üçlü YALNIZCA adedi
-    söyler; TL uydurulmaz, yazarak sorulur."""
+    """"ahmet yılmaz 70-20-50 arpa" -> 20 borç. Üçlü YALNIZCA adedi söyler;
+    TL uydurulmaz, yazarak sorulur. (Samanda tutar varsayılan saman
+    fiyatından gelir — bkz. aşağıdaki "varsayılan saman fiyatı".)"""
     await _login(client, auth_account)
 
-    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 arpa"})
     msg = r.json()["messages"][0]
     assert msg["outcome"] == "running_amount_needed"
     assert msg["awaits_text"] is True
@@ -780,7 +781,7 @@ async def test_kosan_tutar_anlasilmazsa_tekrar_sorar_kayit_yok(
     client, auth_account, session, ahmet, saman
 ):
     await _login(client, auth_account)
-    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 arpa"})
 
     r = await client.post("/api/chat", json={"text": "bilmiyorum"})
     msg = r.json()["messages"][0]
@@ -803,7 +804,7 @@ async def test_kosan_coklu_kisi_once_hangisi_sonra_tutar_sorar(client, auth_acco
     session.add_all([duman, yildiz])
     await session.flush()
 
-    r = await client.post("/api/chat", json={"text": "furkan 70-20-50 saman"})
+    r = await client.post("/api/chat", json={"text": "furkan 70-20-50 arpa"})
     assert r.json()["messages"][0]["outcome"] == "needs_confirmation"
 
     r2 = await client.post("/api/chat/confirm", json={"action": f"person:pick:{duman.id}"})
@@ -819,7 +820,7 @@ async def test_kosan_coklu_kisi_once_hangisi_sonra_tutar_sorar(client, auth_acco
 
 async def test_kosan_durdurma_bekleyen_tutar_sorusunu_dusurur(client, auth_account, session, ahmet, saman):
     await _login(client, auth_account)
-    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+    await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 arpa"})
 
     r = await client.post("/api/chat/cancel")
     assert r.json()["messages"][0]["outcome"] == "cancelled"
@@ -828,3 +829,125 @@ async def test_kosan_durdurma_bekleyen_tutar_sorusunu_dusurur(client, auth_accou
     r2 = await client.post("/api/chat", json={"text": "5000"})
     assert r2.json()["messages"][0]["outcome"] != "recorded"
     assert (await session.execute(select(func.count(Transaction.id)))).scalar_one() == 0
+
+
+async def test_kosan_format_samanda_varsayilan_fiyattan_dogrudan_kaydeder(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 70-20-50 saman"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "recorded"
+    assert "varsayılan saman fiyatı" in msg["reply"]
+
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.lines[0].qty == Decimal("20.000")
+    assert tx.amount_try == Decimal("3600.00")
+
+
+# ---------------------------------------------------------------- varsayılan saman fiyatı
+#
+# CLAUDE.md > "Varsayılan saman fiyatı". Telegram ikizi:
+# tests/test_bot_saman_fiyat.py. Hesabın kendisi: tests/test_saman_fiyat.py.
+
+
+async def _tx_toplam(session) -> int:
+    return (await session.execute(select(func.count(Transaction.id)))).scalar_one()
+
+
+async def test_saman_net_cumle_varsayilan_fiyattan_kaydedilir_fiyat_gorunur(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 20 saman aldı"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "recorded"
+    assert "3.600,00 TL" in msg["reply"]
+    assert "Birim fiyat: 180,00 TL/balya (varsayılan saman fiyatı)" in msg["reply"]
+    assert msg["buttons"][0]["action"].startswith("undo:")
+
+
+async def test_saman_fiyatsiz_fiilsiz_teyit_sorulur_evetle_kaydedilir(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 20 saman"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "saman_price_confirm"
+    assert msg["reply"] == (
+        "Ahmet Yılmaz'a 20 balya Saman (180,00 TL/balya = 3.600,00 TL) borç ekleyeyim mi?"
+    )
+    assert _actions(r.json()["messages"]) == ["llm:yes", "llm:fix", "llm:cancel"]
+    assert await _tx_toplam(session) == 0
+
+    r2 = await client.post("/api/chat/confirm", json={"action": "llm:yes"})
+    msg2 = r2.json()["messages"][0]
+    assert msg2["outcome"] == "recorded"
+    assert "varsayılan saman fiyatı" in msg2["reply"]
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == ahmet.id))).scalar_one()
+    assert tx.amount_try == Decimal("3600.00")
+    assert tx.lines[0].unit_price == Decimal("180.00")
+
+
+async def test_urunsuz_sayi_saman_mi_diye_sorulur_iptal_kaydetmez(
+    client, auth_account, session, ahmet, saman
+):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 20"})
+    msg = r.json()["messages"][0]
+    assert msg["outcome"] == "saman_price_confirm"
+    assert "20 balya Saman borç mu demek istediniz?" in msg["reply"]
+    assert "180,00 TL/balya = 3.600,00 TL" in msg["reply"]
+
+    r2 = await client.post("/api/chat/confirm", json={"action": "llm:cancel"})
+    assert r2.json()["messages"][0]["outcome"] == "cancelled"
+    assert await _tx_toplam(session) == 0
+
+
+async def test_urunsuz_sayi_coklu_kisi_once_hangisi_sonra_saman_teyidi(
+    client, auth_account, session, saman
+):
+    """Varsayım bayrakları "hangisi?" seçiminden SONRA da taşınır: kişi
+    seçilince sessizce kaydedilmez, saman teyidi yine sorulur."""
+    await _login(client, auth_account)
+    duman = Person(full_name="Furkan Duman")
+    yildiz = Person(full_name="Furkan Yıldız")
+    session.add_all([duman, yildiz])
+    await session.flush()
+
+    r = await client.post("/api/chat", json={"text": "furkan 20"})
+    assert r.json()["messages"][0]["outcome"] == "needs_confirmation"
+
+    r2 = await client.post("/api/chat/confirm", json={"action": f"person:pick:{duman.id}"})
+    msg2 = r2.json()["messages"][0]
+    assert msg2["outcome"] == "saman_price_confirm"
+    assert "Furkan Duman'a 20 balya Saman borç mu demek istediniz?" in msg2["reply"]
+    assert await _tx_toplam(session) == 0
+
+    r3 = await client.post("/api/chat/confirm", json={"action": "llm:yes"})
+    assert r3.json()["messages"][0]["outcome"] == "recorded"
+    tx = (await session.execute(select(Transaction).where(Transaction.person_id == duman.id))).scalar_one()
+    assert tx.amount_try == Decimal("3600.00")
+
+
+async def test_yeni_kisi_eklenince_saman_teyidi_sorulur(client, auth_account, session, saman):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "mehmet 20 saman"})
+    assert r.json()["messages"][0]["outcome"] == "person_not_found"
+
+    await client.post("/api/chat/confirm", json={"action": "person:yes"})
+    r2 = await client.post("/api/chat/confirm", json={"action": "newperson:skip_all"})
+    msg2 = r2.json()["messages"][0]
+    assert msg2["outcome"] == "saman_price_confirm"
+    assert await _tx_toplam(session) == 0
+
+    r3 = await client.post("/api/chat/confirm", json={"action": "llm:yes"})
+    assert r3.json()["messages"][0]["outcome"] == "recorded"
+    assert await _tx_toplam(session) == 1
+
+
+async def test_arpa_fiyatsizsa_varsayilan_fiyat_uygulanmaz(client, auth_account, session, ahmet, saman):
+    await _login(client, auth_account)
+    r = await client.post("/api/chat", json={"text": "ahmet yılmaz 20 arpa aldı"})
+    assert r.json()["messages"][0]["outcome"] == "unrecognized"
+    assert await _tx_toplam(session) == 0

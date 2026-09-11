@@ -53,10 +53,16 @@ def _is_complete_transaction(intent: ParsedIntent | None) -> bool:
     SAYISINI test eden görevler bunu bekler), yeter ki bir SAYI (tutar ya
     da adet) VE bir kişi adı içersin — "mal gitti" gibi sayısız/kişisiz bir
     kırıntı ("gitti" tek başına DEBT_WORDS'te olduğu için yanlışlıkla debt
-    sayılabilir) bu şartla elenir."""
+    sayılabilir) bu şartla elenir.
+
+    Fiilsiz saman kalıbı ("ahmet yılmaz 20" -> 20 balya saman mı?, bkz.
+    parser._try_bare_saman_record) da bir bölme sınırı SAYILMAZ: yönü
+    varsayılmış bir kırıntıdır. Sayılsa "ahmet yılmaz 20 balya saman aldı
+    15000 tl" -> "ahmet yılmaz 20" + "balya saman aldı ..." diye bölünürdü."""
     return (
         intent is not None
         and intent.kind in _TRANSACTIONAL_KINDS
+        and not intent.assumed_kind
         and bool(intent.person_name)
         and (intent.amount is not None or intent.qty is not None)
     )

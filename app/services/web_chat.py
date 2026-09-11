@@ -51,6 +51,7 @@ from app.bot.main import (
     _format_record_confirmation,
     _format_running_amount_prompt,
     _format_running_mismatch,
+    _format_saman_price_preview,
     _format_search_messages,
     _format_total_balance,
     _llm_pending_from_resolved,
@@ -347,6 +348,21 @@ async def _apply_result(
             True,
         )
 
+    if outcome == ProcessOutcome.SAMAN_PRICE_CONFIRM:
+        # Tutar varsayılan saman fiyatından hesaplandı ama ürün/yön
+        # varsayıldı (CLAUDE.md > "Varsayılan saman fiyatı"): kayıttan önce
+        # sorulur. Bekleyen kayıt ve butonlar LLM önizlemesiyle AYNI.
+        payload = _jsonable(_llm_pending_from_resolved(resolved, raw_message_id, raw_text))
+        await web_chat_state.set_pending(session, chat_id, "llm_confirm", payload)
+        return (
+            ChatMessage(
+                reply=_format_saman_price_preview(resolved),
+                outcome=outcome.value,
+                buttons=_llm_confirm_buttons(),
+            ),
+            True,
+        )
+
     if outcome == ProcessOutcome.REPORT_PERSON:
         assert result.balance is not None
         txt = _format_person_report_caption(resolved.person, result.balance)
@@ -515,6 +531,8 @@ async def _resolve_and_process(
         field_name=pending_data.get("field"),
         new_value=pending_data.get("new_value"),
         running=pending_data.get("running", False),
+        assumed_product=pending_data.get("assumed_product", False),
+        assumed_kind=pending_data.get("assumed_kind", False),
     )
     if pending_data.get("product_name") and pending_data["kind"] != "balance_query":
         product, suggestion = await catalog.resolve_product_or_suggest(
@@ -769,6 +787,7 @@ async def _handle_llm_confirm_yes(session: AsyncSession, chat_id: str, pending) 
         unit=payload.get("unit"),
         product=product,
         amount=_decimal(payload.get("amount")),
+        default_unit_price=_decimal(payload.get("default_unit_price")),
     )
     raw = await session.get(RawMessage, payload["raw_message_id"])
     result = await handle_resolved(session, raw, resolved, payload["raw_text"], source="rule")

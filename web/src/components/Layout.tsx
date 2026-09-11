@@ -11,6 +11,7 @@ import { nextDrawerState } from "../lib/sideDrawer";
 import { applyTheme, getStoredTheme, type Theme } from "../lib/theme";
 import { useToast } from "../lib/toast";
 import ChatWidget from "./ChatWidget";
+import SamanFiyatModal from "./SamanFiyatModal";
 import SettingsModal from "./SettingsModal";
 
 /* Hamburger — ikonlar elle çizilir (CLAUDE.md > arayüz kuralları: harici
@@ -31,6 +32,7 @@ export default function Layout() {
   const qc = useQueryClient();
   const toast = useToast();
   const [showSettings, setShowSettings] = useState(false);
+  const [showSamanFiyat, setShowSamanFiyat] = useState(false);
   const [updatedAt, setUpdatedAt] = useState(() => new Date());
   const [refreshing, setRefreshing] = useState(false);
   const [theme, setTheme] = useState<Theme>(getStoredTheme);
@@ -61,6 +63,8 @@ export default function Layout() {
 
   const people = useQuery({ queryKey: ["persons"], queryFn: () => api.persons() });
   const settings = useQuery({ queryKey: ["settings"], queryFn: api.getSettings });
+  /* Borç formu da aynı anahtarı kullanır: fiyat değişince form da güncellenir. */
+  const samanFiyat = useQuery({ queryKey: ["saman-fiyat"], queryFn: api.samanFiyat });
 
   /* Menüden bir yere gidilince çekmece arkada açık kalmasın. */
   useEffect(() => {
@@ -152,6 +156,28 @@ export default function Layout() {
           </div>
         </div>
 
+        {/* Varsayılan saman fiyatı: tutarı yazılmamış saman kaydı bundan
+            hesaplanır (CLAUDE.md > "Varsayılan saman fiyatı"). */}
+        <button
+          className="price-card"
+          onClick={() => {
+            setShowSamanFiyat(true);
+            drawer("close");
+          }}
+          aria-label="Güncel saman fiyatını değiştir"
+          disabled={!samanFiyat.data}
+        >
+          <span className="metric-label">Güncel saman fiyatı</span>
+          <span className="price-card-value">
+            {samanFiyat.data?.unit_price != null
+              ? `${money(samanFiyat.data.unit_price)} / ${samanFiyat.data.unit}`
+              : samanFiyat.data
+                ? "Ayarlanmamış"
+                : "…"}
+          </span>
+          <span className="price-card-edit">Değiştir</span>
+        </button>
+
         <div className="side-reports">
           <button
             className="side-back"
@@ -220,6 +246,12 @@ export default function Layout() {
         </div>
 
         {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+        {showSamanFiyat && samanFiyat.data && (
+          <SamanFiyatModal
+            current={samanFiyat.data.unit_price}
+            onClose={() => setShowSamanFiyat(false)}
+          />
+        )}
         <ChatWidget />
       </ActionBarProvider>
     </div>

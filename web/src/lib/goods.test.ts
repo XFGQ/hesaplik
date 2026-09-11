@@ -9,6 +9,7 @@ import { describe, it } from "node:test";
 import {
   autoAmount,
   checkForm,
+  defaultAutoPrice,
   goodsSummary,
   parseGoods,
   resolveGoods,
@@ -242,5 +243,54 @@ describe("aynı satırda tutar", () => {
 
   it("tutar yazılmazsa öneri yok — uydurulmaz", () => {
     assert.equal(parseGoods("20 balya saman").amountHint, null);
+  });
+});
+
+/* CLAUDE.md > "Varsayılan saman fiyatı": saman için tutar yazılmazsa adet ×
+ * varsayılan fiyat. Ayar kataloğun saman fiyatını ezer (75 -> 180); diğer
+ * ürünler ve birimi tutmayan saman etkilenmez. */
+describe("varsayılan saman fiyatı", () => {
+  it("samanda ayarlanan fiyat kayıtlı fiyatı ezer ve tik açık başlar", () => {
+    const g = resolveGoods("20 balya saman", KATALOG, null, 180);
+    assert.equal(g.catalogPrice, 180);
+    assert.equal(g.priceSource, "saman");
+    assert.equal(autoAmount(g), 3600);
+    assert.equal(defaultAutoPrice(g), true);
+  });
+
+  it("ürün yazılmazsa da saman: '20' -> 3600", () => {
+    assert.equal(autoAmount(resolveGoods("20", KATALOG, null, 180)), 3600);
+  });
+
+  it("koşan formatta farkla çarpılır: '70-20-50' -> 3600", () => {
+    assert.equal(autoAmount(resolveGoods("70-20-50", KATALOG, null, 180)), 3600);
+  });
+
+  it("katalogda saman olmasa da çalışır", () => {
+    assert.equal(autoAmount(resolveGoods("20 saman", [], null, 180)), 3600);
+  });
+
+  it("kilo ile yazılan saman: fiyat balya başına, çarpılmaz", () => {
+    const g = resolveGoods("20 kg saman", KATALOG, null, 180);
+    assert.equal(g.catalogPrice, null);
+    assert.equal(g.priceUnit, "balya");
+    assert.equal(autoAmount(g), null);
+    assert.equal(defaultAutoPrice(g), false);
+  });
+
+  it("arpa etkilenmez: kayıtlı fiyat, tik kapalı başlar", () => {
+    const g = resolveGoods("10 kg arpa", KATALOG, null, 180);
+    assert.equal(g.priceSource, "katalog");
+    assert.equal(g.catalogPrice, 18.5);
+    assert.equal(defaultAutoPrice(g), false);
+  });
+
+  it("fiyat yoksa ya da geçersizse eski davranış", () => {
+    for (const fiyat of [null, 0, -5, Number.NaN]) {
+      const g = resolveGoods("20 saman", KATALOG, null, fiyat);
+      assert.equal(g.priceSource, "katalog");
+      assert.equal(g.catalogPrice, 75);
+      assert.equal(defaultAutoPrice(g), false);
+    }
   });
 });

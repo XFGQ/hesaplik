@@ -235,7 +235,11 @@ CREATE TABLE settings (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-INSERT INTO settings (key, value) VALUES ('business_name', 'Hesaplık');
+INSERT INTO settings (key, value) VALUES
+    ('business_name', 'Hesaplık'),
+    -- Varsayilan saman balya fiyati (TL/balya). Saman tutari yazilmadiginda
+    -- adet x bu fiyat (bkz. app/services/saman_fiyat.py). Arayuzden degisir.
+    ('saman_birim_fiyat', '180.00');
 
 -- ------------------------------------------------------------ istek kuyrugu
 -- Tek mesajdan cikan islemler bellekte degil burada durur: bot soru sorup

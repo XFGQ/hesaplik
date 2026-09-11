@@ -54,7 +54,11 @@ arkasındaki karar gerekçesi ilgili bölümde yazılıdır.
 - **Para ve mal iki ayrı hesap.** Bir kişi hem TL bazında alacaklı hem mal
   bazında borçlu olabilir; biri diğerini sıfırlamaz.
 - Ürün kalemli kayıt: adet + birim + tutar. Birim fiyat tutardan türetilir,
-  fiyat listesi tutarı bağlamaz.
+  fiyat listesi tutarı bağlamaz — tek istisna saman (aşağıda).
+- **Varsayılan saman fiyatı:** sol paneldeki "Güncel saman fiyatı" kartından
+  ayarlanır (`settings.saman_birim_fiyat`, değişiklik audit_log'a). Saman
+  için tutar yazılmazsa adet × bu fiyat; yazılırsa kullanıcınınki. Belirsiz
+  cümle ("furkan 20") kayıttan önce sorulur. Diğer ürünler etkilenmez.
 - Bakiye hiçbir zaman kolonda tutulmaz, onaylı hareketlerin `SUM`'ıdır.
 - Kişi kartı: ad soyad, telefon, il, ilçe, adres, not. İlçeye göre filtre.
 - Kişi defteri: tarih / ürün / adet / birim fiyat / tutar sütunlu hareket
@@ -92,7 +96,8 @@ arkasındaki karar gerekçesi ilgili bölümde yazılıdır.
   arpa", "arpa 20 kilo", "20kg arpa" hepsi anlaşılır; birim yazıdan algılanır.
 - **Koşan format:** "70-20-50" = 70 vardı, 20 değişti, 50 oldu. Yön ilk/son
   karşılaştırmasından çıkar, matematik tutmuyorsa kayıt kilitlenir.
-- Kayıtlı birim fiyattan otomatik tutar hesabı (varsayılan KAPALI).
+- Kayıtlı birim fiyattan otomatik tutar hesabı (varsayılan KAPALI; samanda
+  varsayılan saman fiyatıyla AÇIK başlar).
 - Toast bildirimleri, modal akışları, yazarak silme onayı — hepsi kendi
   bileşenlerimiz, harici kütüphane yok.
 
@@ -194,6 +199,11 @@ sürüme taşır.
    aldı, borçlu), CREDIT −qty (kişi parasını verdi, malı bekliyor).
 4. **Tutarı kullanıcı yazar, fiyat listesi bağlamaz.** Pazarlık gerçeği.
    Birim fiyat tutardan türetilir (`line_total / qty`), tersi değil.
+   **Tek istisna: saman.** Tutar YAZILMAMIŞSA ve ürün saman, birim balya ise
+   tutar = adet × varsayılan saman fiyatı (`settings.saman_birim_fiyat`,
+   arayüzden ayarlanır). Tutar yazılmışsa her zaman kullanıcınınki geçerlidir.
+   Saman dışındaki hiçbir ürünün fiyatı (price_history dahil) tutarı
+   belirlemez. Ayrıntı: "Varsayılan saman fiyatı".
 5. **Ürün serbest metindir.** `app/services/catalog.py` eşleştirir
    (büyük/küçük harf + Türkçe "İ/I" normalize + alias). Bulamazsa yeni ürün
    açar. Fuzzy eşleştirme KASTEN otomatik değil — yanlış ürüne sessizce
@@ -430,6 +440,7 @@ küçük harf başlangıç, nokta yok. Detay: `CONTRIBUTING.md`.
       services/             İş mantığı
         ledger.py             PARA MATEMATİĞİ — tek yer, Decimal
         catalog.py            ürün eşleştirme (normalize + alias + fuzzy öneri)
+        saman_fiyat.py        varsayılan saman balya fiyatı (kural 4'ün istisnası)
         parser.py             regex/kural parser — BİRİNCİL anlama
         llm_provider.py       NVIDIA / vLLM / Ollama katmanları + doğrulama
         llm_prompt.py         few-shot sistem prompt'u
@@ -654,6 +665,9 @@ PriceHistory, `unit_price`) "Kayıtlı fiyattan hesapla (75,00 ₺/balya)"
 kutusu çıkar; işaretlenince tutar = adet × birim fiyat (koşan formatta FARK
 üzerinden), alan salt okunur olur. **Tik varsayılan olarak KAPALIDIR** —
 fiyat listesi tutarı bağlamaz (kural 4), kullanıcı isterse hesaplatır.
+**İstisna saman** (2026-09-11): ürün saman ve birim balya ise fiyat, ürünün
+kayıtlı fiyatı yerine varsayılan saman fiyatıdır ve tik AÇIK başlar
+("Varsayılan saman fiyatından hesapla") — bkz. "Varsayılan saman fiyatı".
 Birim ürünün kendi birimiyle tutmuyorsa ("20 kg saman", fiyat balya başına)
 tik PASİF: yanlış birimle çarpım yapılmaz, sebebi yazılır.
 
@@ -1404,10 +1418,13 @@ hangi ucun yanlış olduğu bilinemez, kullanıcı yeniden yazar.
 **Sistemdeki mevcut saman bakiyesiyle karşılaştırma KASTEN yapılmaz** (sonraki
 iş) — yalnızca cümlenin kendi içindeki tutarlılık bakılır.
 
-**TL ayrı girilir.** Aynı cümlede varsa kullanılır ("... saman 5000 tl");
-yoksa tutar UYDURULMAZ ve fiyat listesinden de türetilmez (kural 4) —
-`ProcessOutcome.RUNNING_AMOUNT_NEEDED` ile yazarak sorulur ("70 → 50 · 20
-balya saman borç / Tutar kaç TL?"). Cevap Türkçe sayı olarak çözülür
+**TL ayrı girilir.** Aynı cümlede varsa kullanılır ("... saman 5000 tl").
+Yoksa ve ürün saman (söylenmediyse zaten saman), birim balya ise tutar
+varsayılan saman fiyatından hesaplanır ve kayıt doğrudan yazılır (onay
+mesajı fiyatı gösterir; artış = tahsilat ise önce sorulur — bkz.
+"Varsayılan saman fiyatı"). Diğer ürünlerde tutar UYDURULMAZ ve fiyat
+listesinden de türetilmez (kural 4) — `ProcessOutcome.RUNNING_AMOUNT_NEEDED`
+ile yazarak sorulur ("70 → 50 · 20 kilo arpa borç / Tutar kaç TL?"). Cevap Türkçe sayı olarak çözülür
 ("5000", "5 bin", "5000 tl"); çözülemezse kayıt yapılmaz, soru tekrarlanır.
 Kişi belirsizse önce her zamanki "hangisi?" sorulur, tutar sorusu ondan
 sonra gelir (`running` bayrağı bekleyen kayıtlarda taşınır).
@@ -1430,6 +1447,71 @@ matematik tutmuyorsa Kaydet'i kilitler, yön modalla çelişiyorsa uyarır
 
 Testler: `tests/test_parser.py` > "koşan format", `tests/test_chat_api.py`,
 `tests/test_bot_running_format.py`, `web/src/lib/running.test.ts`.
+
+### Varsayılan saman fiyatı (2026-09-11)
+
+Kural 4'ün TEK istisnası. Saman fiyatı dalgalı ama gün içinde sabit; her
+kayıtta aynı tutarı yazdırmak yerine ayarlanabilir bir balya fiyatı tutulur.
+**Esnek:** tutar yazılırsa kullanıcınınki, yazılmazsa varsayılan fiyattan.
+Kod: `app/services/saman_fiyat.py`.
+
+**Nerede durur, nasıl değişir.** `settings.saman_birim_fiyat` (tohum
+"180.00": `db/schema.sql` + `db/migrations/013_saman_birim_fiyat.sql`). Sol
+panelde metrik kartlarının altında "Güncel saman fiyatı · 180,00 ₺ / balya"
+kartı; kartın tamamı tek dokunma hedefi, "Değiştir" küçük bir modal açar
+(`SamanFiyatModal`). API: `GET/POST /api/settings/saman-fiyat` (JWT).
+Değişiklik `set_saman_price`tan geçer: 0 < fiyat ≤ 1.000.000, kuruşa
+yuvarlanır, audit_log'a eski → yeni yazılır (`set_saman_price`). Genel
+`PUT /api/settings/saman_birim_fiyat` da AYNI doğrulama + audit yolundan
+geçer: tutar hesaplayan bir değer denetimsiz yazılamaz. Satır hiç yoksa
+(migration çalışmamış) 180 kullanılır; satır bozuksa (sayı değil, ≤ 0) HİÇ
+hesap yapılmaz, sistem eski davranışa (tutarı iste) düşer.
+
+**Ne zaman uygulanır** (`is_candidate` parser çıktısında, `applies` çözülmüş
+kayıtta): borç/tahsilat, tutar YOK, adet > 0, ürün saman, birim yazılmamış
+ya da balya. "20 kilo saman" → uygulanmaz (fiyat balya başına, çarpılmaz).
+Arpa vb. → uygulanmaz, tutar eskisi gibi istenir. Hesap `ledger.price_total`
+(Decimal, kuruş). Birim yazılmadıysa resolve aşamasında balya sayılır —
+saman kataloğda yoksa "adet" birimiyle açılmasın.
+
+**Hızlı mı, sor mu?** (`ProcessOutcome.SAMAN_PRICE_CONFIRM`)
+- **NET → doğrudan kaydedilir:** yön fiili + saman + adet ("furkan 20 saman
+  aldı", "alper 30 saman borç", "alper altınpınar 20 saman aldı") ve koşan
+  format ("ahmet 70-20-50"). Onay mesajında "Birim fiyat: 180,00 TL/balya
+  (varsayılan saman fiyatı)" satırı durur; yanlışsa 60 sn "Geri al".
+- **SOR → Evet/Düzelt/İptal** (LLM önizlemesiyle AYNI makine, `llm_confirm`):
+  - yön fiili yok — "furkan 20 saman" → "Furkan'a 20 balya Saman (180,00
+    TL/balya = 3.600,00 TL) borç ekleyeyim mi?"
+  - ürün yok — "furkan 20", "furkan 20 balya aldı" → "Furkan'a 20 balya
+    Saman borç mu demek istediniz? (180,00 TL/balya = 3.600,00 TL)"
+  - tahsilat ("furkandan 20 saman aldım"): kişinin elden verdiği parayı
+    biz bilemeyiz, hesap yalnızca teklif edilir.
+  - niyet LLM'den geldiyse.
+  Düzelt → "doğrusunu yazar mısın?"; kullanıcı "furkan 20 saman 4000 tl" yazar.
+- Varsayım bayrakları (`assumed_product`, `assumed_kind`) bekleyen kayıtlarda
+  TAŞINIR: "furkan 20" iki Furkan'a uyuyorsa önce "hangisi?", seçilince saman
+  sorusu YİNE sorulur (yeni kişi akışında da). Bayrak düşerse varsayım sessizce
+  kaydedilirdi.
+
+**Fiilsiz kalıp kasten dar** (`parser._try_bare_saman_record`): isim + TEK
+sayı + isteğe bağlı "balya" + isteğe bağlı "saman", başka kelime yok.
+"furkan 20 arpa", "furkan 0532..." (baştaki sıfır), "furkan 20 saman 15",
+"rapor 20" eşleşmez. Fiilli çıplak sayı hâlâ TL'dir ("furkana 3000 verdim"
+→ 3.000 TL, "Para vs adet"). Çoklu istek bölücüsü fiilsiz parçayı bölme
+sınırı SAYMAZ (`assumed_kind`); sayılsaydı "ahmet yılmaz 20 balya saman aldı
+15000 tl" → "ahmet yılmaz 20" + "balya saman aldı ..." diye bölünürdü.
+
+**Form (DebtModal).** `resolveGoods(..., samanPrice)`: ürün saman ve birim
+balya ise varsayılan fiyat ürünün kayıtlı fiyatını ezer (`priceSource:
+"saman"`) ve tik AÇIK başlar (`defaultAutoPrice`): tutar alanı adet × fiyatla
+dolar, salt okunur. Başka tutar için tik kapatılır; tutar elle yazılmışsa ya
+da cümlede "... 5000 tl" varsa tik kapalı kalır — kullanıcının tutarı kazanır.
+PaymentModal, EditTxModal ve AddEntry değişmedi.
+
+Testler: `tests/test_saman_fiyat.py` (ayar, audit, API, hesap, teyit),
+`tests/test_parser.py` > "varsayılan saman fiyatı", `tests/test_chat_api.py`
+> "varsayılan saman fiyatı", `tests/test_bot_saman_fiyat.py`,
+`tests/test_message_splitter.py`, `web/src/lib/goods.test.ts`.
 
 ## Raporlama
 

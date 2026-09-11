@@ -41,6 +41,12 @@ def money(value: Decimal | int | str) -> Decimal:
     return Decimal(value).quantize(KURUS, rounding=ROUND_HALF_UP)
 
 
+def price_total(qty: Decimal, unit_price: Decimal) -> Decimal:
+    """adet × birim fiyat, kuruşa yuvarlı. Varsayılan saman fiyatından tutar
+    hesabı (CLAUDE.md > "Varsayılan saman fiyatı") buradan geçer."""
+    return money(Decimal(qty) * Decimal(unit_price))
+
+
 @dataclass(slots=True)
 class LineInput:
     """Kalem girdisi.

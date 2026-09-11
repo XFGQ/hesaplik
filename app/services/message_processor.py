@@ -23,9 +23,17 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import RawMessage, Transaction, TxSource
-from app.services import llm_provider, message_trace, parser, report, web_intake
+from app.services import llm_provider, message_trace, parser, report, saman_fiyat, web_intake
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
-from app.services.ledger import Balance, LineInput, TxMeta, add_debt, add_payment, balance_of
+from app.services.ledger import (
+    Balance,
+    LineInput,
+    TxMeta,
+    add_debt,
+    add_payment,
+    balance_of,
+    price_total,
+)
 from app.services.queries import (
     PersonBalanceRow,
     PersonTransactionRow,
@@ -78,6 +86,10 @@ class ProcessOutcome(str, enum.Enum):
     #   RUNNING_AMOUNT_NEEDED -> adet net, TL söylenmemiş; tutar uydurulmaz, sorulur
     RUNNING_MISMATCH = "running_mismatch"
     RUNNING_AMOUNT_NEEDED = "running_amount_needed"
+    # Tutar varsayılan saman fiyatından hesaplandı ama kullanıcının söylemediği
+    # bir şey daha varsayıldı (ürün/yön) ya da tahsilat/LLM — kayıttan önce
+    # "20 balya saman (180 TL/balya = 3.600 TL) borç ekleyeyim mi?" sorulur.
+    SAMAN_PRICE_CONFIRM = "saman_price_confirm"
     LLM_CONFIRMATION = "llm_confirmation"
     NEEDS_CONFIRMATION = "needs_confirmation"
     PERSON_NOT_FOUND = "person_not_found"
@@ -423,11 +435,35 @@ async def _dispatch(
             outcome=ProcessOutcome.CLOSE_DEBT_CONFIRM, resolved=resolved, balance=bal
         )
 
+    if saman_fiyat.applies(resolved):
+        # Tutarı söylenmemiş SAMAN kaydı: tutar = adet × varsayılan saman
+        # fiyatı (CLAUDE.md > "Varsayılan saman fiyatı", kural 4'ün tek
+        # istisnası). Net cümle ("furkan 20 saman aldı", "ahmet 70-20-50")
+        # doğrudan kaydedilir, onay mesajı kullanılan fiyatı gösterir.
+        # Kullanıcının söylemediği bir şey daha varsayıldıysa (ürün ya da
+        # yön), tahsilatsa (kişinin verdiği parayı biz bilemeyiz) ya da niyet
+        # LLM'den geldiyse önce sorulur.
+        price = await saman_fiyat.get_saman_price(session)
+        if price is not None:
+            resolved.amount = price_total(resolved.qty, price)
+            resolved.default_unit_price = price
+            if (
+                resolved.assumed_product
+                or resolved.assumed_kind
+                or resolved.kind == "payment"
+                or source == "llm"
+            ):
+                return ProcessResult(outcome=ProcessOutcome.SAMAN_PRICE_CONFIRM, resolved=resolved)
+        elif not resolved.running:
+            # Fiyat ayarı bozuk: tutar hesaplanamaz, uydurulmaz.
+            return ProcessResult(outcome=ProcessOutcome.UNRECOGNIZED, resolved=resolved)
+
     if resolved.running and resolved.amount is None:
         # Koşan format YALNIZCA mal adedini söyler ("70-20-50" = 20 balya);
-        # TL ayrı girilir (CLAUDE.md > "Koşan format"). Tutar söylenmemişse
-        # UYDURULMAZ ve fiyat listesinden de türetilmez (kural 4: "tutarı
-        # kullanıcı yazar") — kişi/ürün çözülmüş hâlde bekletilip sorulur.
+        # TL ayrı girilir (CLAUDE.md > "Koşan format"). Samanda tutar yukarıda
+        # varsayılan fiyattan hesaplandı; diğer ürünlerde tutar UYDURULMAZ ve
+        # fiyat listesinden de türetilmez (kural 4) — kişi/ürün çözülmüş
+        # hâlde bekletilip sorulur.
         return ProcessResult(outcome=ProcessOutcome.RUNNING_AMOUNT_NEEDED, resolved=resolved)
 
     if source == "llm":

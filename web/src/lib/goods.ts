@@ -208,20 +208,32 @@ export type ResolvedGoods = ParsedGoods & {
   unitName: string;
   /** Katalogda böyle bir ürün yok — kayıtta yeni ürün açılacak. */
   isNewProduct: boolean;
-  /** Kayıtlı birim fiyat. YALNIZCA birim ürünün kendi birimiyle aynıysa
-   *  dolu olur: balya fiyatı kilo adediyle çarpılmaz. */
+  /** Otomatik tutarın birim fiyatı. YALNIZCA birim fiyatın birimiyle
+   *  aynıysa dolu olur: balya fiyatı kilo adediyle çarpılmaz. */
   catalogPrice: number | null;
-  /** Katalogda fiyat var ama birim tutmuyor (uyarı metni için). */
+  /** Fiyat var ama birim tutmuyor (uyarı metni için). */
   priceUnit: string | null;
+  /** catalogPrice nereden geldi: "saman" = ayarlanabilir varsayılan saman
+   *  fiyatı (CLAUDE.md > "Varsayılan saman fiyatı"), "katalog" = ürünün
+   *  kayıtlı fiyat geçmişi. */
+  priceSource: "saman" | "katalog" | null;
 };
+
+function validPrice(value: number | null | undefined): value is number {
+  return value != null && Number.isFinite(value) && value > 0;
+}
 
 /** Ham metni katalogla birleştirip kaydedilebilir hâle getirir.
  *  `unitOverride` dropdown yedeğinden gelir; yazıda birim varsa çağıran
- *  taraf override'ı düşürür (yazı her zaman kazanır). */
+ *  taraf override'ı düşürür (yazı her zaman kazanır).
+ *  `samanPrice` varsayılan saman balya fiyatıdır: ürün saman ise ürünün
+ *  kayıtlı fiyat geçmişini EZER (güncel fiyat kullanıcının ayarladığıdır),
+ *  diğer ürünlere hiç dokunmaz. */
 export function resolveGoods(
   text: string,
   products: CatalogProduct[] | undefined,
   unitOverride?: string | null,
+  samanPrice?: number | null,
 ): ResolvedGoods {
   const parsed = parseGoods(text);
   const productName = parsed.product ?? DEFAULT_PRODUCT;
@@ -229,17 +241,41 @@ export function resolveGoods(
   const hit = products?.find((p) => lower(p.name) === key);
 
   const unitName = parsed.unit ?? unitOverride ?? hit?.base_unit ?? DEFAULT_UNIT;
-  const price = hit?.unit_price != null ? Number(hit.unit_price) : null;
-  const priceOk = price !== null && Number.isFinite(price) && price > 0;
+
+  let price: number | null = null;
+  let priceUnit: string | null = null;
+  let source: "saman" | "katalog" | null = null;
+  if (key === DEFAULT_PRODUCT && validPrice(samanPrice)) {
+    price = samanPrice;
+    priceUnit = DEFAULT_UNIT;
+    source = "saman";
+  } else {
+    const kayitli = hit?.unit_price != null ? Number(hit.unit_price) : null;
+    if (validPrice(kayitli)) {
+      price = kayitli;
+      priceUnit = hit!.base_unit;
+      source = "katalog";
+    }
+  }
+  const birimTutuyor = price !== null && priceUnit === unitName;
 
   return {
     ...parsed,
     productName,
     unitName,
     isNewProduct: products !== undefined && !parsed.empty && hit === undefined,
-    catalogPrice: priceOk && hit!.base_unit === unitName ? price : null,
-    priceUnit: priceOk ? hit!.base_unit : null,
+    catalogPrice: birimTutuyor ? price : null,
+    priceUnit,
+    priceSource: birimTutuyor ? source : null,
   };
+}
+
+/** Otomatik fiyat tiki kullanıcı dokunmadan AÇIK mı başlar? Yalnızca
+ *  varsayılan saman fiyatında: saman için tutar yazılmazsa varsayılan
+ *  fiyattan hesaplanır. Diğer ürünlerde kayıtlı fiyat tutarı bağlamaz
+ *  (kural 4), tik kapalı başlar. */
+export function defaultAutoPrice(g: ResolvedGoods): boolean {
+  return g.priceSource === "saman";
 }
 
 /** Tik işaretliyken tutar: adet × kayıtlı birim fiyat, kuruşa yuvarlı.
