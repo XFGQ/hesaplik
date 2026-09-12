@@ -56,7 +56,16 @@ from app.models import (
     Transaction,
     TransactionLine,
 )
-from app.services import auth, backup, health, message_trace, queries, request_queue, restore
+from app.services import (
+    auth,
+    backup,
+    health,
+    message_trace,
+    queries,
+    request_queue,
+    restore,
+    telegram_yedek,
+)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -509,6 +518,46 @@ async def restore_status(session: AsyncSession = Depends(get_session)):
 
 
 # ---------------------------------------------------------------- işlem akışı
+
+class YedekGonderOut(BaseModel):
+    ok: bool
+    message: str
+    filename: str | None = None
+    size_bytes: int | None = None
+
+
+@router.post("/yedek-gonder", response_model=YedekGonderOut)
+async def yedek_gonder(
+    session: AsyncSession = Depends(get_session),
+    username: str = Depends(auth.require_auth),
+):
+    """"Şimdi Yedek Al ve Telegram'a Gönder": tüm veritabanı gzip'lenip
+    TELEGRAM_ADMIN_CHAT_ID'ye gönderilir (app/services/telegram_yedek.py —
+    host'taki scripts/telegram-yedek.sh'nin ikizi). Restore'dan farklı olarak
+    burada host'a iş devredilmez: pg_dump container'dan doğrudan çalışır ve
+    sonuç panelde anında görünür.
+
+    Hata kodları: yapılandırma eksik 503, zaten bir yedek sürüyor 409, döküm /
+    Telegram / 50 MB sınırı 502 — `detail` kullanıcıya olduğu gibi gösterilir.
+    Her deneme audit_log'a yazılır (veritabanının tamamı dışarı çıkıyor)."""
+    chat_id = settings.telegram_admin_chat_id_int
+    if chat_id is None:
+        raise HTTPException(503, "Telegram yedeği kapalı: TELEGRAM_ADMIN_CHAT_ID tanımlı değil.")
+
+    sonuc = await telegram_yedek.yedek_gonder(chat_id)
+    telegram_yedek.denetim_kaydi(session, f"admin-panel:{username}", sonuc)
+    await session.commit()
+
+    if sonuc.ok:
+        return YedekGonderOut(
+            ok=True, message=sonuc.mesaj, filename=sonuc.dosya_adi, size_bytes=sonuc.boyut
+        )
+    if sonuc.durum == "mesgul":
+        raise HTTPException(409, sonuc.mesaj)
+    if sonuc.durum == "yapilandirilmamis":
+        raise HTTPException(503, sonuc.mesaj)
+    raise HTTPException(502, sonuc.mesaj)
+
 
 @router.get("/flow", response_model=FlowPageOut, dependencies=[auth.AuthRequired])
 async def flow(

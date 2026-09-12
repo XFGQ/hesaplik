@@ -158,6 +158,16 @@ export type RestoreStatusResponse = {
   request: RestoreRequest | null;
 };
 
+/* "Şimdi Yedek Al ve Telegram'a Gönder" sonucu. Restic'ten BAĞIMSIZ bir yol:
+ * veritabanı gzip'li düz SQL olarak yöneticinin Telegram'ına gider, depoya
+ * yeni bir snapshot EKLENMEZ (liste bu yüzden tazelenmez). */
+export type YedekGonderResult = {
+  ok: boolean;
+  message: string;
+  filename: string | null;
+  size_bytes: number | null;
+};
+
 export type FlowFilters = {
   kind?: string;
   person?: string;
@@ -360,6 +370,9 @@ export const adminApi = {
       body: JSON.stringify({ snapshot_id: snapshotId, password }),
     }),
   restoreStatus: () => req<RestoreStatusResponse>("/backups/restore/status"),
+  /** Veritabanını şimdi dök ve yöneticinin Telegram'ına gönder. Uzun sürebilir
+   * (döküm + yükleme); sonuç/hata metni doğrudan kullanıcıya gösterilir. */
+  yedekGonder: () => req<YedekGonderResult>("/yedek-gonder", { method: "POST" }),
 
   flow: (f: FlowFilters) => {
     const q = new URLSearchParams();

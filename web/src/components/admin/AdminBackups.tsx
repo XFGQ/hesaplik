@@ -67,6 +67,32 @@ function boyut(bytes: number | null): string {
 export default function AdminBackups({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [secili, setSecili] = useState<BackupSnapshot | null>(null);
 
+  /* Telegram'a yedek: restic listesinden BAĞIMSIZ (depoya snapshot eklemez),
+   * bu yüzden sonucu kendi satırında gösterir, listeyi tazelemez. Şifre
+   * sorulmaz — "ana veri yap"ın aksine bu işlem hiçbir şeyin üstüne yazmaz. */
+  const [yedekBusy, setYedekBusy] = useState(false);
+  const [yedekSonuc, setYedekSonuc] = useState<{ ok: boolean; text: string } | null>(null);
+
+  async function telegramaGonder() {
+    setYedekBusy(true);
+    setYedekSonuc(null);
+    try {
+      const r = await adminApi.yedekGonder();
+      setYedekSonuc({ ok: true, text: r.message });
+    } catch (err) {
+      if (err instanceof Unauthorized) {
+        onUnauthorized();
+        return;
+      }
+      setYedekSonuc({
+        ok: false,
+        text: err instanceof Error ? err.message : "Yedek gönderilemedi.",
+      });
+    } finally {
+      setYedekBusy(false);
+    }
+  }
+
   const q = useQuery({
     queryKey: ["admin-backups"],
     queryFn: () => adminApi.backups(),
@@ -129,7 +155,14 @@ export default function AdminBackups({ onUnauthorized }: { onUnauthorized: () =>
         <button className="admin-btn" onClick={() => q.refetch()} disabled={q.isFetching}>
           {q.isFetching ? "Yükleniyor…" : "Yenile"}
         </button>
+        <button className="admin-btn" onClick={telegramaGonder} disabled={yedekBusy}>
+          {yedekBusy ? "Yedek alınıyor…" : "Şimdi Yedek Al ve Telegram'a Gönder"}
+        </button>
       </div>
+
+      {yedekSonuc && (
+        <p className={yedekSonuc.ok ? "admin-restore-ok" : "error"}>{yedekSonuc.text}</p>
+      )}
 
       {q.isError && !(q.error instanceof Unauthorized) && (
         <p className="error">{(q.error as Error).message}</p>

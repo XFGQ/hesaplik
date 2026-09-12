@@ -84,6 +84,9 @@ arkasındaki karar gerekçesi ilgili bölümde yazılıdır.
 - Tek mesajda birden çok işlem: kalıcı `pending_requests` kuyruğu ile sırayla.
 - Uzun süren işlemlerde "yazıyor..." göstergesi; admin komutları
   (`/engine`, `/queue`, `/logs`) yalnızca `TELEGRAM_ADMIN_IDS` için.
+- **"/" komut menüsü:** `/borc`, `/tahsilat`, `/kisiekle` adım adım sorar;
+  `/bakiye`, `/kisi`, `/koy` tek adımda çalışır; `/yedek` (yalnızca yönetici)
+  veritabanını Telegram'a gönderir. Hepsi mevcut akışları tetikler.
 
 ### Web Uygulaması
 
@@ -282,6 +285,8 @@ aşağıdaki **`just quickstart`** bölümüne bakın.
 
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_IDS` — bot; token yoksa bot başlamaz,
   API çalışmaya devam eder.
+- `TELEGRAM_ADMIN_CHAT_ID` — Telegram'a yedeğin gideceği kişisel chat id
+  (`@userinfobot`); boşsa Telegram yedeği gönderilmez.
 - `LLM_PROVIDER` (`ollama` | `none`), `OLLAMA_URL`, `LLM_MODEL`, `LLM_TIMEOUT`.
 - `NVIDIA_URL`, `NVIDIA_API_KEY`, `NVIDIA_MODEL` — bulut katmanı; key boşsa
   hiç denenmez.
@@ -334,6 +339,8 @@ Her şeyi silip sıfırdan başlamak (**TÜM VERİ GİDER**):
     just lint      # ruff + tsc --noEmit
 
     just backup       # restic ile yedek al
+    just telegram-yedek            # DB'yi gzip'leyip admin'in Telegram'ına gönder
+    just telegram-yedek --gonderme # aynısı, göndermeden (dök + doğrula)
     just backup-list  # depodaki yedekleri listele
     just restore-test # en son yedeği geçici DB'ye açıp doğrula
 
@@ -935,6 +942,67 @@ nazik mesaj.
 Backend: bu filtreler API'de de işe yarar, ledger/servis katmanına
 eklensin (ilçeye göre, borçlu/alacaklı filtresi), bot ve web ikisi de
 kullanabilsin.
+
+### "/" komut menüsü (2026-09-13)
+
+Telegram'da "/" yazınca çıkan öneri listesi (`setMyCommands`). Komutlar
+KENDİ defter mantıklarını kurmaz, mevcut olanı TETİKLER: kişi eşleştirme
+`find_person_match`, "hangisi?" `_candidates_keyboard`, yeni kişi
+`_new_person_flow_baslat`, kaydın kendisi `message_processor.process_intent`
+→ `handle_resolved`. Böylece varsayılan saman fiyatı, koşan format, ürün
+önerisi, çoklu istek kuyruğu ve 60 sn "Geri al" komut yolunda da çalışır.
+
+**DİREKT (tek adım):**
+- `/yedek` — veritabanını gzip'leyip aynı sohbete gönderir
+  (`telegram_yedek.yedek_gonder`). YALNIZCA `TELEGRAM_ADMIN_CHAT_ID`;
+  başkasına "Bu komut sadece yönetici içindir." denir (/durum'un sessizliğinden
+  farklı — komut menüde zaten yalnızca yöneticide görünüyor). Chat id tanımsızsa
+  kimseye çalışmaz (fail-closed). Her deneme audit_log'a yazılır.
+- `/bakiye` — defter toplamı; `/bakiye ahmet` — kişinin bakiye tablosu.
+- `/kisi ahmet`, `/koy bergama` — mevcut arama / ilçe listesi.
+
+**ADIM ADIM (eksik bilgiyi sorar):** `/borc`, `/tahsilat`, `/kisiekle` ve
+argümansız `/kisi`, `/koy`. Bekleyen soru `chat_data["komut_akisi"]`nda durur,
+cevabını `on_text` yakalar (diğer bekleyen akışlardan sonra, düz metin
+işlemeden önce).
+
+`/borc` akışı: kişi sorulur → `find_person_match` (LLM'e SORULMAZ: kullanıcı
+zaten isim yazmak için sorulan soruyu cevaplıyor) → aday çoksa `komut:pick:`
+butonları, kişi yoksa mevcut "Ekleyeyim mi? → ad soyad → telefon/il/ilçe"
+akışı (`pending["komut_kind"]` bunu işaretler, `_complete_new_person` kişi
+açılınca mal sorusuna döner) → mal/tutar sorulur. Cevap NORMAL ayrıştırmadan
+geçer (kişinin adıyla birleştirilip `parser.parse`), kişi yeniden
+EŞLEŞTİRİLMEZ (`resolve(..., known_person=...)`).
+
+**Cevapta sıra önemli:** önce "cevabın TAMAMI bir tutar mı?" bakılır
+(`parse_amount_reply` — koşan formatın tutar sorusuyla aynı çözücü). Komut
+zaten "ne kadar?" diye sorduğundan tek başına bir sayı PARADIR ("Para vs
+adet": fiil bağlamındaki çıplak sayı TL'dir, buradaki fiili komut veriyor).
+Parser'a bırakılsa aynı sayı fiilsiz saman kalıbına düşerdi ("furkan 20" =
+20 balya saman) ve `/tahsilat`'ta "5000 balya saman tahsilat mı?" diye
+sorulurdu. Adet kastedilen cevapta birim ya da ürün zaten yazılır ("20
+balya", "20 balya saman 5000 tl") — o cevap normal ayrıştırmaya düşer ve
+saman/koşan format kuralları aynen işler. Yönü KOMUT söyler — cevaptaki fiil
+değiştirmez ve yön artık varsayım olmadığından `assumed_kind` düşürülür
+(saman kaydı "borç mu?" diye ikinci kez sorulmaz). Anlaşılmayan cevapta akış
+AÇIK kalır, soru tekrarlanır, hiçbir şey kaydedilmez.
+
+Yeni bir komut yarım kalmış eski komut sorusunu düşürür (`_komut_temizle`) —
+"/borc" deyip "/bakiye" yazanın sonraki mesajı yanlış akışa gitmez.
+
+**Menü kapsamı:** müşteriye `/start`, `/borc`, `/tahsilat`, `/bakiye`,
+`/kisi`, `/koy`, `/kisiekle`, `/yardim`; yönetici sohbetlerine ayrıca
+`/durum` ve `/yedek` (`BotCommandScopeChat`) — komutun VARLIĞI müşteriye
+sızmaz. Yönetici sohbetleri = `TELEGRAM_ADMIN_IDS` ∪ `TELEGRAM_ADMIN_CHAT_ID`
+(ikisi farklı ayar, biri diğerini kapsamayabilir).
+
+**Panelde aynı iş:** `POST /api/admin/yedek-gonder` (JWT) — "Şimdi Yedek Al
+ve Telegram'a Gönder" düğmesi. Geri yüklemenin aksine host'a iş devredilmez;
+pg_dump container'dan çalışır, sonuç panelde anında görünür (409 meşgul,
+503 yapılandırma yok, 502 döküm/Telegram hatası). Restic deposuna snapshot
+EKLEMEZ, o yüzden yedek listesi tazelenmez.
+
+Testler: `tests/test_bot_komutlar.py`, `tests/test_admin_yedek.py`.
 
 ### Bot "yazıyor..." göstergesi
 
@@ -1589,6 +1657,30 @@ Kişi ekstresi her zaman kişi eşleştirme güvenlik kurallarından geçer.
 
 Tüm veritabanını o ana geri sarar. Bu el yordamı her zaman geçerli kalır
 (felaket anında panel açılmayabilir).
+
+### Telegram'a yedek — restic'e EK (2026-09-11)
+
+Restic deposu şimdilik sunucunun kendi diskinde; sunucu/disk giderse yedek
+de gider. Ek güvence: `scripts/telegram-yedek.sh` günde iki kez (04:00 ve
+06:00, `Europe/Istanbul`) tüm veritabanını gzip'li düz SQL olarak admin'in
+kişisel Telegram'ına gönderir (`TELEGRAM_ADMIN_CHAT_ID`). Restic'e dokunmaz,
+yanında çalışır.
+
+- **Düz SQL (`pg_dump --clean --if-exists --no-owner`), `-Fc` değil:** dosya
+  telefondan bile okunur, geri yüklemek için yalnızca `psql` yeter; `--clean`
+  sayesinde schema.sql'in kurduğu taze volume'e de yüklenir.
+- **Gönderilmeden önce doğrulanır:** `gzip -t` + pg_dump'ın "dump complete"
+  bitiş satırı. Yarım döküm "yedek alındı" diye gitmez.
+- **45 MB sınırı** (Telegram bot API 50 MB): aşarsa GÖNDERİLMEZ, admin'e
+  "Yedek 50MB'ı aştı, alternatif gerekli" yazılır. Sessiz başarısızlık yok:
+  her hata admin'e sendMessage ile gider, çıkış kodu 1.
+- **`.env` source edilmez** (bcrypt `$2b$...`, bkz. `just migrate`): yalnızca
+  POSTGRES_USER/DB, TELEGRAM_BOT_TOKEN, TELEGRAM_ADMIN_CHAT_ID grep'le okunur.
+  Token curl'e komut satırından değil stdin'den verilir (`ps`'te görünmesin).
+- Döküm yalnızca 0700 izinli geçici dizinde durur, her durumda silinir.
+- Zamanlayıcı `deployment/hesaplik-telegram-yedek.{service,timer}`; servis
+  `COMPOSE_FILE=docker-compose.prod.yml` ile üretim yığınını hedefler.
+  Crontab alternatifi ve geri dönme komutu `deployment/README.md`'de.
 
 ### Panelden geri yükleme — "Yol A": panel İSTER, host UYGULAR (2026-08)
 
