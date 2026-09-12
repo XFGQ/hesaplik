@@ -248,7 +248,12 @@ async def _llm_suggest_person(session: AsyncSession, key: str) -> Person | None:
     return (await session.execute(match_stmt)).scalar_one_or_none()
 
 
-async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> ResolvedIntent:
+async def resolve(
+    session: AsyncSession, intent: ParsedIntent | None, *, known_person: Person | None = None
+) -> ResolvedIntent:
+    """`known_person`: kişi daha önceki bir adımda seçildiyse (Telegram
+    /borc'ta "hangisi?" cevaplandı) isim YENİDEN eşleştirilmez, seçilen kişi
+    aynen kullanılır; ürün, tutar ve saman kuralları yine bu yoldan geçer."""
     if intent is None:
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED)
 
@@ -295,11 +300,14 @@ async def resolve(session: AsyncSession, intent: ParsedIntent | None) -> Resolve
     ):
         return ResolvedIntent(status=ResolutionStatus.UNRECOGNIZED, kind=intent.kind)
 
-    person, candidates = await find_person_match(
-        session,
-        intent.person_name or "",
-        allow_llm_suggestion=intent.kind not in NO_LLM_SUGGESTION_KINDS,
-    )
+    if known_person is not None:
+        person, candidates = known_person, []
+    else:
+        person, candidates = await find_person_match(
+            session,
+            intent.person_name or "",
+            allow_llm_suggestion=intent.kind not in NO_LLM_SUGGESTION_KINDS,
+        )
 
     if person is None:
         if candidates:

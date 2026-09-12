@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Token yoksa bot başlamaz ama API çalışmaya devam eder.
     telegram_bot_token: str | None = None
     telegram_admin_ids: str = ""
+    # Tüm veritabanı yedeğinin gönderildiği KİŞİSEL chat id (tek sayı): host'taki
+    # scripts/telegram-yedek.sh, bot /yedek ve panel "Şimdi Yedek Al" buraya
+    # gönderir; /yedek komutunu da YALNIZCA bu chat kullanabilir.
+    telegram_admin_chat_id: str = ""
 
     # LLM fallback (Faz 4). Kural parser çözemezse devreye girer, kural
     # parser asla kaldırılmaz. Hangi kaynağın (vLLM/Ollama/none)
@@ -106,6 +110,16 @@ class Settings(BaseSettings):
     @property
     def telegram_admin_ids_list(self) -> list[int]:
         return [int(x.strip()) for x in self.telegram_admin_ids.split(",") if x.strip()]
+
+    @property
+    def telegram_admin_chat_id_int(self) -> int | None:
+        """Boş ya da sayı değilse None — yedek hiçbir yere gönderilmez,
+        /yedek kimseye çalışmaz (yanlış yapılandırmada açık kalmasın)."""
+        deger = self.telegram_admin_chat_id.strip()
+        try:
+            return int(deger) if deger else None
+        except ValueError:
+            return None
 
 
 settings = Settings()

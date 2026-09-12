@@ -60,6 +60,10 @@ web-host:
 backup: db
     ./scripts/backup.sh
 
+# Veritabanini sikistirip admin'in Telegram'ina gonder (--gonderme: yalnizca dene)
+telegram-yedek *args: db
+    ./scripts/telegram-yedek.sh {{args}}
+
 # Depodaki yedekleri listele
 backup-list:
     #!/usr/bin/env bash

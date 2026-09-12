@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import RawMessage, Transaction, TxSource
+from app.models import Person, RawMessage, Transaction, TxSource
 from app.services import llm_provider, message_trace, parser, report, saman_fiyat, web_intake
 from app.services.intent_resolver import LIST_KINDS, ResolutionStatus, ResolvedIntent, resolve
 from app.services.ledger import (
@@ -142,6 +142,27 @@ async def process_raw_message(session: AsyncSession, raw: RawMessage, text: str)
         result = await _retry_empty_search_with_llm(session, raw, text, result, parse_ms)
 
     return result
+
+
+async def process_intent(
+    session: AsyncSession,
+    raw: RawMessage,
+    intent: parser.ParsedIntent,
+    text: str,
+    *,
+    person: Person | None = None,
+) -> ProcessResult:
+    """Niyeti ÖNCEDEN belli bir mesajı işler — parser'a (ve LLM'e) sorulmaz.
+    Telegram "/" komutları (/bakiye, /kisi, /borc...) niyeti komuttan bilir;
+    metni parser'a yeniden tahmin ettirmek yerine niyet doğrudan verilir.
+    Sonrası process_raw_message ile AYNI: intent_resolver (kişi eşleştirme
+    güvenliği) → handle_resolved (saman fiyatı, onaylar, kayıt).
+
+    `person`: kişi bir önceki adımda seçildiyse isim yeniden eşleştirilmez."""
+    resolved = await resolve(session, intent, known_person=person)
+    return await handle_resolved(
+        session, raw, resolved, text, parse_source=message_trace.SOURCE_REGEX
+    )
 
 
 async def _retry_empty_search_with_llm(

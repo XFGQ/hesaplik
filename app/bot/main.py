@@ -26,7 +26,9 @@ Müşteriye teknik terim (provider, güven skoru, LLM) asla gösterilmez.
 
 Admin/müşteri ayrımı: /durum yalnızca TELEGRAM_ADMIN_IDS içindeki
 chat_id'lere yanıt verir. Yetkisiz kişi yazarsa hiç cevap verilmez —
-komutun varlığı bile sızmasın.
+komutun varlığı bile sızmasın. /yedek yalnızca TELEGRAM_ADMIN_CHAT_ID'de
+çalışır; başkasına (kullanıcı kararıyla) "Bu komut sadece yönetici içindir."
+denir. "/" komut menüsü: aşağıda '"/" komut menüsü' bölümü.
 """
 
 from __future__ import annotations
@@ -70,12 +72,15 @@ from app.services import (
     person_archive,
     person_edit,
     report,
+    saman_fiyat,
     stt,
+    telegram_yedek,
 )
-from app.services.intent_resolver import ResolutionStatus, ResolvedIntent
+from app.services.intent_resolver import ResolutionStatus, ResolvedIntent, find_person_match
 from app.services.ledger import Balance, LedgerError, balance_of
 from app.services.ledger import reverse as ledger_reverse
 from app.services.message_processor import BALANCE_TABLE_LIMIT, ProcessOutcome, ProcessResult
+from app.services.parser import ParsedIntent
 from app.services.person_edit import PersonEditError
 from app.services.queries import (
     PersonBalanceRow,
@@ -98,7 +103,15 @@ MUSTERI_KARSILAMA = (
 YARDIM_METNI = (
     'Buraya yazdığın mesajları alıp deftere işliyorum.\n'
     'Örnek: "Ahmet 20 balya saman aldı 15000 tl borç".\n'
-    'Bakiye sormak için: "Ahmet borcu ne kadar".'
+    'Bakiye sormak için: "Ahmet borcu ne kadar".\n'
+    '\n'
+    'Komutlar ("/" yazınca liste açılır):\n'
+    '/borc — borç kaydı, adım adım sorar\n'
+    '/tahsilat — tahsilat kaydı, adım adım sorar\n'
+    '/bakiye — defter toplamı · /bakiye ahmet — kişinin bakiyesi\n'
+    '/kisi ahmet — kişi ara\n'
+    '/koy bergama — ilçedeki kişiler\n'
+    '/kisiekle — yeni kişi ekle'
 )
 
 ANLASILAMADI_METNI = (
@@ -553,9 +566,11 @@ def _info_menu_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def _candidates_keyboard(candidates: list[Person]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(p.full_name, callback_data=f"person:pick:{p.id}")] for p in candidates]
-    rows.append([InlineKeyboardButton("+ Yeni kişi ekle", callback_data="person:new")])
+def _candidates_keyboard(candidates: list[Person], prefix: str = "person") -> InlineKeyboardMarkup:
+    """`prefix`: "person" bekleyen niyeti tamamlar (_handle_person_pick);
+    "komut" /borc-/tahsilat'ta kişiyi seçip mal sorusuna geçer."""
+    rows = [[InlineKeyboardButton(p.full_name, callback_data=f"{prefix}:pick:{p.id}")] for p in candidates]
+    rows.append([InlineKeyboardButton("+ Yeni kişi ekle", callback_data=f"{prefix}:new")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -1286,6 +1301,434 @@ async def cmd_durum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# --------------------------------------------------------------- "/" komut menüsü
+#
+# Telegram'da "/" yazınca çıkan öneri listesi (kayıt: _set_commands →
+# setMyCommands). İki tür komut var:
+#
+#   DİREKT    /yedek, /bakiye ve argümanlı /kisi, /koy — tek adımda biter.
+#   ADIM ADIM /borc, /tahsilat, /kisiekle ve argümansız /kisi, /koy — eksik
+#             bilgiyi sorar; bekleyen soru chat_data["komut_akisi"]'nda durur,
+#             cevabını on_text yakalar (bkz. oradaki komut_akisi kolu).
+#
+# Komutlar KENDİ kayıt/onay mantıklarını KURMAZ, mevcut olanı TETİKLER: kişi
+# eşleştirme güvenliği find_person_match'ten, "hangisi?" _candidates_keyboard'
+# dan, yeni kişi _new_person_flow_baslat'tan, kaydın kendisi
+# message_processor.process_intent → handle_resolved'dan geçer. Böylece
+# varsayılan saman fiyatı, koşan format, ürün önerisi, çoklu istek kuyruğu ve
+# 60 sn "Geri al" komut yolunda da aynen çalışır — ikinci bir defter mantığı
+# yazılmadı.
+
+KOMUT_ADMIN_REDDI = "Bu komut sadece yönetici içindir."
+
+_KOMUT_KISI_SORUSU = {
+    "debt": "Kimin borcunu eklemek istiyorsun? Adını yaz.",
+    "payment": "Kimden tahsilat aldın? Adını yaz.",
+}
+
+_KOMUT_KAYIT_SORUSU = {
+    "debt": "ne aldı, ne kadar? (örn. 20 balya saman 5000 tl)",
+    "payment": "ne ödedi, ne kadar? (örn. 5000 tl)",
+}
+
+
+def _komut_argumani(context: ContextTypes.DEFAULT_TYPE) -> str:
+    """"/bakiye ahmet yılmaz" -> "ahmet yılmaz" (argümansızsa "")."""
+    return " ".join(getattr(context, "args", None) or []).strip()
+
+
+def _komut_temizle(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Yeni bir komut, yarım kalmış ESKİ bir komut sorusunu düşürür: kullanıcı
+    "/borc" deyip cevaplamadan "/bakiye" yazarsa, sonraki mesajı borç sorusunun
+    cevabı sanmayalım."""
+    context.chat_data.pop("komut_akisi", None)
+    context.chat_data.pop("komut_secim", None)
+
+
+async def _komut_raw_id(update: Update) -> int:
+    """Komutla gelen mesaj da işlenmeden ÖNCE raw_messages'a yazılır (mesaj
+    asla kaybolmaz — CLAUDE.md > Faz 3); id'si kayıt/izleme için döner."""
+    async with SessionLocal() as session:
+        raw = await save_raw_message(session, update.to_dict())
+        await session.commit()
+        return raw.id
+
+
+async def _komut_intent(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    intent: ParsedIntent,
+    *,
+    person: Person | None = None,
+    text: str | None = None,
+) -> None:
+    """Niyeti KOMUTTAN belli bir isteği normal işleme hattından geçirir:
+    parser'a (ve LLM'e) yeniden tahmin ettirilmez, ama kişi eşleştirme
+    güvenliği, saman fiyatı, onay akışları ve kayıt aynen düz metindeki
+    gibi çalışır (message_processor.process_intent)."""
+    message = update.message
+    ham = text if text is not None else (message.text or "")
+
+    async with SessionLocal() as session:
+        raw = await save_raw_message(session, update.to_dict())
+        await session.commit()
+        async with typing_action(context.bot, message.chat_id):
+            result = await message_processor.process_intent(
+                session, raw, intent, ham, person=person
+            )
+            await session.commit()
+        await _reply_outcome(session, context, result, raw, ham, message)
+
+
+# ---- /yedek (DİREKT, yalnızca yönetici)
+
+async def cmd_yedek(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tüm veritabanını gzip'leyip AYNI sohbete dosya olarak gönderir
+    (app/services/telegram_yedek.py — host'taki scripts/telegram-yedek.sh'nin
+    ikizi). Yalnızca TELEGRAM_ADMIN_CHAT_ID kullanabilir; başkası çağırırsa
+    /durum'un aksine sessiz kalınmaz, açıkça "sadece yönetici" denir
+    (kullanıcı kararı) — komutun varlığı zaten menüde yalnızca yöneticiye
+    gösteriliyor. Her deneme audit_log'a yazılır: veritabanının TAMAMI
+    dışarı çıkıyor."""
+    _komut_temizle(context)
+    chat = update.effective_chat
+    chat_id = chat.id if chat else None
+    admin_chat = settings.telegram_admin_chat_id_int
+
+    if admin_chat is None or chat_id != admin_chat:
+        await update.message.reply_text(KOMUT_ADMIN_REDDI)
+        return
+
+    await update.message.reply_text("Yedek alınıyor…")
+    async with typing_action(context.bot, chat_id, ChatAction.UPLOAD_DOCUMENT):
+        sonuc = await telegram_yedek.yedek_gonder(admin_chat)
+
+    async with SessionLocal() as session:
+        telegram_yedek.denetim_kaydi(session, f"telegram:{chat_id}", sonuc)
+        await session.commit()
+
+    # Başarılıysa dosyanın kendisi (başlığında tarih + boyut) zaten geldi,
+    # üstüne ikinci bir "gönderildi" mesajı yazılmaz.
+    if not sonuc.ok:
+        await update.message.reply_text(f"Yedek alınamadı. {sonuc.mesaj}")
+
+
+# ---- /bakiye (DİREKT)
+
+async def cmd_bakiye(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Argümansız: defterin TAMAMININ özeti (total_balance). "/bakiye ahmet":
+    o kişinin bakiye tablosu — kişi belirsizse her zamanki "hangisi?" sorulur,
+    hiç yoksa "defterde yok" denir (salt okunur sorgu, kişi açılması teklif
+    edilmez)."""
+    _komut_temizle(context)
+    isim = _komut_argumani(context)
+    if not isim:
+        await _komut_intent(update, context, ParsedIntent(kind="total_balance"))
+        return
+    await _komut_intent(update, context, ParsedIntent(kind="balance_query", person_name=isim))
+
+
+# ---- /kisi ve /koy (argümanlıysa DİREKT, argümansızsa tek soru)
+
+async def cmd_kisi(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _komut_temizle(context)
+    terim = _komut_argumani(context)
+    if not terim:
+        context.chat_data["komut_akisi"] = {"tip": "kisi"}
+        await update.message.reply_text("Hangi kişiyi arıyorsun? Adını yaz.")
+        return
+    await _komut_ara(update, context, terim)
+
+
+async def _komut_ara(update: Update, context: ContextTypes.DEFAULT_TYPE, terim: str) -> None:
+    """Mevcut arama akışı (CLAUDE.md > "Telegram arama gibi davransın"):
+    isimde/soyadda/ilçede eşleşen HERKESİ bakiyesiyle listeler, "hangisi?"
+    diye sormaz."""
+    await _komut_intent(update, context, ParsedIntent(kind="search", query=terim), text=terim)
+
+
+async def cmd_koy(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _komut_temizle(context)
+    ilce = _komut_argumani(context)
+    if not ilce:
+        context.chat_data["komut_akisi"] = {"tip": "koy"}
+        await update.message.reply_text("Hangi ilçe?")
+        return
+    await _komut_ilce(update, context, ilce)
+
+
+async def _komut_ilce(update: Update, context: ContextTypes.DEFAULT_TYPE, ilce: str) -> None:
+    # district, parser'ın ürettiğiyle AYNI biçimde (normalize, küçük harf)
+    # verilir — sorgu tarafı iki farklı yazımla uğraşmasın.
+    await _komut_intent(
+        update, context, ParsedIntent(kind="list_district", district=parser.normalize(ilce)), text=ilce
+    )
+
+
+# ---- /borc ve /tahsilat (ADIM ADIM: kişi -> mal/tutar)
+
+async def cmd_borc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _komut_kayit_baslat(update, context, "debt")
+
+
+async def cmd_tahsilat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _komut_kayit_baslat(update, context, "payment")
+
+
+async def _komut_kayit_baslat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str
+) -> None:
+    _komut_temizle(context)
+    isim = _komut_argumani(context)
+    if not isim:
+        context.chat_data["komut_akisi"] = {"tip": "kisi_sec", "kind": kind}
+        await update.message.reply_text(_KOMUT_KISI_SORUSU[kind])
+        return
+    await _komut_kisi_coz(update, context, kind, isim)
+
+
+def _komut_pending(
+    kind: str, isim: str, raw_id: int, raw_text: str, *, komut_kind: str | None = None
+) -> dict:
+    """Komut içinde açılacak adım adım kişi ekleme akışının bekleyen kaydı —
+    şekli _pending_from_resolved ile AYNI (aynı akış tüketiyor).
+
+    `komut_kind` dolu ise (/borc, /tahsilat) _complete_new_person bunu görüp
+    "kişi açıldı ama kaydedilecek bir şey henüz yok, mal sorusuna geç" der;
+    /kisiekle'de boştur — hedef kişinin kendisidir."""
+    pending = {
+        "kind": kind,
+        "person_name_raw": isim,
+        "qty": None,
+        "unit": None,
+        "product_name": None,
+        "amount": None,
+        "raw_message_id": raw_id,
+        "raw_text": raw_text,
+        "field": None,
+        "new_value": None,
+        "running": False,
+        "assumed_product": False,
+        "assumed_kind": False,
+    }
+    if komut_kind is not None:
+        pending["komut_kind"] = komut_kind
+    return pending
+
+
+async def _komut_kisi_coz(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, kind: str, isim: str
+) -> None:
+    """Komutta da kişi eşleştirme güvenliği aynıdır (CLAUDE.md > "Kişi
+    eşleştirme güvenliği"): birebir ya da belirgin tek eşleşme yoksa ASLA
+    otomatik seçilmez — adaylar sorulur, hiç aday yoksa adım adım kişi ekleme
+    teklif edilir. Burada LLM'e danışılmaz: kullanıcı zaten ismi yazmak için
+    sorulmuş bir soruya cevap veriyor, tahmin etmek yerine sormak ucuz."""
+    message = update.message
+    raw_id = await _komut_raw_id(update)
+
+    async with SessionLocal() as session:
+        person, candidates = await find_person_match(session, isim, allow_llm_suggestion=False)
+        if person is not None:
+            secili_id, secili_ad = person.id, person.full_name
+
+    if person is not None:
+        await _komut_mal_sor(message.reply_text, context, kind, secili_id, secili_ad)
+        return
+
+    pending = _komut_pending(kind, isim, raw_id, message.text or isim, komut_kind=kind)
+
+    if candidates:
+        context.chat_data["komut_secim"] = {"kind": kind, "pending": pending}
+        await message.reply_text(
+            "Hangisini demek istedin?",
+            reply_markup=_candidates_keyboard(candidates, prefix="komut"),
+        )
+        return
+
+    # "Ekleyeyim mi? -> Evet" mevcut akışa girer (_begin_new_person_flow):
+    # ad soyad onayı, telefon/il/ilçe, her adımda "Geç".
+    context.chat_data["pending"] = pending
+    await message.reply_text(
+        f"{_title_tr(isim)} defterde yok. Ekleyeyim mi?", reply_markup=_yes_no_keyboard()
+    )
+
+
+async def _saman_ipucu() -> str:
+    """Mal sorusunun altına eklenen kısa hatırlatma: saman için tutar
+    yazılmazsa varsayılan fiyattan hesaplanacağı önceden söylenir (CLAUDE.md >
+    "Varsayılan saman fiyatı"). Fiyat okunamıyorsa satır hiç yazılmaz —
+    olmayan bir kolaylık vaat edilmez."""
+    async with SessionLocal() as session:
+        fiyat = await saman_fiyat.get_saman_price(session)
+    if fiyat is None:
+        return ""
+    return f"\n(Saman için tutar yazmazsan {_fmt_try(fiyat)} TL/balya kullanılır.)"
+
+
+async def _komut_mal_sor(
+    reply, context: ContextTypes.DEFAULT_TYPE, kind: str, person_id: int, person_name: str
+) -> None:
+    """Kişi netleşti, sıra mal/tutarda. `reply` hem Message.reply_text hem
+    CallbackQuery.edit_message_text olabilir (aday seçiminden de, yeni kişi
+    akışının sonundan da buraya gelinir — bkz. _complete_new_person)."""
+    context.chat_data["komut_akisi"] = {
+        "tip": "kayit",
+        "kind": kind,
+        "person_id": person_id,
+        "person_name": person_name,
+    }
+    await reply(f"{person_name} — {_KOMUT_KAYIT_SORUSU[kind]}{await _saman_ipucu()}")
+
+
+async def _komut_kayit_isle(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, akis: dict, cevap: str
+) -> None:
+    """Mal/tutar cevabı NORMAL ayrıştırmadan geçer — "20 balya saman 5000 tl",
+    "70-20-50", "5000 tl" hepsi çalışır. Cevap kişinin adıyla birleştirilip
+    parse edilir (tek başına "20 balya saman 5000 tl" bir kayıt cümlesi
+    değildir); kişi ZATEN seçili olduğu için isim yeniden EŞLEŞTİRİLMEZ
+    (process_intent'e person= verilir).
+
+    Anlaşılmazsa hiçbir şey kaydedilmez ve akış AÇIK kalır: soru tekrarlanır,
+    kullanıcı yeniden yazar."""
+    tam = f"{akis['person_name']} {cevap}"
+
+    # SIRA ÖNEMLİ: önce "cevabın tamamı bir tutar mı?" diye bakılır. Komut
+    # zaten "ne kadar?" diye sorduğu için tek başına bir sayı ("5000",
+    # "5 bin", "5000 tl") PARADIR — CLAUDE.md > "Para vs adet": fiil
+    # bağlamındaki çıplak sayı TL'dir ve buradaki fiili komutun kendisi
+    # veriyor. Parser'a bırakılsaydı aynı sayı fiilsiz saman kalıbına
+    # düşerdi ("furkan 20" = 20 balya saman) ve /tahsilat'ta "5000 balya
+    # saman tahsilat mı?" gibi saçma bir soru çıkardı.
+    # Çözücü koşan formatın tutar sorusuyla AYNI (parse_amount_reply):
+    # ikinci bir sayı mantığı yazılmaz. Adet kastedilen cevapta birim ya da
+    # ürün zaten yazılır ("20 balya", "20 saman") — o cevap buradan geçmez,
+    # aşağıdaki normal ayrıştırmaya düşer.
+    tutar = parse_amount_reply(cevap)
+    if tutar is not None:
+        intent = ParsedIntent(kind=akis["kind"], person_name=akis["person_name"], amount=tutar)
+    else:
+        intent = parser.parse(tam)
+        if intent is not None and intent.kind not in ("debt", "payment"):
+            intent = None
+
+    if intent is None:
+        await update.message.reply_text(
+            "Anlayamadım. Ne alındı ve kaç TL? Örnek: 20 balya saman 5000 tl"
+        )
+        return
+
+    # Yönü KOMUT söyler: /borc borç, /tahsilat tahsilat. Cevaptaki fiil bunu
+    # değiştirmez (kullanıcı komutu bilerek seçti) — ve yön artık VARSAYIM
+    # olmadığı için "borç mu demek istediniz?" diye ayrıca sorulmaz.
+    intent.kind = akis["kind"]
+    intent.assumed_kind = False
+
+    context.chat_data.pop("komut_akisi", None)
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, akis["person_id"])
+        if person is None:
+            await update.message.reply_text("Kişi bulunamadı.")
+            return
+        raw = await save_raw_message(session, update.to_dict())
+        await session.commit()
+        async with typing_action(context.bot, update.message.chat_id):
+            result = await message_processor.process_intent(
+                session, raw, intent, tam, person=person
+            )
+            await session.commit()
+        await _reply_outcome(session, context, result, raw, tam, update.message)
+
+
+# ---- /kisiekle (ADIM ADIM — mevcut akışı tetikler)
+
+async def cmd_kisiekle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _komut_temizle(context)
+    isim = _komut_argumani(context)
+    if not isim:
+        context.chat_data["komut_akisi"] = {"tip": "kisiekle"}
+        await update.message.reply_text("Ad soyad?")
+        return
+    await _komut_kisiekle_baslat(update, context, isim)
+
+
+async def _komut_kisiekle_baslat(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, isim: str
+) -> None:
+    """Telegram'da zaten var olan adım adım kişi ekleme akışını TETİKLER
+    (ad soyad onayı → telefon → il → ilçe, her adımda "Geç", ilkinde "Hepsini
+    geç") — ikinci bir akış yazılmaz (CLAUDE.md > "Telegram'dan kişi eklerken
+    detay sorma")."""
+    raw_id = await _komut_raw_id(update)
+    pending = _komut_pending(
+        "create_person", isim, raw_id, update.message.text or isim
+    )
+    prompt, keyboard = _new_person_flow_baslat(context, pending)
+    await update.message.reply_text(prompt, reply_markup=keyboard)
+
+
+# ---- komut sorularının metin cevapları
+
+async def _handle_komut_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, akis: dict, text: str
+) -> None:
+    """Bir komut soru sormuşken gelen düz metin buraya gelir (bkz. on_text).
+    Cevap işlenmeden önce akış chat_data'dan DÜŞÜRÜLÜR — tek istisna "kayit":
+    cevabı anlaşılmazsa soru açık kalmalı ki kullanıcı yeniden yazabilsin."""
+    cevap = (text or "").strip()
+    if not cevap:
+        await update.message.reply_text("Boş geçemem, yazar mısın?")
+        return
+
+    tip = akis["tip"]
+    if tip == "kayit":
+        await _komut_kayit_isle(update, context, akis, cevap)
+        return
+
+    context.chat_data.pop("komut_akisi", None)
+    if tip == "kisi":
+        await _komut_ara(update, context, cevap)
+    elif tip == "koy":
+        await _komut_ilce(update, context, cevap)
+    elif tip == "kisi_sec":
+        await _komut_kisi_coz(update, context, akis["kind"], cevap)
+    elif tip == "kisiekle":
+        await _komut_kisiekle_baslat(update, context, cevap)
+
+
+async def _handle_komut_pick(query, context: ContextTypes.DEFAULT_TYPE, person_id: int) -> None:
+    """/borc-/tahsilat'ta "hangisi?" cevaplandı: kişi seçildi, mal sorusuna
+    geçilir (kayıt hâlâ YAPILMADI)."""
+    secim = context.chat_data.pop("komut_secim", None)
+    if not secim:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    async with SessionLocal() as session:
+        person = await session.get(Person, person_id)
+        if person is None:
+            await query.edit_message_text("Kişi bulunamadı.")
+            return
+        secili_id, secili_ad = person.id, person.full_name
+
+    await query.edit_message_reply_markup(reply_markup=None)
+    await _komut_mal_sor(query.message.reply_text, context, secim["kind"], secili_id, secili_ad)
+
+
+async def _handle_komut_new(query, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Adaylardan "+ Yeni kişi ekle": adım adım kişi ekleme akışı başlar,
+    kişi açılınca mal sorusuna dönülür (bkz. _complete_new_person)."""
+    secim = context.chat_data.pop("komut_secim", None)
+    if not secim:
+        await query.edit_message_text("Bu istek artık geçerli değil.")
+        return
+
+    prompt, keyboard = _new_person_flow_baslat(context, secim["pending"])
+    await query.edit_message_text(prompt, reply_markup=keyboard)
+
+
 # --------------------------------------------------------------- düz metin
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1320,6 +1763,13 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     running_amount = context.chat_data.get("running_amount")
     if running_amount is not None:
         await _handle_running_amount_text(update, context, running_amount, text)
+        return
+
+    # Bir "/" komutu soru sormuşsa ("Kimin borcu?", "Ne aldı, ne kadar?")
+    # gelen metin o sorunun cevabıdır (bkz. "/" komut menüsü bölümü).
+    komut_akisi = context.chat_data.get("komut_akisi")
+    if komut_akisi is not None:
+        await _handle_komut_text(update, context, komut_akisi, text)
         return
 
     # Mesaj gelir gelmez typing başlar: regex mi LLM'e mi düşeceği henüz
@@ -1761,6 +2211,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         person_id = int(data.rsplit(":", 1)[1])
         await _handle_person_pick(query, context, person_id)
         return
+    if data == "komut:new":
+        await _handle_komut_new(query, context)
+        return
+    if data.startswith("komut:pick:"):
+        await _handle_komut_pick(query, context, int(data.rsplit(":", 1)[1]))
+        return
     if data == "newperson:confirm":
         await _new_person_confirm_name(query, context)
         return
@@ -2024,6 +2480,16 @@ async def _begin_new_person_flow(query, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.edit_message_text("Bu istek artık geçerli değil.")
         return
 
+    prompt, keyboard = _new_person_flow_baslat(context, pending)
+    await query.edit_message_text(prompt, reply_markup=keyboard)
+
+
+def _new_person_flow_baslat(
+    context: ContextTypes.DEFAULT_TYPE, pending: dict
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Adım adım yeni kişi akışını başlatır, ilk sorunun metnini döner.
+    "Ekleyeyim mi? → Evet", "+ Yeni kişi ekle", /kisiekle ve /borc-/tahsilat
+    içindeki "defterde yok" hepsi bu tek girişten geçer."""
     name = _title_tr(pending.get("person_name_raw") or "")
     context.chat_data["new_person_flow"] = {
         "step": "name",
@@ -2033,8 +2499,16 @@ async def _begin_new_person_flow(query, context: ContextTypes.DEFAULT_TYPE) -> N
         "district": None,
         "pending": pending,
     }
-    prompt, keyboard = _new_person_prompt("name", name)
-    await query.edit_message_text(prompt, reply_markup=keyboard)
+    return _new_person_prompt("name", name)
+
+
+def _person_from_flow(flow: dict) -> Person:
+    return Person(
+        full_name=flow["name"],
+        phone=flow.get("phone"),
+        city=flow.get("city"),
+        district=flow.get("district"),
+    )
 
 
 async def _new_person_confirm_name(query, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2242,13 +2716,21 @@ async def _complete_new_person(msg, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     pending = flow["pending"]
+    if "komut_kind" in pending:
+        # /borc ya da /tahsilat içinde "defterde yok → Evet" ile açılan kişi:
+        # henüz kaydedilecek bir şey yok, sıradaki adım "ne aldı, ne kadar?".
+        async with SessionLocal() as session:
+            person = _person_from_flow(flow)
+            session.add(person)
+            await session.flush()
+            person_id, full_name = person.id, person.full_name
+            await session.commit()
+        await msg.reply_text(f"✅ {full_name} eklendi.")
+        await _komut_mal_sor(msg.reply_text, context, pending["komut_kind"], person_id, full_name)
+        return
+
     async with SessionLocal() as session:
-        person = Person(
-            full_name=flow["name"],
-            phone=flow.get("phone"),
-            city=flow.get("city"),
-            district=flow.get("district"),
-        )
+        person = _person_from_flow(flow)
         session.add(person)
         await session.flush()
         resolved, result = await _resolve_and_process(session, context, msg.chat_id, person, pending)
@@ -2382,19 +2864,47 @@ async def _handle_edit_confirm_yes(query, context: ContextTypes.DEFAULT_TYPE) ->
 
 # --------------------------------------------------------------- kurulum
 
+# "/" yazınca çıkan menü. Açıklamalar kısa ve teknik terimsiz: müşteri
+# "intent", "parser", "LLM" gibi kelimeleri görmez.
+_MUSTERI_KOMUTLARI = [
+    BotCommand("borc", "Borç kaydı ekle"),
+    BotCommand("tahsilat", "Tahsilat kaydı ekle"),
+    BotCommand("bakiye", "Defter toplamı (ya da: /bakiye ahmet)"),
+    BotCommand("kisi", "Kişi ara"),
+    BotCommand("koy", "İlçedeki kişiler"),
+    BotCommand("kisiekle", "Yeni kişi ekle"),
+    BotCommand("yardim", "Yardım"),
+]
+
+# Yalnızca yöneticinin menüsünde görünür (BotCommandScopeChat): müşteriye
+# komutun VARLIĞI bile sızmaz (CLAUDE.md > "Admin/müşteri ayrımı").
+_ADMIN_KOMUTLARI = [
+    BotCommand("durum", "Sistem durumu"),
+    BotCommand("yedek", "Veritabanı yedeğini gönder"),
+]
+
+
+def komut_listesi(admin: bool = False) -> list[BotCommand]:
+    komutlar = [BotCommand("start", "Başla"), *_MUSTERI_KOMUTLARI]
+    return [*komutlar, *_ADMIN_KOMUTLARI] if admin else komutlar
+
+
+def _admin_chat_idleri() -> list[int]:
+    """Yönetici menüsünün gösterileceği sohbetler: /durum'un yetkilendirdiği
+    TELEGRAM_ADMIN_IDS ve /yedek'in yetkilendirdiği TELEGRAM_ADMIN_CHAT_ID —
+    ikisi farklı ayar, biri diğerini kapsamayabilir."""
+    idler = list(settings.telegram_admin_ids_list)
+    yedek_chat = settings.telegram_admin_chat_id_int
+    if yedek_chat is not None and yedek_chat not in idler:
+        idler.append(yedek_chat)
+    return idler
+
+
 async def _set_commands(application: Application) -> None:
-    await application.bot.set_my_commands(
-        [BotCommand("start", "Başla"), BotCommand("yardim", "Yardım")],
-        scope=BotCommandScopeDefault(),
-    )
-    for admin_id in settings.telegram_admin_ids_list:
+    await application.bot.set_my_commands(komut_listesi(), scope=BotCommandScopeDefault())
+    for admin_id in _admin_chat_idleri():
         await application.bot.set_my_commands(
-            [
-                BotCommand("start", "Başla"),
-                BotCommand("yardim", "Yardım"),
-                BotCommand("durum", "Sistem durumu"),
-            ],
-            scope=BotCommandScopeChat(chat_id=admin_id),
+            komut_listesi(admin=True), scope=BotCommandScopeChat(chat_id=admin_id)
         )
 
 
@@ -2434,6 +2944,15 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("yardim", cmd_yardim))
     application.add_handler(CommandHandler("durum", cmd_durum))
+    # "/" komut menüsü (bkz. o bölüm). Sıra önemsiz: her komut kendi adıyla
+    # eşleşir, düz metin (on_text) zaten filters.COMMAND'ı dışlıyor.
+    application.add_handler(CommandHandler("yedek", cmd_yedek))
+    application.add_handler(CommandHandler("bakiye", cmd_bakiye))
+    application.add_handler(CommandHandler("kisi", cmd_kisi))
+    application.add_handler(CommandHandler("koy", cmd_koy))
+    application.add_handler(CommandHandler("borc", cmd_borc))
+    application.add_handler(CommandHandler("tahsilat", cmd_tahsilat))
+    application.add_handler(CommandHandler("kisiekle", cmd_kisiekle))
     application.add_handler(MessageHandler(filters.VOICE, on_voice))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     application.add_handler(CallbackQueryHandler(on_callback))
