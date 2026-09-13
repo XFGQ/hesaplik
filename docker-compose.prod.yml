@@ -62,6 +62,14 @@ services:
       JWT_SECRET: ${JWT_SECRET:?jwt secret gerekli}
       JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
 
+      # Açılış bildirimi (API her başladığında: deploy + reboot) ve panelin
+      # "Şimdi Yedek Al ve Telegram'a Gönder" düğmesi Telegram'a API'den
+      # gider. Burada zorunlu DEĞİL (:?): token yoksa bildirim atlanır, API
+      # yine açılır — zorunluluk bot servisinde.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+      ACILIS_BILDIRIMI: ${ACILIS_BILDIRIMI:-true}
+
     volumes:
       - ${RESTIC_REPOSITORY:-./data/backups}:${RESTIC_REPOSITORY:-/data/backups}:ro
 

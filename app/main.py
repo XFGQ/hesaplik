@@ -1,4 +1,8 @@
+import asyncio
+import contextlib
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -12,10 +16,29 @@ from app.api.auth import router as auth_router
 from app.api.chat import router as chat_router
 from app.api.routes import router
 from app.config import settings
+from app.services import acilis_bildirimi
 
 log = logging.getLogger(__name__)
 
-app = FastAPI(title="Hesaplık", version=__version__)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Açılış bildirimi (deploy + reboot, bkz. app/services/acilis_bildirimi.py)
+    ARKA PLANDA gönderilir: LLM yoklaması ve Telegram birkaç saniye sürebilir,
+    API o sırada zaten istek karşılıyor olmalı. `gonder()` fırlatmaz; görev
+    kapanışta hâlâ sürüyorsa iptal edilir."""
+    gorev = asyncio.create_task(acilis_bildirimi.gonder(), name="acilis-bildirimi")
+    try:
+        yield
+    finally:
+        if not gorev.done():
+            gorev.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await gorev
+
+
+app = FastAPI(title="Hesaplık", version=__version__, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

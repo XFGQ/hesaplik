@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.bot import main as bot_main
 from app.config import settings
 from app.models import AuditLog, Person, RawMessage, Setting, TxSource
-from app.services import llm_provider, telegram_yedek
+from app.services import durum, llm_provider, telegram_yedek
 from app.services.ledger import TxMeta, add_debt, add_payment
 from app.services.queries import TotalBalance
 from test_bot_running_format import FakeContext, FakeMessage, FakeUpdate, _reply_texts
@@ -168,8 +168,8 @@ async def test_llm_durumu_alinamazsa_rapor_yine_gelir(
 
 
 def test_bicim_llm_kapali_ve_yedek_hic_yok():
-    metin = bot_main._format_durum(
-        bot_main.DurumRaporu(
+    metin = durum.format_durum(
+        durum.DurumRaporu(
             db_ok=True, toplam=_bos_defter(),
             llm=_llm(active="none", primary="none", nvidia=False, vllm=False, ollama=False),
         )
@@ -181,7 +181,7 @@ def test_bicim_llm_kapali_ve_yedek_hic_yok():
 
 
 def test_bicim_veritabani_erisilemiyor():
-    metin = bot_main._format_durum(bot_main.DurumRaporu(db_ok=False))
+    metin = durum.format_durum(durum.DurumRaporu(db_ok=False))
 
     assert "Veritabanı: ❌ ERİŞİLEMİYOR" in metin
     assert "📊" not in metin  # uydurma sıfırlar gösterilmez
