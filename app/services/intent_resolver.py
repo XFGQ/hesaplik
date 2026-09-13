@@ -38,7 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Person, Product
 from app.services import catalog, llm_provider, saman_fiyat
-from app.services.name_utils import strip_turkish_suffix
+from app.services.name_utils import name_match_keys
 from app.services.parser import ParsedIntent
 
 # Aday listesine girmek için alt sınır (gevşek — "hiç ilgisiz" olanları eler).
@@ -171,19 +171,30 @@ async def find_person_match(
     Eşleştirmeden önce ismin SON kelimesindeki Türkçe çekim eki (iyelik,
     ayrılma, yönelme) koddan soyulur (CLAUDE.md > "KRİTİK — LLM isim
     bozuyor") — hem regex parser'dan hem LLM'den gelen isimde aynı şekilde,
-    LLM'in ek temizlemesine güvenilmez."""
-    key = strip_turkish_suffix(name_raw)
-    if not key:
+    LLM'in ek temizlemesine güvenilmez.
+
+    Ek soyma yanılabilir ("harun" -> "har"), bu yüzden isim yazıldığı
+    hâliyle de denenir (name_match_keys): birebir eşleşme iki anahtardan
+    birine, benzerlik puanı ikisinin YÜKSEĞİNE bakar. İki anahtar iki FARKLI
+    kişiyle birebir eşleşirse ("aliye": hem "Ali" hem "Aliye" kayıtlı)
+    otomatik seçilmez, ikisi de aday olarak sorulur."""
+    keys = name_match_keys(name_raw)
+    if not keys:
         return None, []
+    key = keys[0]
 
-    exact_stmt = select(Person).where(
-        func.lower(Person.full_name) == key, Person.is_active.is_(True)
+    exact_stmt = (
+        select(Person)
+        .where(func.lower(Person.full_name).in_(keys), Person.is_active.is_(True))
+        .order_by(Person.id)
     )
-    exact = (await session.execute(exact_stmt)).scalar_one_or_none()
-    if exact is not None:
-        return exact, []
+    exact = list((await session.execute(exact_stmt)).scalars().all())
+    if len(exact) == 1:
+        return exact[0], []
+    if exact:
+        return None, exact
 
-    score = func.similarity(func.lower(Person.full_name), key)
+    score = func.greatest(*(func.similarity(func.lower(Person.full_name), k) for k in keys))
     stmt = (
         select(Person, score.label("score"))
         .where(Person.is_active.is_(True), score > SIMILARITY_CANDIDATE)

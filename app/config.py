@@ -109,7 +109,17 @@ class Settings(BaseSettings):
 
     @property
     def telegram_admin_ids_list(self) -> list[int]:
-        return [int(x.strip()) for x in self.telegram_admin_ids.split(",") if x.strip()]
+        """Sayı olmayan parça ATLANIR (fail-closed): tek bir hatalı değer
+        eskiden ValueError fırlatıp /durum'u çağıran handler'ı düşürüyordu.
+        Telegram chat id'si int gelir; burası da int döner ki `in` kontrolü
+        str/int uyuşmazlığına takılmasın."""
+        idler = []
+        for parca in self.telegram_admin_ids.split(","):
+            try:
+                idler.append(int(parca.strip()))
+            except ValueError:
+                continue
+        return idler
 
     @property
     def telegram_admin_chat_id_int(self) -> int | None:

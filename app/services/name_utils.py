@@ -173,3 +173,19 @@ def strip_turkish_suffix(name: str) -> str:
         return norm
     words[-1] = _strip_word(words[-1])
     return " ".join(words)
+
+
+def name_match_keys(name: str) -> list[str]:
+    """Kişi eşleştirmede denenecek anahtarlar: önce eki soyulmuş hâl, sonra
+    (farklıysa) bağlam/hitap ayıklanmış ama eki SOYULMAMIŞ hâl.
+
+    Ek soyma kelimenin gerçekten çekimli olduğunu bilemez: "harun"un sonu
+    iyelik eki "-un"a benzer ve "har"a iner, "Harun Aydemir" hiç aday
+    çıkmaz. Yazıldığı hâliyle de denenince gerçek isim kaybolmaz; soyulmuş
+    anahtar ise "ahmetin" -> "ahmet" gibi gerçek çekimleri yakalamaya devam
+    eder."""
+    stripped = strip_turkish_suffix(name)
+    if not stripped:
+        return []
+    raw = strip_honorific(strip_context_words(name))
+    return [stripped, raw] if raw and raw != stripped else [stripped]
