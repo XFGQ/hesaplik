@@ -109,6 +109,7 @@ YARDIM_METNI = (
     '/borc — borç kaydı, adım adım sorar\n'
     '/tahsilat — tahsilat kaydı, adım adım sorar\n'
     '/bakiye — defter toplamı · /bakiye ahmet — kişinin bakiyesi\n'
+    '/listele — tüm kişiler ve bakiyeleri\n'
     '/kisi ahmet — kişi ara\n'
     '/koy bergama — ilçedeki kişiler\n'
     '/kisiekle — yeni kişi ekle'
@@ -1263,7 +1264,11 @@ async def _handle_running_fix(query, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 def _is_admin(chat_id: int | None) -> bool:
-    return chat_id is not None and chat_id in settings.telegram_admin_ids_list
+    """Yönetici = TELEGRAM_ADMIN_IDS ∪ TELEGRAM_ADMIN_CHAT_ID — "/" menüsünde
+    /durum'u gösteren kümeyle (_admin_chat_idleri) AYNI. Eskiden yalnızca
+    TELEGRAM_ADMIN_IDS'e bakılıyordu: yalnızca TELEGRAM_ADMIN_CHAT_ID'si
+    tanımlı yönetici /durum'u menüde görüyor ama komut sessiz kalıyordu."""
+    return chat_id is not None and chat_id in _admin_chat_idleri()
 
 
 # --------------------------------------------------------------- komutlar
@@ -1278,8 +1283,12 @@ async def cmd_yardim(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_durum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    if not _is_admin(chat.id if chat else None):
-        return  # yetkisiz kişiye komutun varlığı bile sızmasın
+    chat_id = chat.id if chat else None
+    if not _is_admin(chat_id):
+        # Yetkisiz kişiye komutun varlığı bile sızmasın; iz yalnızca logda
+        # (yanlış yapılandırmayı teşhis etmek için).
+        logger.warning("yetkisiz /durum denemesi: chat_id=%s", chat_id)
+        return
 
     async with SessionLocal() as session:
         total = (await session.execute(select(func.count(RawMessage.id)))).scalar_one()
@@ -1426,6 +1435,15 @@ async def cmd_bakiye(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await _komut_intent(update, context, ParsedIntent(kind="total_balance"))
         return
     await _komut_intent(update, context, ParsedIntent(kind="balance_query", person_name=isim))
+
+
+# ---- /listele (DİREKT)
+
+async def cmd_listele(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Tüm kişiler + bakiyeleri — "kişileri listele" yazmakla aynı list_all
+    niyeti ve aynı çıktı."""
+    _komut_temizle(context)
+    await _komut_intent(update, context, ParsedIntent(kind="list_all"))
 
 
 # ---- /kisi ve /koy (argümanlıysa DİREKT, argümansızsa tek soru)
@@ -2870,6 +2888,7 @@ _MUSTERI_KOMUTLARI = [
     BotCommand("borc", "Borç kaydı ekle"),
     BotCommand("tahsilat", "Tahsilat kaydı ekle"),
     BotCommand("bakiye", "Defter toplamı (ya da: /bakiye ahmet)"),
+    BotCommand("listele", "Tüm kişileri ve bakiyelerini listele"),
     BotCommand("kisi", "Kişi ara"),
     BotCommand("koy", "İlçedeki kişiler"),
     BotCommand("kisiekle", "Yeni kişi ekle"),
@@ -2948,6 +2967,7 @@ def build_application() -> Application:
     # eşleşir, düz metin (on_text) zaten filters.COMMAND'ı dışlıyor.
     application.add_handler(CommandHandler("yedek", cmd_yedek))
     application.add_handler(CommandHandler("bakiye", cmd_bakiye))
+    application.add_handler(CommandHandler("listele", cmd_listele))
     application.add_handler(CommandHandler("kisi", cmd_kisi))
     application.add_handler(CommandHandler("koy", cmd_koy))
     application.add_handler(CommandHandler("borc", cmd_borc))

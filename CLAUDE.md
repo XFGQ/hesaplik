@@ -85,7 +85,7 @@ arkasındaki karar gerekçesi ilgili bölümde yazılıdır.
 - Uzun süren işlemlerde "yazıyor..." göstergesi; admin komutları
   (`/engine`, `/queue`, `/logs`) yalnızca `TELEGRAM_ADMIN_IDS` için.
 - **"/" komut menüsü:** `/borc`, `/tahsilat`, `/kisiekle` adım adım sorar;
-  `/bakiye`, `/kisi`, `/koy` tek adımda çalışır; `/yedek` (yalnızca yönetici)
+  `/bakiye`, `/listele`, `/kisi`, `/koy` tek adımda çalışır; `/yedek` (yalnızca yönetici)
   veritabanını Telegram'a gönderir. Hepsi mevcut akışları tetikler.
 
 ### Web Uygulaması
@@ -542,6 +542,12 @@ Kurallar:
 - Para yazan hiçbir işlemde "muhtemelen bu kişidir" varsayımı yapılmaz.
   Şüphe varsa sor. Yanlış kişiye borç yazmak, bir soru sormaktan çok daha
   pahalıdır.
+- **Ek soyma yanılabilir, isim ham hâliyle de denenir** (2026-09-13):
+  "harun"un sonu iyelik "-un"una benzer, "har"a soyulup "Harun Aydemir"
+  hiç aday çıkmıyordu. `name_utils.name_match_keys` soyulmuş + ham iki
+  anahtar verir; birebir eşleşme ikisinden birine, benzerlik puanı
+  YÜKSEĞİNE bakar. İki anahtar iki farklı kişiye birebir uyarsa ("aliye":
+  hem Ali hem Aliye) otomatik seçilmez, sorulur.
 - Bu mantık testlerle korunsun: "furkan yılmaz vs furkan duman" senaryosu
   ve "tek kelime iki adaya uyuyor" senaryosu tests/test_intent_resolver.py'de
   bulunmalı.
@@ -957,8 +963,12 @@ KENDİ defter mantıklarını kurmaz, mevcut olanı TETİKLER: kişi eşleştirm
   (`telegram_yedek.yedek_gonder`). YALNIZCA `TELEGRAM_ADMIN_CHAT_ID`;
   başkasına "Bu komut sadece yönetici içindir." denir (/durum'un sessizliğinden
   farklı — komut menüde zaten yalnızca yöneticide görünüyor). Chat id tanımsızsa
-  kimseye çalışmaz (fail-closed). Her deneme audit_log'a yazılır.
+  kimseye çalışmaz (fail-closed). Her deneme audit_log'a yazılır. pg_dump
+  imajdaki `postgresql-client`tan gelir (Dockerfile son aşama; trixie → 17,
+  Postgres 16 sunucuyu döker — pg_dump sunucudan eski olamaz).
 - `/bakiye` — defter toplamı; `/bakiye ahmet` — kişinin bakiye tablosu.
+- `/listele` — tüm kişiler + bakiyeleri ("kişileri listele" ile aynı
+  `list_all` niyeti, aynı çıktı).
 - `/kisi ahmet`, `/koy bergama` — mevcut arama / ilçe listesi.
 
 **ADIM ADIM (eksik bilgiyi sorar):** `/borc`, `/tahsilat`, `/kisiekle` ve
@@ -991,10 +1001,14 @@ Yeni bir komut yarım kalmış eski komut sorusunu düşürür (`_komut_temizle`
 "/borc" deyip "/bakiye" yazanın sonraki mesajı yanlış akışa gitmez.
 
 **Menü kapsamı:** müşteriye `/start`, `/borc`, `/tahsilat`, `/bakiye`,
-`/kisi`, `/koy`, `/kisiekle`, `/yardim`; yönetici sohbetlerine ayrıca
-`/durum` ve `/yedek` (`BotCommandScopeChat`) — komutun VARLIĞI müşteriye
-sızmaz. Yönetici sohbetleri = `TELEGRAM_ADMIN_IDS` ∪ `TELEGRAM_ADMIN_CHAT_ID`
-(ikisi farklı ayar, biri diğerini kapsamayabilir).
+`/listele`, `/kisi`, `/koy`, `/kisiekle`, `/yardim`; yönetici sohbetlerine
+ayrıca `/durum` ve `/yedek` (`BotCommandScopeChat`) — komutun VARLIĞI
+müşteriye sızmaz. Yönetici sohbetleri = `TELEGRAM_ADMIN_IDS` ∪
+`TELEGRAM_ADMIN_CHAT_ID` (ikisi farklı ayar, biri diğerini kapsamayabilir).
+`/durum`'un yetkisi (`_is_admin`) de AYNI birleşimdir: eskiden yalnızca
+`TELEGRAM_ADMIN_IDS`e bakıyordu, menüde /durum'u gören yönetici sessizlikle
+karşılaşıyordu. Yetkisiz /durum kullanıcıya sessiz kalır, logda
+"yetkisiz /durum denemesi: chat_id=X" iz bırakır.
 
 **Panelde aynı iş:** `POST /api/admin/yedek-gonder` (JWT) — "Şimdi Yedek Al
 ve Telegram'a Gönder" düğmesi. Geri yüklemenin aksine host'a iş devredilmez;

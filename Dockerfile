@@ -44,8 +44,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /srv
 
 # PDF raporlar DejaVu Sans ister (app/services/report.py); slim imajda font yok.
+# postgresql-client: /yedek ve panelden "Telegram'a gönder" pg_dump'ı buradan
+# çalıştırır (app/services/telegram_yedek.py). pg_dump sunucudan ESKİ olamaz
+# (döküm reddedilir); trixie tabanı 17 getirir, Postgres 16'yı sorunsuz döker.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-dejavu-core \
+    && apt-get install -y --no-install-recommends fonts-dejavu-core postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Yedek listeleme (GET /api/backups) için. Depoya YAZMAZ: depo salt okunur

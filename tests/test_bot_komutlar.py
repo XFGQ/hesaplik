@@ -442,3 +442,104 @@ async def test_yeni_komut_yarim_kalan_soruyu_dusurur(session, patch_session_loca
 
     await bot_main.cmd_bakiye(FakeUpdate(FakeMessage(text="/bakiye")), _ayni_sohbet(context))
     assert "komut_akisi" not in context.chat_data
+
+
+# ---------------------------------------------------------------- /bakiye harun (ek soyma)
+
+
+async def test_bakiye_komutu_ek_gibi_biten_ismi_bulur(session, patch_session_local):
+    """"harun" "-un" ekiyle bitiyor gibi görünür; eskiden "har"a soyulup
+    "defterde yok" deniyordu. Düz metinle ("harun bakiye") AYNI sonuç: tek
+    aday ama benzerlik güçlü değil, "hangisi?" sorulur — otomatik seçilmez."""
+    session.add(Person(full_name="Harun Aydemir"))
+    await session.commit()
+
+    komut = FakeUpdate(FakeMessage(text="/bakiye harun"))
+    await bot_main.cmd_bakiye(komut, KomutContext("harun"))
+
+    assert await _son_cevap(komut) == "Hangisini demek istedin?"
+    markup = komut.message.reply_text.await_args_list[-1].kwargs["reply_markup"]
+    assert "Harun Aydemir" in str(markup)
+
+
+async def test_bakiye_komutu_ve_duz_metin_ayni_cevabi_verir(session, patch_session_local):
+    session.add(Person(full_name="Harun Aydemir"))
+    await session.commit()
+
+    komut = FakeUpdate(FakeMessage(text="/bakiye harun"))
+    await bot_main.cmd_bakiye(komut, KomutContext("harun"))
+
+    metin = FakeUpdate(FakeMessage(text="harun bakiye"))
+    await bot_main.on_text(metin, FakeContext())
+
+    assert _reply_texts(komut) == _reply_texts(metin)
+
+
+# ---------------------------------------------------------------- /listele
+
+
+async def test_listele_tum_kisileri_bakiyeleriyle_listeler(session, patch_session_local, ahmet):
+    session.add(Person(full_name="Veli Demir"))
+    await session.commit()
+
+    update = FakeUpdate(FakeMessage(text="/listele"))
+    await bot_main.cmd_listele(update, KomutContext())
+
+    cevap = await _son_cevap(update)
+    assert "Ahmet Yılmaz" in cevap and "Veli Demir" in cevap
+
+
+async def test_listele_duz_metindeki_kisileri_listele_ile_ayni(session, patch_session_local, ahmet):
+    komut = FakeUpdate(FakeMessage(text="/listele"))
+    await bot_main.cmd_listele(komut, KomutContext())
+
+    metin = FakeUpdate(FakeMessage(text="kişileri listele"))
+    await bot_main.on_text(metin, FakeContext())
+
+    assert _reply_texts(komut) == _reply_texts(metin)
+
+
+def test_listele_menude_ve_yardimda():
+    assert "listele" in [c.command for c in bot_main.komut_listesi()]
+    assert "/listele" in bot_main.YARDIM_METNI
+
+
+# ---------------------------------------------------------------- /durum (admin)
+
+
+async def test_durum_yalnizca_admin_chat_id_tanimli_yoneticide_calisir(
+    session, patch_session_local, monkeypatch
+):
+    """Eskiden _is_admin yalnızca TELEGRAM_ADMIN_IDS'e bakıyordu: menüde
+    /durum'u gören (TELEGRAM_ADMIN_CHAT_ID) yönetici sessizlikle karşılaşıyordu."""
+    monkeypatch.setattr(settings, "telegram_admin_ids", "")
+    monkeypatch.setattr(settings, "telegram_admin_chat_id", str(ADMIN_CHAT))
+
+    update = FakeUpdate(FakeMessage(chat_id=ADMIN_CHAT, text="/durum"))
+    await bot_main.cmd_durum(update, KomutContext())
+
+    assert "Toplam ham mesaj" in await _son_cevap(update)
+
+
+async def test_durum_admin_ids_ile_de_calisir(session, patch_session_local, monkeypatch):
+    monkeypatch.setattr(settings, "telegram_admin_ids", f" 11 , {ADMIN_CHAT} ")
+    monkeypatch.setattr(settings, "telegram_admin_chat_id", "")
+
+    update = FakeUpdate(FakeMessage(chat_id=ADMIN_CHAT, text="/durum"))
+    await bot_main.cmd_durum(update, KomutContext())
+
+    assert "Toplam ham mesaj" in await _son_cevap(update)
+
+
+async def test_durum_yetkisizde_sessiz_kalir_ama_loga_yazar(
+    session, patch_session_local, monkeypatch, caplog
+):
+    monkeypatch.setattr(settings, "telegram_admin_ids", "11")
+    monkeypatch.setattr(settings, "telegram_admin_chat_id", str(ADMIN_CHAT))
+
+    update = FakeUpdate(FakeMessage(chat_id=999, text="/durum"))
+    with caplog.at_level("WARNING", logger=bot_main.logger.name):
+        await bot_main.cmd_durum(update, KomutContext())
+
+    assert _reply_texts(update) == []  # komutun varlığı sızmaz
+    assert "yetkisiz /durum denemesi: chat_id=999" in caplog.text

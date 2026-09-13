@@ -647,3 +647,46 @@ async def test_total_balance_kisi_gerektirmez(session):
     assert resolved.status == ResolutionStatus.READY
     assert resolved.kind == "total_balance"
     assert resolved.person is None
+
+
+# ---------------------------------------------------------------- ek soyma yanılgısı
+# "harun" iyelik eki "-un" ile bitiyor gibi görünür ve "har"a soyulurdu;
+# "Harun Aydemir" pg_trgm'de hiç aday çıkmıyordu (Telegram "/bakiye harun").
+# İsim yazıldığı hâliyle de denenir (name_utils.name_match_keys).
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def harun_aydemir(session):
+    p = Person(full_name="Harun Aydemir")
+    session.add(p)
+    await session.flush()
+    return p
+
+
+async def test_ek_gibi_biten_isim_soyulup_kaybolmaz(session, harun_aydemir):
+    resolved = await resolve(session, ParsedIntent(kind="balance_query", person_name="harun"))
+
+    # Benzerlik 0.43: aday bulunur ama SIMILARITY_STRONG altında — otomatik
+    # seçilmez, "hangisi?" diye sorulur (kişi eşleştirme güvenliği).
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert resolved.person_candidates == [harun_aydemir]
+
+
+async def test_gercek_cekim_eki_hala_soyulur(session, harun_aydemir):
+    resolved = await resolve(
+        session, ParsedIntent(kind="balance_query", person_name="harun aydemirin")
+    )
+
+    assert resolved.status == ResolutionStatus.READY
+    assert resolved.person == harun_aydemir
+
+
+async def test_soyulmus_ve_ham_anahtar_iki_farkli_kisiye_birebir_uyarsa_sorar(session):
+    ali, aliye = Person(full_name="Ali"), Person(full_name="Aliye")
+    session.add_all([ali, aliye])
+    await session.flush()
+
+    resolved = await resolve(session, ParsedIntent(kind="balance_query", person_name="aliye"))
+
+    assert resolved.status == ResolutionStatus.NEEDS_CONFIRMATION
+    assert set(resolved.person_candidates) == {ali, aliye}
