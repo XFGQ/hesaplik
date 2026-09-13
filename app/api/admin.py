@@ -545,7 +545,7 @@ async def yedek_gonder(
         raise HTTPException(503, "Telegram yedeği kapalı: TELEGRAM_ADMIN_CHAT_ID tanımlı değil.")
 
     sonuc = await telegram_yedek.yedek_gonder(chat_id)
-    telegram_yedek.denetim_kaydi(session, f"admin-panel:{username}", sonuc)
+    await telegram_yedek.sonucu_kaydet(session, f"admin-panel:{username}", sonuc)
     await session.commit()
 
     if sonuc.ok:

@@ -92,6 +92,7 @@ fi
 
 baslik_zaman="$(TZ="$ZAMAN_DILIMI" date +'%d.%m.%Y %H:%M')"
 dosya_zaman="$(TZ="$ZAMAN_DILIMI" date +'%Y-%m-%d_%H%M')"
+son_yedek_utc="$(date -u +'%Y-%m-%dT%H:%M:%S+00:00')"
 gecici="$(mktemp -d "${TMPDIR:-/tmp}/hesaplik-telegram-yedek.XXXXXX")"
 trap 'rm -rf "$gecici"' EXIT
 
@@ -184,3 +185,12 @@ if ! telegram_api sendDocument \
 fi
 
 log "OK gönderildi: $(basename "$dosya") (${boyut_yazi})"
+
+# /durum'un "Son yedek" satırı (app/services/telegram_yedek.py > SON_YEDEK_KEY).
+# Yedek zaten gitti: zaman yazılamazsa yalnızca log düşülür, hata sayılmaz.
+if ! docker compose exec -T db psql -v ON_ERROR_STOP=1 -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -c "INSERT INTO settings (key, value, updated_at) VALUES ('son_yedek_zamani', '${son_yedek_utc}', now())
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()" \
+    >/dev/null 2>"$gecici/psql.err"; then
+  log "UYARI son yedek zamanı yazılamadı: $(tail -n1 "$gecici/psql.err")"
+fi

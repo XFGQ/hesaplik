@@ -38,6 +38,8 @@ import contextlib
 import html
 import logging
 import time
+from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import func, select
@@ -87,6 +89,7 @@ from app.services.queries import (
     PersonTransactionRow,
     TotalBalance,
     list_person_transactions,
+    total_balance,
 )
 from app.services.telegram_intake import save_raw_message
 
@@ -1290,24 +1293,114 @@ async def cmd_durum(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.warning("yetkisiz /durum denemesi: chat_id=%s", chat_id)
         return
 
-    async with SessionLocal() as session:
-        total = (await session.execute(select(func.count(RawMessage.id)))).scalar_one()
-        unprocessed = (
-            await session.execute(
-                select(func.count(RawMessage.id)).where(RawMessage.processed_at.is_(None))
-            )
-        ).scalar_one()
-        db_ok = True
-        try:
-            await session.execute(select(1))
-        except Exception:
-            db_ok = False
+    async with SessionLocal() as session, typing_action(context.bot, chat_id):
+        rapor = await _durum_topla(session)
+    await update.message.reply_text(_format_durum(rapor))
 
-    await update.message.reply_text(
-        f"Toplam ham mesaj: {total}\n"
-        f"İşlenmemiş: {unprocessed}\n"
-        f"Veritabanı: {'sağlıklı' if db_ok else 'ERİŞİLEMİYOR'}"
+
+_LLM_ADLARI = {"nvidia": "NVIDIA", "vllm": "vLLM", "ollama": "Ollama", "none": "yok"}
+_LLM_TERCIH_ADLARI = {**_LLM_ADLARI, "auto": "otomatik", "none": "kapalı"}
+
+
+@dataclass(slots=True)
+class DurumRaporu:
+    """/durum'un anlık tablosu. Toplama (_durum_topla) ile biçim
+    (_format_durum) ayrı: biçim veritabanısız test edilir."""
+
+    db_ok: bool
+    llm: llm_provider.LLMStatus | None = None
+    toplam: TotalBalance | None = None
+    son_yedek: datetime | None = None
+    mesaj_toplam: int = 0
+    kayit_olusturan: int = 0
+
+    @property
+    def sorgu_diger(self) -> int:
+        return self.mesaj_toplam - self.kayit_olusturan
+
+
+async def _durum_topla(session: AsyncSession) -> DurumRaporu:
+    try:
+        await session.execute(select(1))
+    except Exception:
+        logger.warning("/durum: veritabanına erişilemedi", exc_info=True)
+        return DurumRaporu(db_ok=False)
+
+    # processed_at YALNIZCA deftere kayıt yazan mesajda dolar
+    # (message_processor.record_resolved). Sorgu, liste, "hangisi?" teyidi ve
+    # anlaşılmayan mesajda tasarım gereği boş kalır — "işlenmemiş" DEĞİLDİR.
+    # count(kolon) yalnızca dolu satırları sayar.
+    mesaj_toplam, kayit_olusturan = (
+        await session.execute(
+            select(func.count(RawMessage.id), func.count(RawMessage.processed_at))
+        )
+    ).one()
+    rapor = DurumRaporu(
+        db_ok=True,
+        toplam=await total_balance(session),
+        son_yedek=await telegram_yedek.son_yedek_oku(session),
+        mesaj_toplam=mesaj_toplam,
+        kayit_olusturan=kayit_olusturan,
     )
+    # Üç katman da yoklanır (get_status, 10 sn önbellekli). Yoklama patlarsa
+    # rapor yine gelir, yalnızca LLM bölümü "okunamadı" der.
+    try:
+        rapor.llm = await llm_provider.get_status(session)
+    except Exception:
+        logger.warning("/durum: LLM durumu alınamadı", exc_info=True)
+    return rapor
+
+
+def _format_durum(r: DurumRaporu) -> str:
+    """Yalnızca yöneticiye gider; katman adları (NVIDIA/vLLM) burada serbest."""
+    satirlar = [
+        "🩺 Sistem durumu",
+        f"Veritabanı: {'✅ sağlıklı' if r.db_ok else '❌ ERİŞİLEMİYOR'}",
+        "Telegram botu: ✅ çalışıyor",
+    ]
+    if not r.db_ok or r.toplam is None:
+        satirlar += ["", "Veritabanı olmadan defter, LLM tercihi, yedek ve mesaj bilgisi okunamaz."]
+        return "\n".join(satirlar)
+
+    t = r.toplam
+    satirlar += [
+        "",
+        "📊 Cari Hesap",
+        f"Kişi: {t.kisi_sayisi}",
+        f"Toplam alacak: {_fmt_try(t.toplam_alacak)} TL ({t.borclu_sayisi} kişi sana borçlu)",
+        f"Toplam borç: {_fmt_try(t.toplam_borc)} TL ({t.alacakli_sayisi} kişi senden alacaklı)",
+        f"Hesabı sıfır: {t.kisi_sayisi - t.borclu_sayisi - t.alacakli_sayisi} kişi",
+        "",
+        "🤖 LLM",
+    ]
+    if r.llm is None:
+        satirlar.append("Durum okunamadı")
+    else:
+        katmanlar = (("nvidia", r.llm.nvidia), ("vllm", r.llm.vllm), ("ollama", r.llm.ollama))
+        satirlar += [
+            f"Aktif: {_LLM_ADLARI.get(r.llm.active, r.llm.active)} "
+            f"(tercih: {_LLM_TERCIH_ADLARI.get(r.llm.primary, r.llm.primary)})",
+            " · ".join(f"{'✅' if s.ok else '❌'} {_LLM_ADLARI[ad]}" for ad, s in katmanlar),
+        ]
+
+    son_yedek = (
+        f"{r.son_yedek.astimezone(telegram_yedek.ZAMAN_DILIMI):%d.%m.%Y %H:%M}"
+        if r.son_yedek is not None
+        else "henüz kayıt yok"
+    )
+    saatler = telegram_yedek.OTOMATIK_SAATLER
+    satirlar += [
+        "",
+        "💾 Yedekleme",
+        f"Son yedek: {son_yedek}",
+        f"Otomatik: günde {len(saatler)} kez ({', '.join(saatler)})",
+        "",
+        "📨 Mesajlar",
+        f"Toplam ham mesaj: {r.mesaj_toplam}",
+        f"Kayıt oluşturan: {r.kayit_olusturan}",
+        f"Sorgu/diğer: {r.sorgu_diger}",
+    ]
+    return "\n".join(satirlar)
 
 
 # --------------------------------------------------------------- "/" komut menüsü
@@ -1413,7 +1506,7 @@ async def cmd_yedek(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         sonuc = await telegram_yedek.yedek_gonder(admin_chat)
 
     async with SessionLocal() as session:
-        telegram_yedek.denetim_kaydi(session, f"telegram:{chat_id}", sonuc)
+        await telegram_yedek.sonucu_kaydet(session, f"telegram:{chat_id}", sonuc)
         await session.commit()
 
     # Başarılıysa dosyanın kendisi (başlığında tarih + boyut) zaten geldi,

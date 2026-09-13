@@ -28,7 +28,7 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -37,7 +37,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import AuditLog
+from app.models import AuditLog, Setting
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,16 @@ PROJE_KOKU = Path(__file__).resolve().parents[2]
 
 AUDIT_ACTION = "telegram_yedek"
 
+# /durum'un "Son yedek" satırı bu ayardan okunur (ISO 8601, UTC). Başarılı her
+# gönderimden sonra İKİ yer yazar: bu modül (/yedek, panel düğmesi) ve host
+# betiği scripts/telegram-yedek.sh (otomatik 04:00/06:00). Yalnızca biri
+# yazsaydı otomatik yedekler /durum'da hiç görünmezdi.
+SON_YEDEK_KEY = "son_yedek_zamani"
+
+# Otomatik gönderim saatleri (Europe/Istanbul) — /durum'da statik bilgi.
+# deployment/hesaplik-telegram-yedek.timer ile AYNI olmalı (test kilitler).
+OTOMATIK_SAATLER = ("04:00", "06:00")
+
 # Aynı süreçte iki yedek üst üste binmesin (çift tıklama, /yedek + düğme).
 _kilit = asyncio.Lock()
 
@@ -73,6 +83,7 @@ class YedekSonucu:
     durum: str
     dosya_adi: str | None = None
     boyut: int | None = None
+    zaman: datetime | None = None  # yalnızca başarıda: dökümün alındığı an
 
 
 def boyut_yazisi(bayt: int) -> str:
@@ -231,13 +242,39 @@ async def yedek_gonder(chat_id: int) -> YedekSonucu:
 
     log.info("Telegram yedeği gönderildi: %s (%s bayt)", dosya_adi, boyut)
     return YedekSonucu(
-        True, f"Gönderildi: {dosya_adi} ({boyut_yazisi(boyut)})", "gonderildi", dosya_adi, boyut
+        True, f"Gönderildi: {dosya_adi} ({boyut_yazisi(boyut)})", "gonderildi", dosya_adi, boyut,
+        simdi,
     )
 
 
-def denetim_kaydi(session: AsyncSession, actor: str, sonuc: YedekSonucu) -> None:
+async def son_yedek_yaz(session: AsyncSession, zaman: datetime) -> None:
+    deger = zaman.astimezone(timezone.utc).isoformat(timespec="seconds")
+    ayar = await session.get(Setting, SON_YEDEK_KEY)
+    if ayar is None:
+        session.add(Setting(key=SON_YEDEK_KEY, value=deger))
+    else:
+        ayar.value = deger
+        ayar.updated_at = datetime.now(timezone.utc)
+    await session.flush()
+
+
+async def son_yedek_oku(session: AsyncSession) -> datetime | None:
+    """Hiç yedek gönderilmemişse ya da değer bozuksa None (/durum "henüz
+    kayıt yok" der, çökmez)."""
+    ayar = await session.get(Setting, SON_YEDEK_KEY)
+    if ayar is None:
+        return None
+    try:
+        zaman = datetime.fromisoformat(ayar.value.strip())
+    except ValueError:
+        return None
+    return zaman if zaman.tzinfo else zaman.replace(tzinfo=timezone.utc)
+
+
+async def sonucu_kaydet(session: AsyncSession, actor: str, sonuc: YedekSonucu) -> None:
     """Tüm veritabanı dışarı (Telegram'a) çıktığı için kim/ne zaman izi
-    tutulur — başarısız denemeler de. Commit çağıranın işi."""
+    tutulur — başarısız denemeler de. Başarıdaysa son yedek zamanı da
+    yazılır (/durum). Commit çağıranın işi."""
     session.add(
         AuditLog(
             actor=actor,
@@ -247,3 +284,5 @@ def denetim_kaydi(session: AsyncSession, actor: str, sonuc: YedekSonucu) -> None
             after={"durum": sonuc.durum, "mesaj": sonuc.mesaj, "boyut": sonuc.boyut},
         )
     )
+    if sonuc.ok:
+        await son_yedek_yaz(session, sonuc.zaman or datetime.now(timezone.utc))

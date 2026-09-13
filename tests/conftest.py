@@ -162,4 +162,7 @@ async def session(engine):
                   "price_history", "product_aliases", "products",
                   "person_aliases", "persons"):
             await s.execute(text(f"TRUNCATE {t} RESTART IDENTITY CASCADE"))
+        # settings tohum satırları (schema.sql) yüzünden TRUNCATE edilmez; tohumu
+        # olmayan, testlerin commit ettiği anahtar tek tek silinir.
+        await s.execute(text("DELETE FROM settings WHERE key = 'son_yedek_zamani'"))
         await s.commit()

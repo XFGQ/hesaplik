@@ -84,6 +84,8 @@ arkasındaki karar gerekçesi ilgili bölümde yazılıdır.
 - Tek mesajda birden çok işlem: kalıcı `pending_requests` kuyruğu ile sırayla.
 - Uzun süren işlemlerde "yazıyor..." göstergesi; admin komutları
   (`/engine`, `/queue`, `/logs`) yalnızca `TELEGRAM_ADMIN_IDS` için.
+- **`/durum` yönetici raporu:** veritabanı, bot, 📊 cari hesap özeti, 🤖 LLM
+  katmanları, 💾 son yedek zamanı, 📨 mesaj istatistiği.
 - **"/" komut menüsü:** `/borc`, `/tahsilat`, `/kisiekle` adım adım sorar;
   `/bakiye`, `/listele`, `/kisi`, `/koy` tek adımda çalışır; `/yedek` (yalnızca yönetici)
   veritabanını Telegram'a gönderir. Hepsi mevcut akışları tetikler.
@@ -971,6 +973,29 @@ KENDİ defter mantıklarını kurmaz, mevcut olanı TETİKLER: kişi eşleştirm
   `list_all` niyeti, aynı çıktı).
 - `/kisi ahmet`, `/koy bergama` — mevcut arama / ilçe listesi.
 
+**`/durum` (yalnızca yönetici, yetkisize sessiz):** tek mesajlık rapor —
+veritabanı ✅/❌, bot "çalışıyor", 📊 Cari Hesap (`queries.total_balance`:
+kişi, toplam alacak/borç, borçlu/alacaklı/sıfır sayısı), 🤖 LLM
+(`llm_provider.get_status`: aktif katman + tercih, NVIDIA/vLLM/Ollama
+✅/❌), 💾 Yedekleme (son yedek + statik "günde 2 kez (04:00, 06:00)"), 📨
+Mesajlar. Toplama `_durum_topla`, biçim `_format_durum` (DB'siz test edilir).
+LLM yoklaması patlarsa rapor yine gelir; DB yoksa yalnızca ilk iki satır.
+
+**"İşlenmemiş" etiketi KALDIRILDI.** `raw_messages.processed_at` yalnızca
+deftere KAYIT yazan mesajda dolar (`record_resolved`); sorgu, liste,
+"hangisi?" teyidi ve anlaşılmayan mesajda tasarım gereği boş kalır. Eskiden
+boş olanlar "İşlenmemiş: 111" diye gösterilip "asılı kalmış iş" izlenimi
+veriyordu. Artık: "Kayıt oluşturan" (dolu) ve "Sorgu/diğer" (boş). Gerçekten
+asılı/hatalı mesaj ayrımı ayrı bir metrik ister, henüz yok.
+
+**Son yedek zamanı** `settings.son_yedek_zamani`nda (ISO 8601, UTC). Başarılı
+her gönderimde iki yer yazar: `telegram_yedek.sonucu_kaydet` (/yedek + panel
+düğmesi, audit ile aynı işlemde) ve host betiği `scripts/telegram-yedek.sh`
+(otomatik 04:00/06:00 — betik yazmasa otomatik yedekler /durum'da görünmezdi;
+yazılamazsa yalnızca log, yedek zaten gitmiştir). Başarısız deneme zamanı
+değiştirmez. Statik saatler `telegram_yedek.OTOMATIK_SAATLER`, systemd
+timer'la uyumu testle kilitli.
+
 **ADIM ADIM (eksik bilgiyi sorar):** `/borc`, `/tahsilat`, `/kisiekle` ve
 argümansız `/kisi`, `/koy`. Bekleyen soru `chat_data["komut_akisi"]`nda durur,
 cevabını `on_text` yakalar (diğer bekleyen akışlardan sonra, düz metin
@@ -1016,7 +1041,8 @@ pg_dump container'dan çalışır, sonuç panelde anında görünür (409 meşgu
 503 yapılandırma yok, 502 döküm/Telegram hatası). Restic deposuna snapshot
 EKLEMEZ, o yüzden yedek listesi tazelenmez.
 
-Testler: `tests/test_bot_komutlar.py`, `tests/test_admin_yedek.py`.
+Testler: `tests/test_bot_komutlar.py`, `tests/test_bot_durum.py`,
+`tests/test_admin_yedek.py`.
 
 ### Bot "yazıyor..." göstergesi
 
@@ -1685,6 +1711,8 @@ yanında çalışır.
   sayesinde schema.sql'in kurduğu taze volume'e de yüklenir.
 - **Gönderilmeden önce doğrulanır:** `gzip -t` + pg_dump'ın "dump complete"
   bitiş satırı. Yarım döküm "yedek alındı" diye gitmez.
+- **Başarılı gönderim `settings.son_yedek_zamani`nı yazar** — /durum'un
+  "Son yedek" satırı (bkz. '"/" komut menüsü' > `/durum`).
 - **45 MB sınırı** (Telegram bot API 50 MB): aşarsa GÖNDERİLMEZ, admin'e
   "Yedek 50MB'ı aştı, alternatif gerekli" yazılır. Sessiz başarısızlık yok:
   her hata admin'e sendMessage ile gider, çıkış kodu 1.
