@@ -285,10 +285,11 @@ async def check_bot(session: AsyncSession) -> Check:
 
     Bug (2026-08): önceden burada önce `settings.telegram_bot_token` boş mu
     diye bakılıyordu — ama üretimde (docker-compose.prod.yml) `api` ve `bot`
-    AYRI container'lar ve TELEGRAM_BOT_TOKEN yalnızca `bot`un ortamına
-    geçiriliyor. API süreci bu değişkeni hiçbir zaman göremez, bu yüzden bot
-    gerçekten çalışırken bile panel hep "Yapılandırılmamış" diyordu. Token
-    bu süreçten güvenilir okunamayacağı için karara hiç katılmaz; durum
+    AYRI container'lar ve TELEGRAM_BOT_TOKEN o zaman yalnızca `bot`un
+    ortamına geçiriliyordu, bot gerçekten çalışırken bile panel hep
+    "Yapılandırılmamış" diyordu. (Token artık açılış bildirimi için api'ye de
+    geçiriliyor, ama token'ın VARLIĞI botun ÇALIŞTIĞINI kanıtlamaz.) Token
+    karara hiç katılmaz; durum
     SADECE deftere düşen son mesajdan çıkarılır (zaten aşağıdaki dolaylı iz)."""
     label = "Telegram botu"
     note = (

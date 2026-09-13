@@ -198,6 +198,13 @@ async def _telegram(metod: str, *, data: dict, files: dict | None = None) -> Non
         raise YedekHatasi(f"Telegram reddetti: {_gizle(str(aciklama))}")
 
 
+async def mesaj_gonder(chat_id: int, metin: str) -> None:
+    """Düz metin sendMessage — açılış bildirimi (app/services/
+    acilis_bildirimi.py) kullanır. Token maskeleme `_telegram`'da; hata
+    YedekHatasi olarak yukarı çıkar, yakalamak çağıranın işidir."""
+    await _telegram("sendMessage", data={"chat_id": chat_id, "text": metin})
+
+
 async def yedek_gonder(chat_id: int) -> YedekSonucu:
     """Tüm veritabanını döker, sıkıştırır, doğrular ve `chat_id`ye dosya
     olarak gönderir. 45 MB'ı aşarsa GÖNDERMEZ, sonuç bunu söyler."""

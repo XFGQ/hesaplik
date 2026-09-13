@@ -86,6 +86,8 @@ arkasındaki karar gerekçesi ilgili bölümde yazılıdır.
   (`/engine`, `/queue`, `/logs`) yalnızca `TELEGRAM_ADMIN_IDS` için.
 - **`/durum` yönetici raporu:** veritabanı, bot, 📊 cari hesap özeti, 🤖 LLM
   katmanları, 💾 son yedek zamanı, 📨 mesaj istatistiği.
+- **Açılış bildirimi:** API her başladığında (deploy/reboot) yöneticiye
+  "🚀 Sistem ayağa kalktı" + aynı durum raporu.
 - **"/" komut menüsü:** `/borc`, `/tahsilat`, `/kisiekle` adım adım sorar;
   `/bakiye`, `/listele`, `/kisi`, `/koy` tek adımda çalışır; `/yedek` (yalnızca yönetici)
   veritabanını Telegram'a gönderir. Hepsi mevcut akışları tetikler.
@@ -980,6 +982,25 @@ kişi, toplam alacak/borç, borçlu/alacaklı/sıfır sayısı), 🤖 LLM
 ✅/❌), 💾 Yedekleme (son yedek + statik "günde 2 kez (04:00, 06:00)"), 📨
 Mesajlar. Toplama `_durum_topla`, biçim `_format_durum` (DB'siz test edilir).
 LLM yoklaması patlarsa rapor yine gelir; DB yoksa yalnızca ilk iki satır.
+
+**Rapor tek yerde: `app/services/durum.py`.** `build_durum_raporu(session,
+kaynak)` hem `/durum`'un hem API açılış bildiriminin kaynağıdır. `kaynak="bot"`
+(/durum) çıktısı eskisiyle birebir aynı; `kaynak="api"` bot canlılığını
+UYDURMAZ (bot ayrı container, bkz. `health.check_bot`), yerine "API: ✅" ve
+"/durum yazarak doğrula" yazar.
+
+**Açılış bildirimi (2026-09-13).** API her başladığında — deploy de reboot da
+API container'ını yeniden başlattığı için TEK nokta ikisini kapsar —
+`TELEGRAM_ADMIN_CHAT_ID`'ye "🚀 Sistem ayağa kalktı" + zaman + durum raporu
+gider (`app/services/acilis_bildirimi.py`, `app/main.py` > `lifespan`). Ayrı
+systemd servisi ya da deploy.yml'de curl YOK; "bu açılış için attım mı?"
+kaydı kasten tutulmaz. Arka plan görevidir: açılışı beklemez, `gonder()`
+HİÇBİR hatayı fırlatmaz (Telegram kapalı, DB hazır değil → yalnızca log,
+token loga sızmaz). `ACILIS_BILDIRIMI` yerelde varsayılan KAPALI (`--reload`
+her kayıtta bildirim yağdırırdı); `docker-compose.prod.yml` açar ve api'ye
+`TELEGRAM_BOT_TOKEN`/`TELEGRAM_ADMIN_CHAT_ID` geçirir (eskiden yalnızca bot
+alıyordu — panelin "Şimdi Yedek Al" düğmesi de bu yüzden üretimde 503
+dönüyordu). Testler: `tests/test_acilis_bildirimi.py`.
 
 **"İşlenmemiş" etiketi KALDIRILDI.** `raw_messages.processed_at` yalnızca
 deftere KAYIT yazan mesajda dolar (`record_resolved`); sorgu, liste,

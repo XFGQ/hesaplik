@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     # scripts/telegram-yedek.sh, bot /yedek ve panel "Şimdi Yedek Al" buraya
     # gönderir; /yedek komutunu da YALNIZCA bu chat kullanabilir.
     telegram_admin_chat_id: str = ""
+    # API her başladığında (deploy VEYA sunucu yeniden başlatma) TELEGRAM_ADMIN_
+    # CHAT_ID'ye "🚀 Sistem ayağa kalktı" + /durum raporu gönderilir
+    # (app/services/acilis_bildirimi.py). Varsayılan KAPALI: geliştirmede
+    # `uvicorn --reload` her kayıtta yeniden başlar, bildirim yağardı. Üretim
+    # compose'u açar.
+    acilis_bildirimi: bool = False
 
     # LLM fallback (Faz 4). Kural parser çözemezse devreye girer, kural
     # parser asla kaldırılmaz. Hangi kaynağın (vLLM/Ollama/none)
