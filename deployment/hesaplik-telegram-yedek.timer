@@ -1,11 +1,11 @@
 [Unit]
-Description=Hesaplık - veritabanı yedeğini Telegram'a gönder (04:00 ve 06:00)
+Description=Hesaplık - veritabanı yedeğini Telegram'a gönder (18:00 ve 03:00)
 
 [Timer]
 # Saat dilimi açıkça yazıldı: sunucu UTC'de olsa da Türkiye saatiyle çalışır
-# (systemd >= 235). Kontrol: systemd-analyze calendar '*-*-* 04:00:00 Europe/Istanbul'
-OnCalendar=*-*-* 04:00:00 Europe/Istanbul
-OnCalendar=*-*-* 06:00:00 Europe/Istanbul
+# (systemd >= 235). Kontrol: systemd-analyze calendar '*-*-* 18:00:00 Europe/Istanbul'
+OnCalendar=*-*-* 18:00:00 Europe/Istanbul
+OnCalendar=*-*-* 03:00:00 Europe/Istanbul
 # Sunucu o saatte kapalıysa açılışta BİR kez telafi edilir — kaçan gecenin
 # yedeği Telegram'a yine gider.
 Persistent=true
