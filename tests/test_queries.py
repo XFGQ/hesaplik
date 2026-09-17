@@ -11,8 +11,8 @@ def meta(**kw):
     return TxMeta(created_by="test", source=TxSource.WEB, **kw)
 
 
-async def _person(session, full_name, district=None):
-    p = Person(full_name=full_name, district=district)
+async def _person(session, full_name, district=None, address=None):
+    p = Person(full_name=full_name, district=district, address=address)
     session.add(p)
     await session.flush()
     return p
@@ -248,3 +248,24 @@ async def test_toplam_bakiye_net_negatif_olabilir(session):
     assert total.toplam_alacak == Decimal("0.00")
     assert total.toplam_borc == Decimal("2500.00")
     assert total.net == Decimal("-2500.00")
+
+async def test_ilce_filtresi_adreste_de_arar(session):
+    await _person(
+        session,
+        "Dündarlı Ahmet",
+        district="Kınık",
+        address="Dündarlı",
+    )
+    await _person(
+        session,
+        "Bergamalı Mehmet",
+        district="Bergama",
+        address="Cevizli",
+    )
+
+    rows = await queries.list_persons_with_balance(
+        session,
+        district="Dündarlı",
+    )
+
+    assert [r.person.full_name for r in rows] == ["Dündarlı Ahmet"]

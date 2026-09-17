@@ -79,7 +79,18 @@ async def list_persons_with_balance(
 
     if district:
         key = normalize(" ".join(district.split()))
-        rows = [r for r in rows if r[0].district and normalize(r[0].district) == key]
+        rows = [
+            r
+            for r in rows
+            if (
+                r[0].district
+                and normalize(r[0].district) == key
+            )
+            or (
+                r[0].address
+                and key in normalize(r[0].address)
+            )
+        ]
 
     if not rows:
         return []
