@@ -144,7 +144,7 @@ async def test_durum_tum_bolumleri_dogru_sayilarla_toplar(
         "✅ NVIDIA · ❌ vLLM · ✅ Ollama",
         "💾 Yedekleme",
         "Son yedek: 13.09.2026 03:28",  # UTC 00:28 -> İstanbul 03:28
-        "Otomatik: günde 2 kez (04:00, 06:00)",
+        "Otomatik: günde 2 kez (18:00, 03:00)",
         "📨 Mesajlar",
         "Toplam ham mesaj: 5",
         "Kayıt oluşturan: 2",
