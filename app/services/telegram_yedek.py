@@ -65,7 +65,7 @@ SON_YEDEK_KEY = "son_yedek_zamani"
 
 # Otomatik gönderim saatleri (Europe/Istanbul) — /durum'da statik bilgi.
 # deployment/hesaplik-telegram-yedek.timer ile AYNI olmalı (test kilitler).
-OTOMATIK_SAATLER = ("04:00", "06:00")
+OTOMATIK_SAATLER = ("18:00", "03:00")
 
 # Aynı süreçte iki yedek üst üste binmesin (çift tıklama, /yedek + düğme).
 _kilit = asyncio.Lock()
